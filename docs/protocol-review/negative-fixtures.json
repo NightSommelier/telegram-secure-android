@@ -1,0 +1,84 @@
+{
+  "spec_revision": 1,
+  "cases": [
+    {
+      "id": "carrier-marker-malformed-01",
+      "carrier_utf8": "TGS1:!",
+      "expected_error": "MALFORMED_CARRIER",
+      "expected_state_change": false
+    },
+    {
+      "id": "carrier-oversize-01",
+      "carrier_prefix": "TGS1:",
+      "decoded_envelope_bytes": 6145,
+      "expected_error": "RESOURCE_LIMIT",
+      "expected_state_change": false
+    },
+    {
+      "id": "bundle-duplicate-tag-01",
+      "object_hex": "544753420101010002000102000100",
+      "expected_error": "NON_CANONICAL",
+      "expected_state_change": false
+    },
+    {
+      "id": "capability-expired-01",
+      "issued_at": 1700000000,
+      "expires_at": 1700000601,
+      "expected_error": "BUNDLE_INVALID",
+      "expected_state_change": false
+    },
+    {
+      "id": "handshake-zero-dh-01",
+      "x25519_output_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_error": "AUTH_FAILED",
+      "expected_state_change": false
+    },
+    {
+      "id": "handshake-confirm-wrong-role-01",
+      "role_hex": "52",
+      "expected_error": "AUTH_FAILED",
+      "expected_state_change": false
+    },
+    {
+      "id": "envelope-aead-tamper-01",
+      "mutate": "last_ciphertext_bit",
+      "expected_error": "AUTH_FAILED",
+      "expected_state_change": false,
+      "required_assertion": "ratchet/replay state is unchanged"
+    },
+    {
+      "id": "envelope-replay-01",
+      "precondition": "same authenticated envelope already committed",
+      "expected_error": "REPLAY",
+      "expected_state_change": false
+    },
+    {
+      "id": "envelope-gap-257-01",
+      "message_number": 257,
+      "receive_chain_next": 0,
+      "expected_error": "OUT_OF_ORDER_LIMIT",
+      "expected_state_change": false
+    },
+    {
+      "id": "unsupported-version-02",
+      "magic": "TGSE",
+      "version": 2,
+      "expected_error": "UNSUPPORTED_VERSION",
+      "expected_state_change": false,
+      "required_assertion": "secure mode becomes blocking; no plaintext fallback"
+    },
+    {
+      "id": "storage-rollback-01",
+      "stored_generation": 7,
+      "observed_generation": 6,
+      "expected_error": "STORAGE_ROLLBACK",
+      "expected_state_change": "security-reset-marker-only"
+    },
+    {
+      "id": "keystore-invalidated-01",
+      "precondition": "existing secure state",
+      "expected_error": "KEYSTORE_INVALIDATED",
+      "expected_state_change": "security-reset-marker-only"
+    }
+  ]
+}

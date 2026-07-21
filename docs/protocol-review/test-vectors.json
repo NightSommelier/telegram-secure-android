@@ -1,0 +1,70 @@
+{
+  "spec_revision": 1,
+  "encoding": "lowercase hexadecimal",
+  "warning": "All private or symmetric values are public test material and MUST NOT be used by an application.",
+  "cases": [
+    {
+      "id": "capability-flow-valid-response-01",
+      "kind": "capability_flow",
+      "request_id_hex": "000102030405060708090a0b0c0d0e0f",
+      "adapter_authenticated_peer_u64": "000000000000002a",
+      "bundle_owner_u64": "000000000000002a",
+      "issued_at": 1700000000,
+      "expires_at": 1700000600,
+      "now": 1700000300,
+      "expected_state": "IDENTITY_PENDING",
+      "expected_authorization": "none; explicit fingerprint comparison remains required"
+    },
+    {
+      "id": "identity-bundle-canonical-core-01",
+      "kind": "identity_bundle_canonicalization",
+      "input": {
+        "owner_u64": "000000000000002a",
+        "device_id": "000102030405060708090a0b0c0d0e0f",
+        "signing_public_key": "0000000000000000000000000000000000000000000000000000000000000000",
+        "agreement_public_key": "0101010101010101010101010101010101010101010101010101010101010101"
+      },
+      "expected_core_cfs": "5447534201010100020001020008000000000000002a030010000102030405060708090a0b0c0d0e0f04000400000001050008000000006553f100060008000000006553f35807002000000000000000000000000000000000000000000000000000000000000000000800200101010101010101010101010101010101010101010101010101010101010101090000",
+      "expected_signature_prehash_sha256": "bf9ab3fca65e44b05e3657b10f3187943b108f68d078194e963ee25d7c6a9a14"
+    },
+    {
+      "id": "ed25519-rfc8032-empty-message-01",
+      "kind": "signature_known_answer",
+      "message_hex": "",
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "signature_hex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    },
+    {
+      "id": "hkdf-rfc5869-sha256-case-01",
+      "kind": "hkdf_known_answer",
+      "ikm_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "salt_hex": "000102030405060708090a0b0c",
+      "info_hex": "f0f1f2f3f4f5f6f7f8f9",
+      "length": 42,
+      "expected_prk_hex": "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec4c5f7c2b3e3a",
+      "expected_okm_hex": "3cb25f25faacd57a90434f64d036f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+    },
+    {
+      "id": "handshake-kdf-domain-separation-01",
+      "kind": "handshake_kdf",
+      "transcript_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "ikm_hex": "1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+      "expected_salt_hex": "21c21e970bb516e3563911e1f91817f12c82a65de0c4718be19235a67e5cd81e",
+      "expected_root_key_hex": "9d091df7b90ed6beec65e63523058762b1cec065368ff33691e8d5adba683405",
+      "expected_confirm_i_key_hex": "f96ee37c2b30916ff218219d47ecd0b7dbe571c9e89b068686a3a0dab932ee07",
+      "expected_confirm_r_key_hex": "3c64bc562ee7cf89643b988034ca6f9748c3a6ee75f82012183b2808bee018af",
+      "expected_session_id_hex": "09156119bc4caf782632504f7f16e6a1"
+    },
+    {
+      "id": "xchacha20poly1305-known-answer-01",
+      "kind": "aead_known_answer",
+      "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f1011121314151617",
+      "associated_data_utf8": "TGS v1 envelope vector AD",
+      "plaintext_utf8": "secure text",
+      "expected_ad_sha256": "6c1393a3ac4b03d0f8dd105910dbd174cd3d31f53a30b82b235968bcd7090482",
+      "expected_ciphertext_with_tag_hex": "eda76c0ae2b7adda563c52209719b441443241993b7409e880b682"
+    }
+  ]
+}
