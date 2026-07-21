@@ -1,0 +1,30 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+android {
+    namespace 'org.telegram.secureoverlay'
+    compileSdkVersion 35
+
+    defaultConfig {
+        minSdkVersion 21
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+    // Intentionally no dependency on TMessagesProj or transport code.
+    // The integration adapter is added only after protocol review approval.
+}
