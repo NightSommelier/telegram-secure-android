@@ -1,0 +1,7 @@
+# Copy this file to local.properties. Do not commit local.properties.
+# Create an Android application at https://my.telegram.org/apps for this fork.
+sdk.dir=/absolute/path/to/your/android-sdk
+# Optional when CMake is installed outside sdk.dir (as in a Nix SDK setup).
+cmake.dir=/absolute/path/to/your/android-sdk/cmake/3.22.1
+TELEGRAM_API_ID=replace_with_your_numeric_api_id
+TELEGRAM_API_HASH=replace_with_your_32_character_api_hash

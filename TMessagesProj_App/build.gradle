@@ -1,5 +1,18 @@
 apply plugin: 'com.android.application'
 
+def localMvpAbi = (project.findProperty("LOCAL_MVP_ABI") ?: "").trim()
+if (localMvpAbi && !["armeabi-v7a", "arm64-v8a", "x86", "x86_64"].contains(localMvpAbi)) {
+    throw new GradleException("Unsupported LOCAL_MVP_ABI: ${localMvpAbi}")
+}
+
+def releaseSigningProperties = new Properties()
+def releaseSigningPropertiesFile = rootProject.file('signing.properties')
+if (releaseSigningPropertiesFile.isFile()) {
+    releaseSigningPropertiesFile.withInputStream { releaseSigningProperties.load(it) }
+}
+def releaseSigningKeys = ['RELEASE_STORE_FILE', 'RELEASE_STORE_PASSWORD', 'RELEASE_KEY_ALIAS', 'RELEASE_KEY_PASSWORD']
+def releaseSigningConfigured = releaseSigningKeys.every { releaseSigningProperties.getProperty(it) }
+
 repositories {
     mavenCentral()
     google()
@@ -42,18 +55,13 @@ android {
     }
 
     signingConfigs {
-        debug {
-            storeFile file("../TMessagesProj/config/release.keystore")
-            storePassword RELEASE_STORE_PASSWORD
-            keyAlias RELEASE_KEY_ALIAS
-            keyPassword RELEASE_KEY_PASSWORD
-        }
-
         release {
-            storeFile file("../TMessagesProj/config/release.keystore")
-            storePassword RELEASE_STORE_PASSWORD
-            keyAlias RELEASE_KEY_ALIAS
-            keyPassword RELEASE_KEY_PASSWORD
+            if (releaseSigningConfigured) {
+                storeFile rootProject.file(releaseSigningProperties.getProperty('RELEASE_STORE_FILE'))
+                storePassword releaseSigningProperties.getProperty('RELEASE_STORE_PASSWORD')
+                keyAlias releaseSigningProperties.getProperty('RELEASE_KEY_ALIAS')
+                keyPassword releaseSigningProperties.getProperty('RELEASE_KEY_PASSWORD')
+            }
         }
     }
 
@@ -61,8 +69,6 @@ android {
         debug {
             debuggable true
             jniDebuggable true
-            signingConfig signingConfigs.debug
-            applicationIdSuffix ".beta"
             minifyEnabled false
             shrinkResources false
             multiDexEnabled true
@@ -136,7 +142,11 @@ android {
         }
         afat {
             ndk {
-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+                if (localMvpAbi) {
+                    abiFilters localMvpAbi
+                } else {
+                    abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+                }
             }
             sourceSets.debug {
                 manifest.srcFile '../TMessagesProj/config/debug/AndroidManifest_SDK23.xml'
@@ -198,4 +208,11 @@ android {
     }
 }
 
-apply plugin: 'com.google.gms.google-services'
+gradle.taskGraph.whenReady { taskGraph ->
+    def needsReleaseSigning = taskGraph.allTasks.any { task ->
+        task.name.toLowerCase(Locale.ROOT).contains('release') || task.name.toLowerCase(Locale.ROOT).contains('standalone')
+    }
+    if (needsReleaseSigning && !releaseSigningConfigured) {
+        throw new GradleException('Release signing is not configured. Run ./scripts/create-release-keystore.sh first.')
+    }
+}

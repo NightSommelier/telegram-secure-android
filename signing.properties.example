@@ -1,0 +1,5 @@
+# Copy to signing.properties. Do not commit signing.properties or keystore/.
+RELEASE_STORE_FILE=keystore/telegram-fork-secure-release.p12
+RELEASE_STORE_PASSWORD=replace_with_a_long_unique_password
+RELEASE_KEY_ALIAS=telegram_fork_secure
+RELEASE_KEY_PASSWORD=replace_with_the_same_password

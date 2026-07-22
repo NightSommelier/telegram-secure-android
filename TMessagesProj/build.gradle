@@ -2,6 +2,11 @@ import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
 
 apply plugin: 'com.android.library'
 
+def localMvpAbi = (project.findProperty("LOCAL_MVP_ABI") ?: "").trim()
+if (localMvpAbi && !["armeabi-v7a", "arm64-v8a", "x86", "x86_64"].contains(localMvpAbi)) {
+    throw new GradleException("Unsupported LOCAL_MVP_ABI: ${localMvpAbi}")
+}
+
 repositories {
     mavenCentral()
     google()
@@ -82,6 +87,28 @@ dependencies {
 }
 
 def isWindows = String.valueOf(DefaultNativePlatform.currentOperatingSystem.toFamilyName() == OperatingSystemFamily.WINDOWS)
+
+def telegramLocalProperties = new Properties()
+def telegramLocalPropertiesFile = rootProject.file('local.properties')
+if (telegramLocalPropertiesFile.exists()) {
+    telegramLocalPropertiesFile.withInputStream { telegramLocalProperties.load(it) }
+}
+def requiredTelegramProperty = { String name ->
+    def value = telegramLocalProperties.getProperty(name)?.trim()
+    if (!value) {
+        throw new GradleException("Missing ${name} in local.properties. Copy local.properties.example and use API credentials created for this fork.")
+    }
+    value
+}
+def telegramApiId = requiredTelegramProperty('TELEGRAM_API_ID')
+def telegramApiHash = requiredTelegramProperty('TELEGRAM_API_HASH')
+if (!(telegramApiId ==~ /[1-9][0-9]*/)) {
+    throw new GradleException('TELEGRAM_API_ID must be a positive decimal integer.')
+}
+if (!(telegramApiHash ==~ /[0-9a-fA-F]{32}/)) {
+    throw new GradleException('TELEGRAM_API_HASH must be a 32-character hexadecimal value.')
+}
+
 android {
     compileSdkVersion 35
     buildToolsVersion '35.0.0'
@@ -116,10 +143,18 @@ android {
         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
 
         multiDexEnabled true
+        buildConfigField "int", "TELEGRAM_API_ID", telegramApiId
+        buildConfigField "String", "TELEGRAM_API_HASH", "\"" + telegramApiHash + "\""
+
+        if (localMvpAbi) {
+            ndk {
+                abiFilters localMvpAbi
+            }
+        }
 
         externalNativeBuild {
             cmake {
-                version '3.10.2'
+                version '3.22.1'
                 arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-21' //, '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
             }
         }
