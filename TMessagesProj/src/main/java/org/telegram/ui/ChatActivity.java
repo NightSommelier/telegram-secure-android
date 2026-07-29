@@ -440,6 +440,7 @@ public class ChatActivity extends BaseFragment implements
     private ActionBarMenuItem.Item timeItem2;
     private ActionBarMenuItem secureModeItem;
     private SecureChatEngine secureChatEngine;
+    private boolean forkSecureSuppressedWebPageSearch;
     private final HashSet<Integer> forkSecureDeferredMessages = new HashSet<>();
     private final HashSet<String> forkSecureMediaPreparing = new HashSet<>();
     private final HashSet<String> forkSecureMediaDownloadAttempted = new HashSet<>();
@@ -14023,6 +14024,10 @@ public class ChatActivity extends BaseFragment implements
     }
 
     public void searchLinks(final CharSequence charSequence, final boolean force) {
+        if (isForkSecureContentProtected()) {
+            suppressForkSecureLinkPreview();
+            return;
+        }
         if (currentEncryptedChat != null && getMessagesController().secretWebpagePreview == 0 || editingMessageObject != null && (!editingMessageObject.isWebpage() || editingMessageObject.messageOwner.media.webpage instanceof TLRPC.TL_webPagePending)) {
             return;
         }
@@ -21505,6 +21510,70 @@ public class ChatActivity extends BaseFragment implements
                 && !inPreviewMode;
     }
 
+    private boolean isForkSecureContentProtected() {
+        if (currentEncryptedChat != null || !DialogObject.isUserDialog(dialog_id)) {
+            return false;
+        }
+        try {
+            SecureChatEngine.Mode mode = getSecureChatEngine().getMode();
+            return mode == SecureChatEngine.Mode.PROTECTED
+                    || mode == SecureChatEngine.Mode.IDENTITY_CHANGED;
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            // A state-read failure in an ordinary user chat must not expose a
+            // draft or URL that may belong to an existing protected session.
+            return true;
+        }
+    }
+
+    private void suppressForkSecureLinkPreview() {
+        cancelSearchLinks();
+        linkSearchRequestId = 0;
+        waitingForWebpageId++;
+        pendingLinkSearchString = null;
+        foundUrls = null;
+        foundWebPage = null;
+        forkSecureSuppressedWebPageSearch = true;
+        if (chatActivityEnterView != null) {
+            chatActivityEnterView.setWebPage(null, false);
+        }
+        if (messagePreviewParams != null) {
+            messagePreviewParams.updateLink(
+                    currentAccount,
+                    null,
+                    chatActivityEnterView == null ? "" : chatActivityEnterView.getFieldText(),
+                    null,
+                    null,
+                    null);
+        }
+        fallbackFieldPanel();
+    }
+
+    private void restoreForkSecureLinkPreviewSearch() {
+        if (!forkSecureSuppressedWebPageSearch) {
+            return;
+        }
+        forkSecureSuppressedWebPageSearch = false;
+        if (chatActivityEnterView != null) {
+            chatActivityEnterView.setWebPage(null, true);
+        }
+    }
+
+    private void clearForkSecureCloudDraft() {
+        getMediaDataController().saveDraft(
+                dialog_id,
+                0,
+                "",
+                null,
+                null,
+                null,
+                null,
+                0,
+                true,
+                false,
+                null);
+    }
+
     private int getAvatarContainerRightMargin(int baseMarginDp) {
         return baseMarginDp + (isSecureModeUiEligible() ? 48 : 0);
     }
@@ -21516,22 +21585,29 @@ public class ChatActivity extends BaseFragment implements
         try {
             SecureChatEngine.Mode mode = getSecureChatEngine().getMode();
             if (mode == SecureChatEngine.Mode.PROTECTED) {
+                suppressForkSecureLinkPreview();
+                clearForkSecureCloudDraft();
                 secureModeItem.setIcon(R.drawable.outline_shield_check, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecureProtectedDescription));
             } else if (mode == SecureChatEngine.Mode.WAITING) {
+                restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecureWaitingDescription));
             } else if (mode == SecureChatEngine.Mode.PAUSED) {
+                restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_shield_plain_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecurePausedDescription));
             } else if (mode == SecureChatEngine.Mode.IDENTITY_CHANGED) {
+                suppressForkSecureLinkPreview();
+                clearForkSecureCloudDraft();
                 secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecureIdentityChangedDescription));
             } else {
+                restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_shield_plain_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecureOffDescription));
@@ -31187,6 +31263,10 @@ public class ChatActivity extends BaseFragment implements
 
     public void saveDraft() {
         if (chatActivityEnterView != null && chatActivityEnterView.isRichDraftActive()) {
+            return;
+        }
+        if (isForkSecureContentProtected()) {
+            clearForkSecureCloudDraft();
             return;
         }
         CharSequence draftMessage = null;

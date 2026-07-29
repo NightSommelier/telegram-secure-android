@@ -4930,6 +4930,24 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (message == null && caption == null && richMessage == null) {
             caption = "";
         }
+        final boolean forkSecureCarrier =
+                SecureCarrierCodec.isMarked(message) || SecureCarrierCodec.isMarked(caption);
+        if (forkSecureCarrier) {
+            // A TGS1 carrier owns all protected content. Telegram reply IDs may
+            // remain for same-chat navigation, but plaintext quote/story,
+            // webpage, entity and bot markup fields must never accompany it.
+            webPage = null;
+            mediaWebPage = null;
+            searchLinks = false;
+            entities = null;
+            replyQuote = null;
+            replyToStoryItem = null;
+            replyMarkup = null;
+            if (replyToMsg != null && replyToMsg.getDialogId() != peer) {
+                replyToMsg = null;
+                replyToTopMsg = null;
+            }
+        }
         if (DialogObject.isUserDialog(peer)
                 && (document != null || photo != null)
                 && !SecureCarrierCodec.isMarked(caption)) {

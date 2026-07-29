@@ -145,6 +145,7 @@ import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SharedPrefsHelper;
 import org.telegram.messenger.UserConfig;
+import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
@@ -7861,6 +7862,15 @@ public class ChatActivityEnterView extends FrameLayout implements
                     replyToTopMsg = replyingTopMessage;
                 }
                 SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(message[0].toString(), dialog_id, replyingMessageObject, replyToTopMsg, messageWebPage, messageWebPageSearch, entities, null, null, notify, scheduleDate, scheduleRepeatPeriod, sendAnimationData, updateStickersOrder);
+                boolean forkSecureCarrier = SecureCarrierCodec.isMarked(message[0].toString());
+                if (forkSecureCarrier) {
+                    params.webPage = null;
+                    params.mediaWebPage = null;
+                    params.searchLinks = false;
+                    params.replyQuote = null;
+                    params.replyToStoryItem = null;
+                    params.entities = null;
+                }
                 params.quick_reply_shortcut = parentFragment != null ? parentFragment.quickReplyShortcut : null;
                 params.quick_reply_shortcut_id = parentFragment != null ? parentFragment.getQuickReplyId() : 0;
                 params.effect_id = effectId;
@@ -7869,8 +7879,17 @@ public class ChatActivityEnterView extends FrameLayout implements
                 params.suggestionParams = getSendMessageSuggestionParams();
                 sendButton.setEffect(effectId = 0);
                 applyStoryToSendMessageParams(params);
+                if (forkSecureCarrier) {
+                    // applyStoryToSendMessageParams may re-add plaintext quote
+                    // or story fields after the carrier was constructed.
+                    params.replyQuote = null;
+                    params.replyToStoryItem = null;
+                }
                 params.invert_media = parentFragment != null && parentFragment.messagePreviewParams != null && parentFragment.messagePreviewParams.webpageTop;
-                if (parentFragment != null && parentFragment.getCurrentChat() != null && !ChatObject.canSendEmbed(parentFragment.getCurrentChat())) {
+                if (forkSecureCarrier) {
+                    params.searchLinks = false;
+                    params.mediaWebPage = null;
+                } else if (parentFragment != null && parentFragment.getCurrentChat() != null && !ChatObject.canSendEmbed(parentFragment.getCurrentChat())) {
                     params.searchLinks = false;
                     params.mediaWebPage = null;
                 } else if (messageWebPage instanceof TLRPC.TL_webPagePending) {
