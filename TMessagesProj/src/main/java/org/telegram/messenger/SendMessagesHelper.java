@@ -4484,11 +4484,6 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (messageObject == null || parentFragment == null) {
             return;
         }
-        if (isForkSecureProtectedPeer(messageObject.getDialogId())) {
-            // Telegram reactions are server-side metadata, not part of the encrypted carrier.
-            // Keep the native feature available, but never imply that its emoji or target is E2EE.
-            showForkSecureError(R.string.ForkSecureReactionUnencrypted);
-        }
         TLRPC.TL_messages_sendReaction req = new TLRPC.TL_messages_sendReaction();
         if (messageObject.messageOwner.isThreadMessage && messageObject.messageOwner.fwd_from != null) {
             req.peer = getMessagesController().getInputPeer(messageObject.getFromChatId());

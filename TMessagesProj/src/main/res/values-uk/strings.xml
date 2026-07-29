@@ -297,7 +297,6 @@
     <string name="ForkSecureEncryptedPhoto">🔒 Фото</string>
     <string name="ForkSecureAttachmentUnsupported">Це вкладення поки не можна надіслати захищено або воно перевищує ліміт MVP у 64 МіБ</string>
     <string name="ForkSecureActionUnsupported">Ця дія ще не шифрується, тому її не було надіслано.</string>
-    <string name="ForkSecureReactionUnencrypted">Повідомлення зашифроване, але ця реакція Telegram — ні.</string>
     <string name="ForkSecureEphemeralPhotoUnsupported">Ефемерні фото поки не підтримуються захищеним надсиланням і не були надіслані.</string>
     <string name="ForkSecureStickerFormatUnsupported">Цей формат стікера не підтримується захищеним надсиланням</string>
     <string name="ForkSecureStickerDownloadFirst">Стікер завантажується. Натисніть його ще раз для захищеного надсилання</string>

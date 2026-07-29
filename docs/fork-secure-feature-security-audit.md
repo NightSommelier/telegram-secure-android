@@ -28,7 +28,7 @@ Fork-Secure cannot hide those properties while using Telegram transport.
 | Photos | Original bytes, name, MIME and caption are encrypted; native viewer works | Albums, spoilers and view-once are incomplete |
 | Documents | File bytes and authenticated metadata are encrypted | Native media-specific playback is incomplete |
 | Edits | Blocked fail-closed | Needs an authenticated edit control message |
-| Reactions | Native Telegram reactions are available with an explicit unencrypted warning | Telegram sees the emoji, target message ID and actor |
+| Reactions | Native Telegram reactions are available without per-action warnings | Telegram sees the emoji, target message ID and actor; this limitation remains documented in the secure-chat status details |
 | Deletion | Telegram carrier and matching local text/content records are deleted | Authenticated remote delete controls are not implemented |
 | Identity reset | Supported with re-pairing | No recovery archive or safe multi-device protocol |
 
@@ -38,8 +38,8 @@ Fork-Secure cannot hide those properties while using Telegram transport.
 2. Server link-preview discovery and attached webpage metadata are suppressed.
 3. Plaintext quote text/entities and other reply-side content are stripped.
 4. A central send gate plus direct edit/vote/todo guards reject unallowlisted
-   protected-chat actions. Reactions are an explicit exception: they use
-   Telegram's normal unencrypted metadata path and show a warning when sent.
+   protected-chat actions. Reactions are an explicit exception and use
+   Telegram's normal unencrypted metadata path.
 5. Telegram message/dialog deletion removes matching local display/content
    records; display memory and media files use bounded caches.
 
