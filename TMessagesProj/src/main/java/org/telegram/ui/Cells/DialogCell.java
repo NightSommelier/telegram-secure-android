@@ -2994,7 +2994,8 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 return;
             }
             if (preview.kind == SecureChatEngine.DialogPreview.Kind.PLAINTEXT) {
-                message.applyNewText(preview.plaintext);
+                message.applyNewText(LocaleController.formatString(
+                        R.string.ForkSecureTextPreview, preview.plaintext));
             } else if (preview.kind == SecureChatEngine.DialogPreview.Kind.PAIRING_ACK) {
                 message.applyNewText(getString(R.string.ForkSecurePairingConfirmed));
             } else if (preview.kind

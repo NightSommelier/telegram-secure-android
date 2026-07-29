@@ -163,6 +163,27 @@ public final class SecureRecoveryGenerationStore {
         }
     }
 
+    /**
+     * Replaces recovery metadata after the user separately verifies a changed identity key.
+     * Generations from unrelated identity keys are not comparable.
+     */
+    void replaceVerifiedPeerAfterIdentityChange(
+            int account, long peerUserId, Record replacement) {
+        requirePeer(account, peerUserId);
+        synchronized (LOCK) {
+            String name = peerName(account, peerUserId);
+            if (replacement == null) {
+                delete(name);
+            } else {
+                write(name, replacement);
+            }
+        }
+    }
+
+    void restoreVerifiedPeer(int account, long peerUserId, Record previous) {
+        replaceVerifiedPeerAfterIdentityChange(account, peerUserId, previous);
+    }
+
     static Decision classify(Record current, Record offered) {
         Objects.requireNonNull(offered, "offered recovery record");
         if (current == null) {
@@ -226,6 +247,14 @@ public final class SecureRecoveryGenerationStore {
             blobs.put(name, encodeRecord(record));
         } catch (Exception e) {
             throw failure("cannot persist recovery state", e);
+        }
+    }
+
+    private void delete(String name) {
+        try {
+            blobs.delete(name);
+        } catch (Exception e) {
+            throw failure("cannot delete recovery state", e);
         }
     }
 

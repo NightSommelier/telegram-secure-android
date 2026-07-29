@@ -20599,6 +20599,14 @@ public class ChatActivity extends BaseFragment implements
                             message.applyNewText(getString(
                                     R.string.ForkSecureIdentityChangedMessage));
                         } else if (result
+                                == SecureChatEngine.PairingOfferResult.RECOVERY_CHANGE_PENDING) {
+                            message.applyNewText(getString(
+                                    R.string.ForkSecureRecoveryChangedMessage));
+                        } else if (result
+                                == SecureChatEngine.PairingOfferResult.RECOVERY_REJECTED) {
+                            message.applyNewText(getString(
+                                    R.string.ForkSecureRecoveryRejectedMessage));
+                        } else if (result
                                 == SecureChatEngine.PairingOfferResult.SAME_IDENTITY) {
                             if (secureChat.isPaired()) {
                                 message.applyNewText(getString(
@@ -21517,7 +21525,8 @@ public class ChatActivity extends BaseFragment implements
         try {
             SecureChatEngine.Mode mode = getSecureChatEngine().getMode();
             return mode == SecureChatEngine.Mode.PROTECTED
-                    || mode == SecureChatEngine.Mode.IDENTITY_CHANGED;
+                    || mode == SecureChatEngine.Mode.IDENTITY_CHANGED
+                    || mode == SecureChatEngine.Mode.RECOVERY_CHANGED;
         } catch (RuntimeException error) {
             FileLog.e(error);
             // A state-read failure in an ordinary user chat must not expose a
@@ -21606,6 +21615,12 @@ public class ChatActivity extends BaseFragment implements
                 secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecureIdentityChangedDescription));
+            } else if (mode == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                suppressForkSecureLinkPreview();
+                clearForkSecureCloudDraft();
+                secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
+                secureModeItem.setContentDescription(
+                        getString(R.string.ForkSecureRecoveryChangedDescription));
             } else {
                 restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_shield_plain_24, true);
@@ -21629,6 +21644,10 @@ public class ChatActivity extends BaseFragment implements
             SecureChatEngine.Mode mode = secureChat.getMode();
             if (mode == SecureChatEngine.Mode.IDENTITY_CHANGED) {
                 showSecureIdentityChangeDialog();
+                return;
+            }
+            if (mode == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                showSecureRecoveryChangeDialog();
                 return;
             }
             if (mode == SecureChatEngine.Mode.PROTECTED
@@ -21722,6 +21741,66 @@ public class ChatActivity extends BaseFragment implements
                 })
                 .setNegativeButton(getString(R.string.Cancel), null)
                 .setNeutralButton(getString(R.string.ForkSecureRejectNewKey),
+                        (di, which) -> confirmRejectForkSecureIdentity(secureChat))
+                .create();
+        showDialog(dialog);
+    }
+
+    private void showSecureRecoveryChangeDialog() {
+        if (!isSecureModeUiEligible() || getContext() == null) {
+            return;
+        }
+        final SecureChatEngine secureChat;
+        final long oldGeneration;
+        final long newGeneration;
+        final String recoveryId;
+        try {
+            secureChat = getSecureChatEngine();
+            if (secureChat.getMode() != SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                return;
+            }
+            oldGeneration = secureChat.getTrustedRecoveryGeneration();
+            newGeneration = secureChat.getPendingRecoveryGeneration();
+            recoveryId = secureChat.getPendingRecoveryId();
+            if (oldGeneration <= 0 || newGeneration <= oldGeneration || recoveryId == null) {
+                throw new IllegalStateException("invalid pending recovery metadata");
+            }
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            BulletinFactory.of(this)
+                    .createErrorBulletin(
+                            getString(R.string.ForkSecureIdentityVerificationFailed))
+                    .show();
+            return;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(getContext(), getResourceProvider())
+                .setTitle(getString(R.string.ForkSecureRecoveryChangedTitle))
+                .setMessage(formatString(
+                        R.string.ForkSecureRecoveryChangedBody,
+                        oldGeneration,
+                        newGeneration,
+                        recoveryId))
+                .setPositiveButton(getString(R.string.ForkSecureVerifyAccept), (di, which) -> {
+                    try {
+                        secureChat.acceptPendingIdentity();
+                        updateSecureModeUi();
+                        sendForkSecurePairingAcknowledgement();
+                        BulletinFactory.of(this)
+                                .createSimpleBulletin(
+                                        R.raw.chats_infotip,
+                                        getString(R.string.ForkSecureRecoveryAccepted))
+                                .show();
+                    } catch (RuntimeException error) {
+                        FileLog.e(error);
+                        BulletinFactory.of(this)
+                                .createErrorBulletin(
+                                        getString(R.string.ForkSecureAcceptIdentityFailed))
+                                .show();
+                    }
+                })
+                .setNegativeButton(getString(R.string.Cancel), null)
+                .setNeutralButton(
+                        getString(R.string.ForkSecureRejectRecovery),
                         (di, which) -> confirmRejectForkSecureIdentity(secureChat))
                 .create();
         showDialog(dialog);

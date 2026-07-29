@@ -12,9 +12,22 @@ public final class SecureChatState {
     private static final String IDENTITY_PENDING_PREFIX = "identity-pending.";
     private static final String PENDING_CARRIER_PREFIX = "pending-carrier.";
     private static final String PENDING_MESSAGE_PREFIX = "pending-message.";
+    private static final String PENDING_KIND_PREFIX = "pending-kind.";
     private static final String LAST_PAIRING_MESSAGE_PREFIX = "last-pairing-message.";
     private static final String IDENTITY_EPOCH = "identity-epoch";
     private final SharedPreferences preferences;
+
+    public enum PendingKind {
+        NONE(0),
+        IDENTITY_CHANGE(1),
+        RECOVERY_ADVANCE(2);
+
+        final int value;
+
+        PendingKind(int value) {
+            this.value = value;
+        }
+    }
 
     public SecureChatState(Context context) {
         preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -45,6 +58,16 @@ public final class SecureChatState {
         return preferences.getInt(key(PENDING_MESSAGE_PREFIX, account, peerUserId), 0);
     }
 
+    public PendingKind getPendingKind(int account, long peerUserId) {
+        int value = preferences.getInt(key(PENDING_KIND_PREFIX, account, peerUserId), 0);
+        for (PendingKind kind : PendingKind.values()) {
+            if (kind.value == value) {
+                return kind;
+            }
+        }
+        throw new IllegalStateException("invalid pending secure identity kind");
+    }
+
     public int getLastPairingMessageId(int account, long peerUserId) {
         return preferences.getInt(key(LAST_PAIRING_MESSAGE_PREFIX, account, peerUserId), 0);
     }
@@ -61,6 +84,7 @@ public final class SecureChatState {
                 .remove(key(IDENTITY_PENDING_PREFIX, account, peerUserId))
                 .remove(key(PENDING_CARRIER_PREFIX, account, peerUserId))
                 .remove(key(PENDING_MESSAGE_PREFIX, account, peerUserId))
+                .remove(key(PENDING_KIND_PREFIX, account, peerUserId))
                 .putBoolean(key(WAITING_PREFIX, account, peerUserId), true)
                 .commit()) {
             throw new IllegalStateException("failed to persist secure pairing state");
@@ -75,6 +99,7 @@ public final class SecureChatState {
                 .remove(key(IDENTITY_PENDING_PREFIX, account, peerUserId))
                 .remove(key(PENDING_CARRIER_PREFIX, account, peerUserId))
                 .remove(key(PENDING_MESSAGE_PREFIX, account, peerUserId))
+                .remove(key(PENDING_KIND_PREFIX, account, peerUserId))
                 .putBoolean(key(PAIRED_PREFIX, account, peerUserId), true)
                 .commit()) {
             throw new IllegalStateException("failed to persist secure chat state");
@@ -89,6 +114,7 @@ public final class SecureChatState {
                 .remove(key(IDENTITY_PENDING_PREFIX, account, peerUserId))
                 .remove(key(PENDING_CARRIER_PREFIX, account, peerUserId))
                 .remove(key(PENDING_MESSAGE_PREFIX, account, peerUserId))
+                .remove(key(PENDING_KIND_PREFIX, account, peerUserId))
                 .putBoolean(key(PAUSED_PREFIX, account, peerUserId), true)
                 .commit()) {
             throw new IllegalStateException("failed to disable secure chat state");
@@ -96,8 +122,19 @@ public final class SecureChatState {
     }
 
     public void markIdentityPending(int account, long peerUserId, String carrier, int messageId) {
+        markIdentityPending(
+                account, peerUserId, carrier, messageId, PendingKind.IDENTITY_CHANGE);
+    }
+
+    public void markIdentityPending(
+            int account,
+            long peerUserId,
+            String carrier,
+            int messageId,
+            PendingKind kind) {
         requirePeer(peerUserId);
-        if (carrier == null || carrier.isEmpty() || messageId <= 0) {
+        if (carrier == null || carrier.isEmpty() || messageId <= 0
+                || kind == null || kind == PendingKind.NONE) {
             throw new IllegalArgumentException("pending identity requires a carrier and message id");
         }
         int lastMessageId = Math.max(messageId, getLastPairingMessageId(account, peerUserId));
@@ -108,6 +145,7 @@ public final class SecureChatState {
                 .putBoolean(key(IDENTITY_PENDING_PREFIX, account, peerUserId), true)
                 .putString(key(PENDING_CARRIER_PREFIX, account, peerUserId), carrier)
                 .putInt(key(PENDING_MESSAGE_PREFIX, account, peerUserId), messageId)
+                .putInt(key(PENDING_KIND_PREFIX, account, peerUserId), kind.value)
                 .putInt(key(LAST_PAIRING_MESSAGE_PREFIX, account, peerUserId), lastMessageId)
                 .commit()) {
             throw new IllegalStateException("failed to persist pending secure identity");
@@ -138,6 +176,7 @@ public final class SecureChatState {
                 .remove(key(IDENTITY_PENDING_PREFIX, account, peerUserId))
                 .remove(key(PENDING_CARRIER_PREFIX, account, peerUserId))
                 .remove(key(PENDING_MESSAGE_PREFIX, account, peerUserId))
+                .remove(key(PENDING_KIND_PREFIX, account, peerUserId))
                 .putBoolean(key(PAIRED_PREFIX, account, peerUserId), true)
                 .putInt(key(LAST_PAIRING_MESSAGE_PREFIX, account, peerUserId),
                         Math.max(pendingMessageId, getLastPairingMessageId(account, peerUserId)))

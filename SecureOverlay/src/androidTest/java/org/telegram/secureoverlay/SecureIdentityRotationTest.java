@@ -99,6 +99,64 @@ public final class SecureIdentityRotationTest {
     }
 
     @Test
+    public void authenticatedRecoveryRequiresVerificationAndRejectsUnsafeOffers() {
+        Context context = ApplicationProvider.getApplicationContext();
+        SecureChatEngine.resetOwnIdentity(context);
+        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
+        IdentityKeyPair remoteIdentity = IdentityKeyPair.generate();
+        SecureRecoveryGenerationStore.Record generationFive =
+                new SecureRecoveryGenerationStore.Record(5, java.util.UUID.randomUUID());
+
+        assertEquals(
+                SecureChatEngine.PairingOfferResult.ACCEPTED_INITIAL,
+                engine.receivePairingOffer(
+                        pairingOffer(remoteIdentity, generationFive), 400));
+        assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
+        assertEquals(5, engine.getTrustedRecoveryGeneration());
+
+        SecureRecoveryGenerationStore.Record rollback =
+                new SecureRecoveryGenerationStore.Record(4, java.util.UUID.randomUUID());
+        assertEquals(
+                SecureChatEngine.PairingOfferResult.RECOVERY_REJECTED,
+                engine.receivePairingOffer(pairingOffer(remoteIdentity, rollback), 401));
+        assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
+        assertEquals(5, engine.getTrustedRecoveryGeneration());
+
+        SecureRecoveryGenerationStore.Record clone =
+                new SecureRecoveryGenerationStore.Record(5, java.util.UUID.randomUUID());
+        assertEquals(
+                SecureChatEngine.PairingOfferResult.RECOVERY_REJECTED,
+                engine.receivePairingOffer(pairingOffer(remoteIdentity, clone), 402));
+        assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
+        assertEquals(5, engine.getTrustedRecoveryGeneration());
+
+        assertEquals(
+                SecureChatEngine.PairingOfferResult.RECOVERY_REJECTED,
+                engine.receivePairingOffer(pairingOffer(remoteIdentity), 403));
+        assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
+        assertEquals(5, engine.getTrustedRecoveryGeneration());
+
+        SecureRecoveryGenerationStore.Record generationSix =
+                new SecureRecoveryGenerationStore.Record(6, java.util.UUID.randomUUID());
+        String recoveredOffer = pairingOffer(remoteIdentity, generationSix);
+        assertEquals(
+                SecureChatEngine.PairingOfferResult.RECOVERY_CHANGE_PENDING,
+                engine.receivePairingOffer(recoveredOffer, 404));
+        assertEquals(SecureChatEngine.Mode.RECOVERY_CHANGED, engine.getMode());
+        assertEquals(5, engine.getTrustedRecoveryGeneration());
+        assertEquals(6, engine.getPendingRecoveryGeneration());
+        assertEquals(generationSix.recoveryId.toString(), engine.getPendingRecoveryId());
+        assertEquals(
+                SecureChatEngine.PairingOfferResult.RECOVERY_CHANGE_PENDING,
+                engine.receivePairingOffer(recoveredOffer, 404));
+
+        engine.acceptPendingIdentity();
+        assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
+        assertEquals(6, engine.getTrustedRecoveryGeneration());
+    }
+
+    @Test
     public void encryptedAcknowledgementCompletesWaitingStateFromDialogPreview()
             throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
@@ -370,5 +428,33 @@ public final class SecureIdentityRotationTest {
         return SecureCarrierCodec.encode(
                 SecureCarrierCodec.TYPE_PREKEY_BUNDLE,
                 SecurePreKeyBundleCodec.encode(bundle));
+    }
+
+    private static String pairingOffer(
+            IdentityKeyPair identity,
+            SecureRecoveryGenerationStore.Record recovery) {
+        ECKeyPair preKey = ECKeyPair.generate();
+        ECKeyPair signedPreKey = ECKeyPair.generate();
+        byte[] signedSignature = identity.getPrivateKey()
+                .calculateSignature(signedPreKey.getPublicKey().serialize());
+        KEMKeyPair kyberPreKey = KEMKeyPair.generate(KEMKeyType.KYBER_1024);
+        byte[] kyberSignature = identity.getPrivateKey()
+                .calculateSignature(kyberPreKey.getPublicKey().serialize());
+        SecurePreKeyBundleCodec.PublicBundle bundle =
+                new SecurePreKeyBundleCodec.PublicBundle(
+                        ThreadLocalRandom.current().nextInt(1, 16380),
+                        1,
+                        preKey.getPublicKey().serialize(),
+                        2,
+                        signedPreKey.getPublicKey().serialize(),
+                        signedSignature,
+                        identity.getPublicKey().serialize(),
+                        3,
+                        kyberPreKey.getPublicKey().serialize(),
+                        kyberSignature);
+        return SecureCarrierCodec.encode(
+                SecureCarrierCodec.TYPE_PREKEY_BUNDLE,
+                SecurePreKeyBundleCodec.encodeRecoveryOffer(
+                        bundle, recovery, identity));
     }
 }

@@ -2242,7 +2242,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     currentAccount,
                     peer).getMode();
             return mode == SecureChatEngine.Mode.PROTECTED
-                    || mode == SecureChatEngine.Mode.IDENTITY_CHANGED;
+                    || mode == SecureChatEngine.Mode.IDENTITY_CHANGED
+                    || mode == SecureChatEngine.Mode.RECOVERY_CHANGED;
         } catch (RuntimeException error) {
             FileLog.e(error);
             // A storage failure must not silently turn a protected user chat
@@ -2285,7 +2286,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     ApplicationLoader.applicationContext,
                     accountInstance.getCurrentAccount(),
                     dialogId);
-            if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED) {
+            if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                    || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
                 showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
                 return true;
             }
@@ -2382,7 +2384,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     ApplicationLoader.applicationContext,
                     accountInstance.getCurrentAccount(),
                     dialogId);
-            if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED) {
+            if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                    || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
                 showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
                 return true;
             }

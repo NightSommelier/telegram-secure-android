@@ -45,6 +45,8 @@ public final class SecureChatStateTest {
         assertFalse(state.isWaiting(0, peer));
         assertFalse(state.isPaused(0, peer));
         assertTrue(state.isIdentityPending(0, peer));
+        assertTrue(state.getPendingKind(0, peer)
+                == SecureChatState.PendingKind.IDENTITY_CHANGE);
         assertTrue(state.getPendingMessageId(0, peer) == 101);
 
         state.rejectPendingIdentity(0, peer);
@@ -56,5 +58,16 @@ public final class SecureChatStateTest {
         assertTrue(state.isPaired(0, peer));
         assertFalse(state.isIdentityPending(0, peer));
         assertTrue(state.getLastPairingMessageId(0, peer) == 102);
+
+        state.markIdentityPending(
+                0,
+                peer,
+                "TGS1:test-recovery-bundle",
+                103,
+                SecureChatState.PendingKind.RECOVERY_ADVANCE);
+        assertTrue(state.getPendingKind(0, peer)
+                == SecureChatState.PendingKind.RECOVERY_ADVANCE);
+        state.rejectPendingIdentity(0, peer);
+        assertTrue(state.getPendingKind(0, peer) == SecureChatState.PendingKind.NONE);
     }
 }

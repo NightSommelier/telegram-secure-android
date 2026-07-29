@@ -7726,7 +7726,8 @@ public class ChatActivityEnterView extends FrameLayout implements
             try {
                 SecureChatEngine secureChat = getSecureChatEngine();
                 String entered = text.toString();
-                if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED) {
+                if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                        || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
                     if ("/secure-reject".equals(entered)
                             || "/secure-off".equals(entered)) {
                         text = secureChat.createPairingRejection();

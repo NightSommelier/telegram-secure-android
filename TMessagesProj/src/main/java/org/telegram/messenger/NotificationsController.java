@@ -1849,6 +1849,9 @@ public class NotificationsController extends BaseController implements Notificat
                 } else if (SecureChatEngine.isFileDisplay(result)) {
                     result = LocaleController.getString(
                             R.string.ForkSecureEncryptedFile);
+                } else {
+                    result = LocaleController.formatString(
+                            R.string.ForkSecureTextPreview, result);
                 }
             }
         } catch (RuntimeException error) {

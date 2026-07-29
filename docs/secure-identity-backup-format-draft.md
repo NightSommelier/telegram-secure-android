@@ -97,9 +97,12 @@ advance the local generation when the user explicitly resets their identity.
 They are not yet carried in pairing objects, so they do not provide peer-side
 clone detection until the authenticated wire-format revision is reviewed. A
 version-2 pairing codec is now implemented and tested: its identity signature
-covers the canonical pre-key bundle, generation and recovery ID. Production
-pairing remains on the legacy format until downgrade handling, atomic peer-state
-updates and the distinct recovery-verification UI are complete.
+covers the canonical pre-key bundle, generation and recovery ID. New pairing
+offers use this format. A higher generation pauses secure sending until the
+distinct recovery dialog is explicitly accepted; rollback, same-generation
+clone, and downgrade offers are rejected without replacing the trusted session.
+Legacy offers remain accepted only until a signed recovery record has been
+stored for that peer.
 
 ## Peer recovery protocol
 
