@@ -8,6 +8,78 @@ A future release MAY let a user export encrypted recovery material under a passw
 
 A password-only archive is an offline password-guessing target. The product MUST state that the password cannot be recovered and MUST NOT imply that a backup restores ciphertext the user no longer possesses.
 
+For this private MVP, recovery is now a planned post-text milestone. The first
+implementation candidate is an **identity-continuity backup**, not an automatic
+history backup:
+
+- export is initiated by the user and written through Android's document picker;
+- the archive is encrypted before leaving app-private storage;
+- restore keeps the long-lived Fork-Secure identity only after an explicit
+  fingerprint/account check;
+- every contact session is replaced by a fresh recovery/re-pair flow, rather
+  than restoring a stale ratchet snapshot;
+- restored contacts must be shown a recovery event and may require
+  re-verification according to the final protocol decision;
+- losing both the archive password and every active device is unrecoverable.
+
+The app must also continue to offer the safer alternative: reset to a new
+identity and re-verify contacts. Restoring the same identity on two active
+installations risks identity cloning, so simultaneous restore/multi-device use
+is blocked until a separately reviewed device-management protocol exists.
+
+## Current-state audit
+
+The app currently has three different recovery classes that must not be
+presented as one feature:
+
+| State | Current storage | Identity-only restore result |
+| --- | --- | --- |
+| Local identity and registration | Keystore-encrypted blob records | Identity fingerprint can remain stable |
+| Peer trust, ratchet sessions and pairing state | Keystore records plus `telegram_secure_chat_state_v1` | Not restored; each peer requires a fresh recovery/re-pair flow |
+| Decrypted text and attachment manifests | Keystore-encrypted local display/content records | Not restored; old carriers cannot simply be decrypted again after ratchet state was consumed |
+
+Decrypted media files are cache files and are also excluded from the
+identity-only archive. Therefore identity recovery preserves who the user is,
+but **does not preserve access to old message plaintext or attachments**. A
+future history archive would need separately reviewed encrypted display/content
+records, retention/deletion semantics and ciphertext availability guarantees.
+It must not serialize a live ratchet snapshot as a shortcut.
+
+The application manifest enables Android backup for Telegram's custom
+`BackupAgent`. That agent currently names only `saved_tokens` and
+`saved_tokens_login`; Fork-Secure preferences are not listed. This boundary
+still needs an automated manifest/backup regression test, because a future
+upstream backup configuration change must not silently include secure state.
+
+Before export/import implementation, local display/content records also need
+bounded retention and deletion hooks. Otherwise backup policy and Telegram
+message deletion would disagree about which plaintext remains recoverable on
+the device.
+
+## Delivery plan
+
+1. Decide and document the recovery threat model: lost phone, damaged app data,
+   voluntary migration, stolen archive, compromised active device and cloned
+   restore.
+2. Specify the identity-only archive and a fresh-session recovery handshake.
+   Do not serialize live ratchet/session objects into the first format.
+3. Produce deterministic format, wrong-password, tamper, rollback, account
+   mismatch and duplicate-device fixtures with two independent consumers.
+4. Implement test-only export/import around a synthetic protocol store, then
+   verify that no plaintext, preview cache, Telegram credential, log or draft
+   enters the archive.
+5. Add opt-in Android export/import UI, password confirmation, fingerprint
+   display, explicit overwrite/reset warnings and post-restore re-verification.
+6. Run reinstall, device-to-device, wrong-account, corrupted archive, old
+   archive and interrupted-write tests on physical phones.
+7. Enable it for the private MVP only after the separate recovery review and
+   implementation audit pass.
+
+Acceptance requires that a copied archive alone cannot be opened without its
+password, a restored archive cannot silently downgrade or clone a live secure
+identity, failed restore leaves existing state unchanged, and every successful
+restore produces a visible recovery/re-verification state for contacts.
+
 ## Required separate review specification
 
 Before implementation, a recovery specification MUST define:
