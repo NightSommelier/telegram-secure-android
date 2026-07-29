@@ -11189,7 +11189,7 @@
     <string name="ForkSecureEncryptedPhoto">🔒 Photo</string>
     <string name="ForkSecureAttachmentUnsupported">This attachment cannot be sent securely yet, or exceeds the 64 MB MVP limit</string>
     <string name="ForkSecureActionUnsupported">This action is not encrypted yet and was not sent.</string>
-    <string name="ForkSecureReactionUnsupported">Reactions are not encrypted yet and were not sent.</string>
+    <string name="ForkSecureReactionUnencrypted">The message is encrypted, but this Telegram reaction is not.</string>
     <string name="ForkSecureEphemeralPhotoUnsupported">Self-destructing photos are not securely supported yet and were not sent.</string>
     <string name="ForkSecureStickerFormatUnsupported">This sticker format is not supported by encrypted sending</string>
     <string name="ForkSecureStickerDownloadFirst">Sticker is downloading. Tap it again to send securely</string>
