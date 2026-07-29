@@ -2232,6 +2232,25 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 Toast.LENGTH_SHORT).show());
     }
 
+    private boolean isForkSecureProtectedPeer(long peer) {
+        if (!DialogObject.isUserDialog(peer)) {
+            return false;
+        }
+        try {
+            SecureChatEngine.Mode mode = new SecureChatEngine(
+                    ApplicationLoader.applicationContext,
+                    currentAccount,
+                    peer).getMode();
+            return mode == SecureChatEngine.Mode.PROTECTED
+                    || mode == SecureChatEngine.Mode.IDENTITY_CHANGED;
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            // A storage failure must not silently turn a protected user chat
+            // into an ordinary plaintext send path.
+            return true;
+        }
+    }
+
     private static boolean prepareForkSecureDocumentsIfNeeded(
             AccountInstance accountInstance,
             ArrayList<String> paths,
@@ -4056,6 +4075,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (fragment == null || fragment.getParentActivity() == null) {
             return 0;
         }
+        if (messageObject == null
+                || isForkSecureProtectedPeer(messageObject.getDialogId())) {
+            showForkSecureError(R.string.ForkSecureEditUnsupported);
+            return 0;
+        }
 
         final TLRPC.TL_messages_editMessage req = new TLRPC.TL_messages_editMessage();
         req.peer = getMessagesController().getInputPeer(messageObject.getDialogId());
@@ -4356,6 +4380,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (messageObject == null) {
             return 0;
         }
+        if (isForkSecureProtectedPeer(messageObject.getDialogId())) {
+            showForkSecureError(R.string.ForkSecureActionUnsupported);
+            if (finishRunnable != null) {
+                AndroidUtilities.runOnUIThread(finishRunnable);
+            }
+            return 0;
+        }
         final String key = "poll_" + messageObject.getPollId();
         if (waitingForCallback.containsKey(key)) {
             return 0;
@@ -4397,6 +4428,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
     public int toggleTodo(final long send_as, final MessageObject messageObject, final TLRPC.TodoItem task, final boolean enabled, final Runnable finishRunnable) {
         if (messageObject == null) {
+            return 0;
+        }
+        if (isForkSecureProtectedPeer(messageObject.getDialogId())) {
+            showForkSecureError(R.string.ForkSecureActionUnsupported);
+            if (finishRunnable != null) {
+                AndroidUtilities.runOnUIThread(finishRunnable);
+            }
             return 0;
         }
         int hash = Objects.hash(messageObject.getDialogId(), messageObject.getId(), task.id);
@@ -4444,6 +4482,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         Runnable callback
     ) {
         if (messageObject == null || parentFragment == null) {
+            return;
+        }
+        if (isForkSecureProtectedPeer(messageObject.getDialogId())) {
+            showForkSecureError(R.string.ForkSecureReactionUnsupported);
+            if (callback != null) {
+                AndroidUtilities.runOnUIThread(callback);
+            }
             return;
         }
         TLRPC.TL_messages_sendReaction req = new TLRPC.TL_messages_sendReaction();
@@ -4948,25 +4993,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 replyToTopMsg = null;
             }
         }
-        if (DialogObject.isUserDialog(peer)
-                && (document != null || photo != null)
-                && !SecureCarrierCodec.isMarked(caption)) {
-            try {
-                SecureChatEngine secureChat = new SecureChatEngine(
-                        ApplicationLoader.applicationContext,
-                        currentAccount,
-                        peer);
-                if (secureChat.getMode() == SecureChatEngine.Mode.PROTECTED
-                        || secureChat.getMode()
-                                == SecureChatEngine.Mode.IDENTITY_CHANGED) {
-                    showForkSecureError(R.string.ForkSecureAttachmentUnsupported);
-                    return;
-                }
-            } catch (RuntimeException error) {
-                FileLog.e(error);
-                showForkSecureError(R.string.ForkSecureSetupSendFailed);
-                return;
-            }
+        if (!forkSecureCarrier && isForkSecureProtectedPeer(peer)) {
+            showForkSecureError(R.string.ForkSecureActionUnsupported);
+            return;
         }
 
         long _payStars = getMessagesController().getSendPaidMessagesStars(peer);
