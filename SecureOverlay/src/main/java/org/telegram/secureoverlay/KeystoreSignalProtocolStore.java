@@ -7,7 +7,9 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.signal.libsignal.protocol.IdentityKey;
 import org.signal.libsignal.protocol.IdentityKeyPair;
@@ -145,6 +147,50 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
                     "kyber-used", "session", "sender");
         } catch (Exception e) {
             throw failure(e);
+        }
+    }
+
+    static boolean hasRemoteProtocolState(Context context) {
+        return new KeystoreEncryptedBlobStore(context.getApplicationContext())
+                .hasNameStartingWith("identity/", "session/", "sender/", "kyber-used/");
+    }
+
+    static void replaceIdentityForRecovery(
+            Context context,
+            byte[] serializedIdentity,
+            int registrationId,
+            Map<String, byte[]> transactionRecords) {
+        try {
+            IdentityKeyPair restored = new IdentityKeyPair(serializedIdentity);
+            if (registrationId <= 0 || registrationId > 16_380) {
+                throw new IllegalArgumentException("invalid recovered registration id");
+            }
+            Map<String, byte[]> replacements = new LinkedHashMap<>();
+            replacements.put(IDENTITY, restored.serialize());
+            replacements.put(
+                    REGISTRATION,
+                    ByteBuffer.allocate(4).putInt(registrationId).array());
+            if (transactionRecords != null) {
+                if (transactionRecords.containsKey(IDENTITY)
+                        || transactionRecords.containsKey(REGISTRATION)) {
+                    throw new IllegalArgumentException(
+                            "recovery transaction cannot override local identity records");
+                }
+                replacements.putAll(transactionRecords);
+            }
+            new KeystoreEncryptedBlobStore(context.getApplicationContext()).replaceRoots(
+                    replacements,
+                    IDENTITY,
+                    REGISTRATION,
+                    "prekey",
+                    "signed",
+                    "kyber",
+                    "index",
+                    "kyber-used",
+                    "session",
+                    "sender");
+        } catch (Exception error) {
+            throw failure(error);
         }
     }
 

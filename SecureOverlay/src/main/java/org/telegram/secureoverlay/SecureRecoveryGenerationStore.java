@@ -184,6 +184,13 @@ public final class SecureRecoveryGenerationStore {
         replaceVerifiedPeerAfterIdentityChange(account, peerUserId, previous);
     }
 
+    void replaceLocalAfterRecovery(Record restored) {
+        Objects.requireNonNull(restored, "restored recovery record");
+        synchronized (LOCK) {
+            write(localName(), restored);
+        }
+    }
+
     static Decision classify(Record current, Record offered) {
         Objects.requireNonNull(offered, "offered recovery record");
         if (current == null) {

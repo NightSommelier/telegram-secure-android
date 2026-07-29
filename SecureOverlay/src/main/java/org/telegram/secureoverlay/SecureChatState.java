@@ -76,6 +76,15 @@ public final class SecureChatState {
         return preferences.getLong(IDENTITY_EPOCH, 0);
     }
 
+    public boolean hasAnySecureConversationState() {
+        for (String name : preferences.getAll().keySet()) {
+            if (!IDENTITY_EPOCH.equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public void markWaiting(int account, long peerUserId) {
         requirePeer(peerUserId);
         if (!preferences.edit()
@@ -196,6 +205,16 @@ public final class SecureChatState {
         long nextEpoch = getIdentityEpoch() + 1;
         if (!preferences.edit().clear().putLong(IDENTITY_EPOCH, nextEpoch).commit()) {
             throw new IllegalStateException("failed to reset secure chat states");
+        }
+    }
+
+    void resetForRecoveredIdentity(long generation) {
+        if (generation <= 0) {
+            throw new IllegalArgumentException("recovered generation must be positive");
+        }
+        long epoch = generation - 1;
+        if (!preferences.edit().clear().putLong(IDENTITY_EPOCH, epoch).commit()) {
+            throw new IllegalStateException("failed to reset recovered secure chat states");
         }
     }
 

@@ -6,6 +6,9 @@ import static org.junit.Assert.assertNull;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.UUID;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -56,5 +59,30 @@ public final class KeystoreEncryptedBlobStoreTest {
         assertNull(store.get(second));
         assertArrayEquals(new byte[] {3}, store.get(retained));
         store.delete(retained);
+    }
+
+    @Test
+    public void replacesRootsAndWritesMarkerInOneTransaction() throws Exception {
+        KeystoreEncryptedBlobStore store =
+                new KeystoreEncryptedBlobStore(
+                        ApplicationProvider.getApplicationContext());
+        String root = "instrumentation-transaction-" + UUID.randomUUID();
+        String old = root + "/old";
+        String retained = root + "-retained";
+        String replacement = root + "/new";
+        String marker = root + "-marker";
+        store.put(old, new byte[] {1});
+        store.put(retained, new byte[] {2});
+
+        Map<String, byte[]> values = new LinkedHashMap<>();
+        values.put(replacement, new byte[] {3});
+        values.put(marker, new byte[] {4});
+        store.replaceRoots(values, root);
+
+        assertNull(store.get(old));
+        assertArrayEquals(new byte[] {2}, store.get(retained));
+        assertArrayEquals(new byte[] {3}, store.get(replacement));
+        assertArrayEquals(new byte[] {4}, store.get(marker));
+        store.deleteAll(retained, replacement, marker);
     }
 }

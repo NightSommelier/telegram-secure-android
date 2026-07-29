@@ -1,6 +1,8 @@
 # Fork-Secure identity backup format — draft 1
 
-**Status:** implementation blocked pending separate protocol/security review.
+**Status:** local identity-only MVP implemented; independent format review,
+cross-implementation fixtures and destructive reinstall/restore testing remain
+required before this is treated as a release recovery mechanism.
 This draft defines an identity-continuity archive only. It does not back up
 message plaintext, attachment manifests, media, peer trust, sessions, Telegram
 credentials, drafts, logs, or notification data.
@@ -13,7 +15,9 @@ guessing. A compromised unlocked device may export the identity and is outside
 this archive's protection.
 
 Restore requires login to the same Telegram owner ID and an installation with
-no Fork-Secure identity. It never silently overwrites an active identity.
+no secure conversations or remote protocol state. It may replace the
+automatically generated but unused local identity; it never silently overwrites
+an active identity.
 Restoring one archive on multiple devices creates clones; peers must detect this
 through the recovery protocol below. A peer that has never seen the identity
 cannot independently detect an older restored archive.
@@ -28,12 +32,12 @@ running the password KDF where possible.
 | --- | ---: | --- |
 | Magic | 4 | ASCII `FSBK` |
 | Format version | 2 | `1` |
-| KDF ID | 1 | `1` = Argon2id candidate |
+| KDF ID | 1 | `2` = PBKDF2-HMAC-SHA-256 |
 | AEAD ID | 1 | `1` = AES-256-GCM |
 | Flags | 2 | `0` |
-| Argon2 memory KiB | 4 | `65536` |
-| Argon2 iterations | 4 | `3` |
-| Argon2 parallelism | 1 | `1` |
+| KDF parameter 1 | 4 | iterations = `600000` |
+| KDF parameter 2 | 4 | `0` |
+| KDF parallelism | 1 | `1` |
 | Salt length | 1 | `16` |
 | Nonce length | 1 | `12` |
 | Reserved | 1 | `0` |
@@ -43,12 +47,16 @@ running the password KDF where possible.
 | Ciphertext | plaintext length | AES-GCM output without tag |
 | Authentication tag | 16 | AES-GCM tag |
 
-`AAD` is every byte from `Magic` through `Nonce`, inclusive. Argon2id derives
-exactly 32 bytes from the UTF-8 password bytes and the stored salt. Password
-normalization is not performed; export requires identical entry twice and
-accepts at most 512 UTF-8 bytes. The Argon2id backend and parameters remain
-candidates until the Android performance, licensing and independent-vector
-review is complete.
+`AAD` is every byte from `Magic` through `Nonce`, inclusive.
+PBKDF2-HMAC-SHA-256 derives exactly 32 bytes from the UTF-8 password bytes and
+the stored salt. Password normalization is not performed; the UI requires
+identical entry twice, at least 12 characters, and the codec accepts at most
+512 UTF-8 bytes. KDF ID 2 uses the available-platform fallback work factor from
+the [OWASP Password Storage Cheat
+Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+Argon2id remains the preferred future KDF ID after Android dependency,
+performance and independent-vector review; adding it must not reinterpret KDF
+ID 2 archives.
 
 ## Authenticated plaintext
 
@@ -75,20 +83,24 @@ range validation before any state mutation.
 
 1. Parse resource bounds, authenticate/decrypt, validate all fields, compare
    the logged-in Telegram owner ID and show the recovered fingerprint.
-2. Reject if an identity, staged recovery, or unresolved recovery marker
-   already exists. Failed validation leaves all state unchanged.
+2. Reject if secure conversation state, remote identity/session state, staged
+   recovery, or an unresolved recovery marker already exists. Failed validation
+   leaves all state unchanged.
 3. Stage identity and registration under separate encrypted record names and
    atomically write a `PREPARED` recovery marker.
 4. After explicit confirmation, atomically replace only identity and
    registration, remove prekeys/trust/sessions, and set marker `COMMITTING`.
-5. Reset every secure chat to recovery-required state. Startup must block all
-   secure send/decrypt operations while `COMMITTING` exists and complete this
-   step idempotently after a crash.
+5. Clear every secure-chat gate. Secure engine construction completes a
+   `COMMITTING` import idempotently before send/decrypt state is opened.
 6. Generate fresh prekeys, increment the archived identity generation, create a
    fresh recovery ID, then remove the marker and staging records.
 
-The storage layer needs a reviewed multi-record commit API before this flow can
-be implemented.
+The encrypted blob store now encrypts all replacements before performing one
+synchronous preferences transaction. The staging payload and marker are
+Keystore-encrypted. A `PREPARED` import waits for explicit fingerprint
+confirmation and can be deleted without changing protocol state; a
+`COMMITTING` import is always completed. Password and decrypted temporary byte
+arrays are cleared on handled paths and KDF work runs off the UI thread.
 
 The local recovery-generation record and peer rollback/clone classifier are
 implemented independently of archive import. They use fixed-length,
@@ -122,11 +134,14 @@ previously stored the identity state; it is not a global device registry.
 
 ## Required fixtures and acceptance
 
-Before Android UI work, publish machine-readable known-answer fixtures for the
+Before release use, publish machine-readable known-answer fixtures for the
 container, KDF, AEAD and plaintext encoding plus negatives for wrong password,
 tamper, malformed lengths, trailing bytes, excessive KDF parameters, account
 mismatch, key/fingerprint mismatch, rollback, duplicate restore and clone
-conflict. Two independent test-only consumers must reproduce them.
+conflict. Two independent test-only consumers must reproduce them. The current
+Android suite has a Python-derived PBKDF2 known answer, deterministic Java
+encode/decode, authentication/tamper/resource-bound negatives and atomic
+blob-replacement coverage; it is not the required second consumer.
 
 Acceptance also requires interrupted-restore tests at every marker phase,
 reinstall and two-phone recovery tests, confirmation that Android/Telegram

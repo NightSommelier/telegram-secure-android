@@ -88,6 +88,7 @@ public final class SecureChatEngine {
         this.account = account;
         this.peerUserId = peerUserId;
         Context appContext = context.getApplicationContext();
+        SecureIdentityBackupManager.resumeInterruptedImport(appContext);
         state = new SecureChatState(appContext);
         recoveryStore = new SecureRecoveryGenerationStore(appContext);
         recoveryStore.ensureLocalIdentity(generationForEpoch(state.getIdentityEpoch()));

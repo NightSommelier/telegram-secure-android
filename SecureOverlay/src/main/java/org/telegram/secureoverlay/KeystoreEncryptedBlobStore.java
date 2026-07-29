@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -45,6 +46,91 @@ public final class KeystoreEncryptedBlobStore {
         if (plaintext == null) {
             throw new IllegalArgumentException("plaintext is required");
         }
+        Map<String, byte[]> values = new LinkedHashMap<>();
+        values.put(name, plaintext);
+        putAll(values);
+    }
+
+    /** Encrypts and stores all supplied records in one synchronous preferences transaction. */
+    public synchronized void putAll(Map<String, byte[]> values) throws StateStoreException {
+        Map<String, String> encrypted = encryptAll(values);
+        SharedPreferences.Editor editor = preferences.edit();
+        for (Map.Entry<String, String> entry : encrypted.entrySet()) {
+            editor.putString(entry.getKey(), entry.getValue());
+        }
+        if (!editor.commit()) {
+            throw new StateStoreException("failed to commit encrypted state");
+        }
+    }
+
+    /**
+     * Deletes logical roots and writes replacements in one synchronous preferences transaction.
+     *
+     * <p>All replacement values are encrypted before the editor is created, so a crypto failure
+     * cannot leave a partially deleted protocol store.</p>
+     */
+    public synchronized void replaceRoots(
+            Map<String, byte[]> replacements, String... roots) throws StateStoreException {
+        if (roots == null || roots.length == 0) {
+            throw new IllegalArgumentException("secure state roots are required");
+        }
+        for (String root : roots) {
+            requireName(root);
+        }
+        Map<String, String> encrypted = encryptAll(replacements);
+        SharedPreferences.Editor editor = preferences.edit();
+        for (String name : preferences.getAll().keySet()) {
+            for (String root : roots) {
+                if (name.equals(root) || name.startsWith(root + "/")) {
+                    editor.remove(name);
+                    break;
+                }
+            }
+        }
+        for (Map.Entry<String, String> entry : encrypted.entrySet()) {
+            editor.putString(entry.getKey(), entry.getValue());
+        }
+        if (!editor.commit()) {
+            throw new StateStoreException("failed to replace encrypted state roots");
+        }
+    }
+
+    public synchronized boolean hasNameStartingWith(String... prefixes) {
+        if (prefixes == null || prefixes.length == 0) {
+            throw new IllegalArgumentException("secure state prefixes are required");
+        }
+        for (String prefix : prefixes) {
+            requireName(prefix);
+        }
+        for (String name : preferences.getAll().keySet()) {
+            for (String prefix : prefixes) {
+                if (name.startsWith(prefix)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static Map<String, String> encryptAll(
+            Map<String, byte[]> values) throws StateStoreException {
+        if (values == null || values.isEmpty()) {
+            throw new IllegalArgumentException("secure state values are required");
+        }
+        Map<String, String> encrypted = new LinkedHashMap<>();
+        for (Map.Entry<String, byte[]> entry : values.entrySet()) {
+            String name = entry.getKey();
+            byte[] plaintext = entry.getValue();
+            requireName(name);
+            if (plaintext == null) {
+                throw new IllegalArgumentException("plaintext is required");
+            }
+            encrypted.put(name, encrypt(name, plaintext));
+        }
+        return encrypted;
+    }
+
+    private static String encrypt(String name, byte[] plaintext) throws StateStoreException {
         try {
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             // Android Keystore requires randomized encryption and therefore generates the GCM IV.
@@ -60,9 +146,7 @@ public final class KeystoreEncryptedBlobStore {
             encoded[0] = FORMAT_VERSION;
             System.arraycopy(nonce, 0, encoded, 1, nonce.length);
             System.arraycopy(ciphertext, 0, encoded, 1 + nonce.length, ciphertext.length);
-            if (!preferences.edit().putString(name, Base64.encodeToString(encoded, Base64.NO_WRAP)).commit()) {
-                throw new StateStoreException("failed to commit encrypted state");
-            }
+            return Base64.encodeToString(encoded, Base64.NO_WRAP);
         } catch (GeneralSecurityException | IOException e) {
             throw new StateStoreException("failed to encrypt secure state", e);
         }
