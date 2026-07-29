@@ -1,0 +1,21 @@
+{
+  "spec_revision": 2,
+  "cases": [
+    {"id":"carrier-invalid-base64","input":"TGS1:!","expected_error":"MALFORMED_CARRIER","state_mutation":false},
+    {"id":"carrier-oversize","carrier_bytes":8193,"expected_error":"RESOURCE_LIMIT","state_mutation":false},
+    {"id":"decoded-oversize","decoded_bytes":6145,"expected_error":"RESOURCE_LIMIT","state_mutation":false},
+    {"id":"nested-bundle-oversize","nested_bytes":2049,"expected_error":"RESOURCE_LIMIT","state_mutation":false},
+    {"id":"cfs-duplicate","object_hex":"544753420101010002000102000100","expected_error":"NON_CANONICAL","state_mutation":false},
+    {"id":"cfs-descending","object_hex":"544753420101020001000101000100","expected_error":"NON_CANONICAL","state_mutation":false},
+    {"id":"cfs-trailing","object_hex":"544753420101ff","expected_error":"NON_CANONICAL","state_mutation":false},
+    {"id":"signature-bit-flip","mutation":"signature_last_bit","expected_error":"AUTH_FAILED","state_mutation":false},
+    {"id":"all-zero-dh","x25519_output_hex":"0000000000000000000000000000000000000000000000000000000000000000","expected_error":"AUTH_FAILED","state_mutation":false},
+    {"id":"expired-handshake","now":1700000701,"expected_error":"BUNDLE_INVALID","state_mutation":false},
+    {"id":"reused-handshake-id","expected_error":"REPLAY","state_mutation":false},
+    {"id":"confirmation-mismatch","mutation":"confirm_i_last_bit","expected_error":"AUTH_FAILED","state_mutation":false},
+    {"id":"envelope-tamper","mutation":"ciphertext_last_bit","expected_error":"AUTH_FAILED","state_mutation":false},
+    {"id":"replay","precondition":"authenticated envelope committed","expected_error":"REPLAY","state_mutation":false},
+    {"id":"out-of-order-gap","message_number":257,"receive_next":0,"expected_error":"OUT_OF_ORDER_LIMIT","state_mutation":false},
+    {"id":"marked-carrier-no-fallback","input":"TGS1:!","expected_error":"MALFORMED_CARRIER","plaintext_fallback":false,"state_mutation":false}
+  ]
+}
