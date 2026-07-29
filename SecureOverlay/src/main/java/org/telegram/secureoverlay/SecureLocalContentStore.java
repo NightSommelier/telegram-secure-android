@@ -7,8 +7,8 @@ import java.security.NoSuchAlgorithmException;
 
 /** Keystore-encrypted local cache for authenticated typed payload bytes. */
 final class SecureLocalContentStore {
-    private static final String OUTGOING_PREFIX = "outgoing-content.v1.";
-    private static final String INCOMING_PREFIX = "incoming-content.v1.";
+    static final String OUTGOING_PREFIX = "outgoing-content.v1.";
+    static final String INCOMING_PREFIX = "incoming-content.v1.";
 
     private final int account;
     private final long peerUserId;
@@ -48,7 +48,7 @@ final class SecureLocalContentStore {
         }
         // Parse before persistence so malformed typed content can never become trusted cache.
         SecureContentCodec.decode(content);
-        blobs.put(key(prefix, carrier), content);
+        blobs.put(key(prefix, account, peerUserId, carrier), content);
     }
 
     private byte[] load(String prefix, String carrier)
@@ -56,7 +56,7 @@ final class SecureLocalContentStore {
         if (!isEncryptedCarrier(carrier)) {
             return null;
         }
-        byte[] content = blobs.get(key(prefix, carrier));
+        byte[] content = blobs.get(key(prefix, account, peerUserId, carrier));
         if (content != null) {
             SecureContentCodec.decode(content);
         }
@@ -74,7 +74,7 @@ final class SecureLocalContentStore {
         return decoded != null && decoded.type != SecureCarrierCodec.TYPE_PREKEY_BUNDLE;
     }
 
-    private String key(String prefix, String carrier) {
+    static String key(String prefix, int account, long peerUserId, String carrier) {
         return prefix + account + '.' + peerUserId + '.' + sha256Hex(carrier);
     }
 

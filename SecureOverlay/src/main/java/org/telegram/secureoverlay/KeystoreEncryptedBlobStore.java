@@ -93,9 +93,45 @@ public final class KeystoreEncryptedBlobStore {
     }
 
     public synchronized void delete(String name) throws StateStoreException {
-        requireName(name);
-        if (!preferences.edit().remove(name).commit()) {
+        deleteAll(name);
+    }
+
+    /** Deletes exact logical records in one synchronous transaction. */
+    public synchronized void deleteAll(String... names) throws StateStoreException {
+        if (names == null || names.length == 0) {
+            throw new IllegalArgumentException("secure state names are required");
+        }
+        SharedPreferences.Editor editor = preferences.edit();
+        for (String name : names) {
+            requireName(name);
+            editor.remove(name);
+        }
+        if (!editor.commit()) {
             throw new StateStoreException("failed to delete encrypted state");
+        }
+    }
+
+    /** Deletes every logical record whose name starts with one of the supplied prefixes. */
+    public synchronized void deletePrefixes(String... prefixes) throws StateStoreException {
+        if (prefixes == null || prefixes.length == 0) {
+            throw new IllegalArgumentException("secure state prefixes are required");
+        }
+        for (String prefix : prefixes) {
+            requireName(prefix);
+        }
+        SharedPreferences.Editor editor = preferences.edit();
+        boolean changed = false;
+        for (String name : preferences.getAll().keySet()) {
+            for (String prefix : prefixes) {
+                if (name.startsWith(prefix)) {
+                    editor.remove(name);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if (changed && !editor.commit()) {
+            throw new StateStoreException("failed to delete encrypted state prefixes");
         }
     }
 

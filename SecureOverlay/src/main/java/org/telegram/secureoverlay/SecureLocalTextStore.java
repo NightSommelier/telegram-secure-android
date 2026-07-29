@@ -19,8 +19,8 @@ import java.util.Map;
  * copies avoid consuming the same ratchet message again when Telegram reloads chat history.</p>
  */
 final class SecureLocalTextStore {
-    private static final String OUTGOING_PREFIX = "outgoing-text.v1.";
-    private static final String INCOMING_PREFIX = "incoming-text.v1.";
+    static final String OUTGOING_PREFIX = "outgoing-text.v1.";
+    static final String INCOMING_PREFIX = "incoming-text.v1.";
     private static final int DISPLAY_CACHE_LIMIT = 512;
     private static final LinkedHashMap<String, String> displayCache =
             new LinkedHashMap<String, String>(DISPLAY_CACHE_LIMIT, 0.75f, true) {
@@ -72,7 +72,7 @@ final class SecureLocalTextStore {
         if (plaintext == null || plaintext.isEmpty()) {
             throw new IllegalArgumentException("local secure plaintext is empty");
         }
-        String storageKey = key(prefix, carrier);
+        String storageKey = key(prefix, account, peerUserId, carrier);
         blobs.put(storageKey, plaintext.getBytes(StandardCharsets.UTF_8));
         synchronized (displayCache) {
             displayCache.put(storageKey, plaintext);
@@ -85,7 +85,7 @@ final class SecureLocalTextStore {
         if (decoded == null || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
             return null;
         }
-        String storageKey = key(prefix, carrier);
+        String storageKey = key(prefix, account, peerUserId, carrier);
         synchronized (displayCache) {
             String cached = displayCache.get(storageKey);
             if (cached != null) {
@@ -107,8 +107,29 @@ final class SecureLocalTextStore {
         return displayText;
     }
 
-    private String key(String prefix, String carrier) {
+    static String key(String prefix, int account, long peerUserId, String carrier) {
         return prefix + account + '.' + peerUserId + '.' + sha256Hex(carrier);
+    }
+
+    static void evictDisplayCopies(String... storageKeys) {
+        synchronized (displayCache) {
+            for (String storageKey : storageKeys) {
+                displayCache.remove(storageKey);
+            }
+        }
+    }
+
+    static void evictDisplayPrefixes(String... prefixes) {
+        synchronized (displayCache) {
+            displayCache.keySet().removeIf(key -> {
+                for (String prefix : prefixes) {
+                    if (key.startsWith(prefix)) {
+                        return true;
+                    }
+                }
+                return false;
+            });
+        }
     }
 
     private static String sha256Hex(String value) {

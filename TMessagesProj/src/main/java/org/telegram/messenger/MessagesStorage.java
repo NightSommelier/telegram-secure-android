@@ -36,6 +36,8 @@ import org.telegram.SQLite.SQLiteException;
 import org.telegram.SQLite.SQLitePreparedStatement;
 import org.telegram.messenger.support.LongSparseIntArray;
 import org.telegram.messenger.utils.EphemeralMessagesHelper;
+import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureLocalMessageCache;
 import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.RequestDelegate;
 import org.telegram.tgnet.TLObject;
@@ -4430,6 +4432,10 @@ public class MessagesStorage extends BaseController {
                     deleteFromDownloadQueue(idsToDelete, true);
                     AndroidUtilities.runOnUIThread(() -> getFileLoader().cancelLoadFiles(namesToDelete));
                     getFileLoader().deleteFiles(filesToDelete, messagesOnly);
+                }
+
+                if (messagesOnly != 2) {
+                    forgetForkSecureDialogCache(did);
                 }
 
                 if (messagesOnly == 0 || messagesOnly == 3) {
@@ -14067,6 +14073,38 @@ public class MessagesStorage extends BaseController {
         AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.quickRepliesUpdated));
     }
 
+    private void forgetForkSecureLocalMessage(long dialogId, TLRPC.Message message) {
+        if (!DialogObject.isUserDialog(dialogId)
+                || message == null
+                || !SecureCarrierCodec.isMarked(message.message)) {
+            return;
+        }
+        try {
+            new SecureLocalMessageCache(
+                    ApplicationLoader.applicationContext,
+                    currentAccount,
+                    dialogId).forget(message.message);
+        } catch (Exception error) {
+            // Telegram's database delete must still complete. A failed local-cache commit is
+            // surfaced in logs and must never restore or resend the deleted carrier.
+            FileLog.e(error);
+        }
+    }
+
+    private void forgetForkSecureDialogCache(long dialogId) {
+        if (!DialogObject.isUserDialog(dialogId)) {
+            return;
+        }
+        try {
+            new SecureLocalMessageCache(
+                    ApplicationLoader.applicationContext,
+                    currentAccount,
+                    dialogId).forgetPeer();
+        } catch (Exception error) {
+            FileLog.e(error);
+        }
+    }
+
     private ArrayList<Long> markMessagesAsDeletedInternal(long dialogId, ArrayList<Integer> messages, boolean deleteFiles, int mode, int threadMessageId) {
         SQLiteCursor cursor = null;
         SQLitePreparedStatement state = null;
@@ -14113,12 +14151,21 @@ public class MessagesStorage extends BaseController {
 
                 ArrayList<Long> dialogsToUpdate = new ArrayList<>();
 
-                cursor = database.queryFinalized(String.format(Locale.US, "SELECT uid FROM scheduled_messages_v2 WHERE mid IN(%s) AND uid = %d", ids, dialogId));
+                cursor = database.queryFinalized(String.format(Locale.US, "SELECT uid, data FROM scheduled_messages_v2 WHERE mid IN(%s) AND uid = %d", ids, dialogId));
                 try {
                     while (cursor.next()) {
                         long did = cursor.longValue(0);
                         if (!dialogsToUpdate.contains(did)) {
                             dialogsToUpdate.add(did);
+                        }
+                        if (DialogObject.isUserDialog(did)) {
+                            NativeByteBuffer data = cursor.byteBufferValue(1);
+                            if (data != null) {
+                                TLRPC.Message message = TLRPC.Message.TLdeserialize(
+                                        data, data.readInt32(false), false);
+                                forgetForkSecureLocalMessage(did, message);
+                                data.reuse();
+                            }
                         }
                     }
                 } catch (Exception e) {
@@ -14180,13 +14227,21 @@ public class MessagesStorage extends BaseController {
                                 }
                             }
                         }
-                        if (!DialogObject.isEncryptedDialog(did) && !deleteFiles && did != currentUser) {
+                        boolean needsSecureCacheData = DialogObject.isUserDialog(did);
+                        boolean needsTelegramFileData =
+                                DialogObject.isEncryptedDialog(did)
+                                        || deleteFiles
+                                        || did == currentUser;
+                        if (!needsSecureCacheData && !needsTelegramFileData) {
                             continue;
                         }
                         NativeByteBuffer data = cursor.byteBufferValue(1);
                         if (data != null) {
                             TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
                             message.readAttachPath(data, currentUser);
+                            if (needsSecureCacheData) {
+                                forgetForkSecureLocalMessage(did, message);
+                            }
                             if (deletedMessages != null) {
                                 deletedMessages.add(message);
                             }

@@ -21,4 +21,40 @@ public final class KeystoreEncryptedBlobStoreTest {
         store.delete(name);
         assertNull(store.get(name));
     }
+
+    @Test
+    public void deletesMultipleRecordsTogether() throws Exception {
+        KeystoreEncryptedBlobStore store =
+                new KeystoreEncryptedBlobStore(
+                        ApplicationProvider.getApplicationContext());
+        String first = "instrumentation-delete-all-first";
+        String second = "instrumentation-delete-all-second";
+        store.put(first, new byte[] {1});
+        store.put(second, new byte[] {2});
+
+        store.deleteAll(first, second);
+
+        assertNull(store.get(first));
+        assertNull(store.get(second));
+    }
+
+    @Test
+    public void deletesOnlyMatchingPrefixes() throws Exception {
+        KeystoreEncryptedBlobStore store =
+                new KeystoreEncryptedBlobStore(
+                        ApplicationProvider.getApplicationContext());
+        String first = "instrumentation-prefix.one";
+        String second = "instrumentation-prefix.two";
+        String retained = "instrumentation-retained";
+        store.put(first, new byte[] {1});
+        store.put(second, new byte[] {2});
+        store.put(retained, new byte[] {3});
+
+        store.deletePrefixes("instrumentation-prefix.");
+
+        assertNull(store.get(first));
+        assertNull(store.get(second));
+        assertArrayEquals(new byte[] {3}, store.get(retained));
+        store.delete(retained);
+    }
 }
