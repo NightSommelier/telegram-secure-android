@@ -95,7 +95,11 @@ implemented independently of archive import. They use fixed-length,
 Keystore-encrypted records, never mutate peer trust during classification, and
 advance the local generation when the user explicitly resets their identity.
 They are not yet carried in pairing objects, so they do not provide peer-side
-clone detection until the authenticated wire-format revision is reviewed.
+clone detection until the authenticated wire-format revision is reviewed. A
+version-2 pairing codec is now implemented and tested: its identity signature
+covers the canonical pre-key bundle, generation and recovery ID. Production
+pairing remains on the legacy format until downgrade handling, atomic peer-state
+updates and the distinct recovery-verification UI are complete.
 
 ## Peer recovery protocol
 
