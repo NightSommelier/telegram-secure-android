@@ -47,9 +47,10 @@ It must not serialize a live ratchet snapshot as a shortcut.
 
 The application manifest enables Android backup for Telegram's custom
 `BackupAgent`. That agent currently names only `saved_tokens` and
-`saved_tokens_login`; Fork-Secure preferences are not listed. This boundary
-still needs an automated manifest/backup regression test, because a future
-upstream backup configuration change must not silently include secure state.
+`saved_tokens_login`; Fork-Secure preferences are not listed.
+`scripts/check-secure-backup-boundary.sh` enforces this exact allowlist from the
+local build preflight so an upstream backup-agent change cannot silently include
+secure state.
 
 Per-message and per-dialog deletion hooks now purge the matching encrypted
 display/content records. In-memory display text and decrypted/encrypted media

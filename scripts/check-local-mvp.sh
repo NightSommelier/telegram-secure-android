@@ -40,3 +40,5 @@ check "$(test -f "$project_dir/local.properties" && rg -q '^TELEGRAM_API_HASH=[0
 if (( missing )); then
     exit 1
 fi
+
+"$project_dir/scripts/check-secure-backup-boundary.sh"
