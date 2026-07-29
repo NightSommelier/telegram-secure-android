@@ -1,6 +1,7 @@
 package org.telegram.secureoverlay;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -69,5 +70,37 @@ public final class SecureChatStateTest {
                 == SecureChatState.PendingKind.RECOVERY_ADVANCE);
         state.rejectPendingIdentity(0, peer);
         assertTrue(state.getPendingKind(0, peer) == SecureChatState.PendingKind.NONE);
+    }
+
+    @Test
+    public void summaryCountsOnlyPrimaryStatesForRequestedAccount() {
+        SecureChatState state = new SecureChatState(ApplicationProvider.getApplicationContext());
+        int account = ThreadLocalRandom.current().nextInt(20, 2000);
+        long paired = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long waiting = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long paused = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long pending = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long otherAccount = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+
+        state.markPaired(account, paired);
+        state.recordPairingMessage(account, paired, 10);
+        state.markWaiting(account, waiting);
+        state.pause(account, paused);
+        state.markIdentityPending(
+                account,
+                pending,
+                "TGS1:test-summary",
+                11,
+                SecureChatState.PendingKind.RECOVERY_ADVANCE);
+        state.markPaired(account + 1, otherAccount);
+
+        SecureChatState.Summary summary = state.getSummary(account);
+        assertEquals(1, summary.paired);
+        assertEquals(1, summary.waiting);
+        assertEquals(1, summary.paused);
+        assertEquals(1, summary.identityPending);
+        assertEquals(4, summary.total());
+        assertEquals(1, state.getSummary(account + 1).total());
+        assertEquals(0, state.getSummary(account + 2).total());
     }
 }

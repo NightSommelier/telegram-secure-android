@@ -2,6 +2,7 @@ package org.telegram.secureoverlay;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import java.util.Map;
 
 /** Per-account, per-peer secure-mode gate. No message is encrypted unless paired. */
 public final class SecureChatState {
@@ -16,6 +17,24 @@ public final class SecureChatState {
     private static final String LAST_PAIRING_MESSAGE_PREFIX = "last-pairing-message.";
     private static final String IDENTITY_EPOCH = "identity-epoch";
     private final SharedPreferences preferences;
+
+    public static final class Summary {
+        public final int paired;
+        public final int waiting;
+        public final int paused;
+        public final int identityPending;
+
+        Summary(int paired, int waiting, int paused, int identityPending) {
+            this.paired = paired;
+            this.waiting = waiting;
+            this.paused = paused;
+            this.identityPending = identityPending;
+        }
+
+        public int total() {
+            return paired + waiting + paused + identityPending;
+        }
+    }
 
     public enum PendingKind {
         NONE(0),
@@ -83,6 +102,18 @@ public final class SecureChatState {
             }
         }
         return false;
+    }
+
+    public Summary getSummary(int account) {
+        if (account < 0) {
+            throw new IllegalArgumentException("account must not be negative");
+        }
+        String accountSuffix = account + ".";
+        int paired = countBooleanKeys(PAIRED_PREFIX + accountSuffix);
+        int waiting = countBooleanKeys(WAITING_PREFIX + accountSuffix);
+        int paused = countBooleanKeys(PAUSED_PREFIX + accountSuffix);
+        int identityPending = countBooleanKeys(IDENTITY_PENDING_PREFIX + accountSuffix);
+        return new Summary(paired, waiting, paused, identityPending);
     }
 
     public void markWaiting(int account, long peerUserId) {
@@ -222,6 +253,16 @@ public final class SecureChatState {
         if (peerUserId <= 0) {
             throw new IllegalArgumentException("secure chats require a user peer");
         }
+    }
+
+    private int countBooleanKeys(String prefix) {
+        int count = 0;
+        for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
+            if (entry.getKey().startsWith(prefix) && Boolean.TRUE.equals(entry.getValue())) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static String key(String prefix, int account, long peerUserId) {

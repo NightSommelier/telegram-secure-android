@@ -698,6 +698,17 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
         items.add(SettingCell.Factory.of(9, IconBackgroundColors.ORANGE_DEEP.top, IconBackgroundColors.ORANGE_DEEP.bottom, R.drawable.settings_power, getString(R.string.SettingsPowerSaving), getString(R.string.SettingsPowerSavingInfo)));
         items.add(SettingCell.Factory.of(10, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_language, getString(R.string.SettingsLanguage), LocaleController.getCurrentLanguageName()));
 
+        UItem forkSecureSettings = SettingCell.Factory.of(
+                24,
+                IconBackgroundColors.BLUE_ALT.top,
+                IconBackgroundColors.BLUE_ALT.bottom,
+                R.drawable.outline_shield_plain_24,
+                getString(R.string.ForkSecureSettingsTitle),
+                getString(R.string.ForkSecureSettingsSubtitle));
+        forkSecureSettings.intValue = 8;
+        forkSecureSettings.pad = 12;
+        items.add(forkSecureSettings);
+
         items.add(UItem.asShadow(null));
 
         if (!getMessagesController().premiumFeaturesBlocked()) {
@@ -835,6 +846,9 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
                 break;
             case 10:
                 presentSettingFragment(new LanguageSelectActivity());
+                break;
+            case 24:
+                presentSettingFragment(new ForkSecureSettingsActivity());
                 break;
 
             case 11:
@@ -1138,6 +1152,8 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
         private final TextView subtitleView;
         private final TextView valueView;
         private final boolean mini;
+        private int extraTopPadding;
+        private int extraBottomPadding;
 
         public SettingCell(Context context, Theme.ResourcesProvider resourcesProvider) {
             this(context, resourcesProvider, false);
@@ -1215,11 +1231,27 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
             valueView.setText(value);
         }
 
+        public void setExtraVerticalPadding(int top, int bottom) {
+            int topPadding = Math.max(0, top);
+            int bottomPadding = Math.max(0, bottom);
+            if (extraTopPadding == topPadding
+                    && extraBottomPadding == bottomPadding) {
+                return;
+            }
+            extraTopPadding = topPadding;
+            extraBottomPadding = bottomPadding;
+            setPadding(0, dp(extraTopPadding), 0, dp(extraBottomPadding));
+            requestLayout();
+        }
+
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
             super.onMeasure(
                 MeasureSpec.makeMeasureSpec(MeasureSpec.getSize(widthMeasureSpec), MeasureSpec.EXACTLY),
-                MeasureSpec.makeMeasureSpec(dp(mini ? 44 : twoLines ? 60 : 50), MeasureSpec.EXACTLY)
+                MeasureSpec.makeMeasureSpec(
+                        dp(mini ? 44 : twoLines ? 60 : 50)
+                                + dp(extraTopPadding + extraBottomPadding),
+                        MeasureSpec.EXACTLY)
             );
         }
 
@@ -1285,7 +1317,9 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
             public void bindView(View view, UItem item, boolean divider, UniversalAdapter adapter, UniversalRecyclerView listView) {
                 int iconColorTop    = (int) item.longValue;
                 int iconColorBottom = (int) (item.longValue >>> 32);
-                ((SettingCell) view).set(
+                SettingCell cell = (SettingCell) view;
+                cell.setExtraVerticalPadding(item.intValue, item.pad);
+                cell.set(
                     iconColorTop, iconColorBottom, item.iconResId,
                     item.text,
                     item.subtext,

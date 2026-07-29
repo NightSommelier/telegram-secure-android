@@ -189,7 +189,6 @@ import org.telegram.messenger.VideoEditedInfo;
 import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.secureoverlay.SecureContentCodec;
-import org.telegram.secureoverlay.SecureIdentityBackupManager;
 import org.telegram.secureoverlay.SecureMediaCache;
 import org.telegram.secureoverlay.SecureMediaCrypto;
 import org.telegram.messenger.browser.Browser;
@@ -334,13 +333,11 @@ import org.telegram.ui.iv.RichHtml;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -444,10 +441,6 @@ public class ChatActivity extends BaseFragment implements
     private ActionBarMenuItem.Item timeItem2;
     private ActionBarMenuItem secureModeItem;
     private SecureChatEngine secureChatEngine;
-    private static final int FORK_SECURE_BACKUP_EXPORT_REQUEST = 8941;
-    private static final int FORK_SECURE_BACKUP_IMPORT_REQUEST = 8942;
-    private static final int FORK_SECURE_BACKUP_MAX_BYTES = 8192;
-    private byte[] pendingForkSecureBackupArchive;
     private boolean forkSecureSuppressedWebPageSearch;
     private final HashSet<Integer> forkSecureDeferredMessages = new HashSet<>();
     private final HashSet<String> forkSecureMediaPreparing = new HashSet<>();
@@ -3350,7 +3343,6 @@ public class ChatActivity extends BaseFragment implements
     @Override
     public void onFragmentDestroy() {
         super.onFragmentDestroy();
-        clearPendingForkSecureBackupArchive();
         if (messageMetricsView != null) {
             messageMetricsView.finish();
         }
@@ -20355,20 +20347,6 @@ public class ChatActivity extends BaseFragment implements
 
     @Override
     public void onActivityResultFragment(int requestCode, int resultCode, Intent data) {
-        if (requestCode == FORK_SECURE_BACKUP_EXPORT_REQUEST) {
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
-                writeForkSecureBackup(data.getData());
-            } else {
-                clearPendingForkSecureBackupArchive();
-            }
-            return;
-        }
-        if (requestCode == FORK_SECURE_BACKUP_IMPORT_REQUEST) {
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
-                handleForkSecureImportUri(data.getData());
-            }
-            return;
-        }
         if (resultCode == Activity.RESULT_OK) {
             if (requestCode == 0 || requestCode == 2) {
                 createChatAttachView();
@@ -21885,406 +21863,10 @@ public class ChatActivity extends BaseFragment implements
                         confirmSecureIdentityReset())
                 .setNegativeButton(getString(R.string.Close), null)
                 .setNeutralButton(getString(R.string.ForkSecureBackupAndRestore),
-                        (di, which) -> showForkSecureBackupMenu())
+                        (di, which) -> presentFragment(
+                                new ForkSecureSettingsActivity()))
                 .create();
         showDialog(dialog);
-    }
-
-    private void showForkSecureBackupMenu() {
-        if (getContext() == null) {
-            return;
-        }
-        try {
-            SecureIdentityBackupManager.PreparedImport prepared =
-                    SecureIdentityBackupManager.getPreparedImport(getContext());
-            if (prepared != null) {
-                showPreparedForkSecureImportDialog(prepared);
-                return;
-            }
-        } catch (RuntimeException error) {
-            FileLog.e(error);
-            showForkSecureBackupError(R.string.ForkSecureBackupStateFailed);
-            return;
-        }
-        new AlertDialog.Builder(getContext(), getResourceProvider())
-                .setTitle(getString(R.string.ForkSecureBackupAndRestore))
-                .setItems(new CharSequence[] {
-                        getString(R.string.ForkSecureExportBackup),
-                        getString(R.string.ForkSecureImportBackup)
-                }, (dialog, which) -> {
-                    if (which == 0) {
-                        showForkSecureExportPasswordDialog();
-                    } else {
-                        openForkSecureImportPicker();
-                    }
-                })
-                .setNegativeButton(getString(R.string.Cancel), null)
-                .show();
-    }
-
-    private void showForkSecureExportPasswordDialog() {
-        showForkSecurePasswordDialog(true, password -> {
-            final Context context = getContext();
-            final long ownerUserId = getUserConfig().getClientUserId();
-            if (context == null || ownerUserId <= 0) {
-                Arrays.fill(password, '\0');
-                showForkSecureBackupError(R.string.ForkSecureBackupStateFailed);
-                return;
-            }
-            BulletinFactory.of(this)
-                    .createSimpleBulletin(
-                            R.raw.chats_infotip,
-                            getString(R.string.ForkSecurePreparingBackup))
-                    .show();
-            Utilities.globalQueue.postRunnable(() -> {
-                byte[] archive = null;
-                RuntimeException failure = null;
-                try {
-                    archive = SecureIdentityBackupManager.exportArchive(
-                            context, ownerUserId, password);
-                } catch (RuntimeException error) {
-                    failure = error;
-                } finally {
-                    Arrays.fill(password, '\0');
-                }
-                final byte[] result = archive;
-                final RuntimeException error = failure;
-                AndroidUtilities.runOnUIThread(() -> {
-                    if (error != null) {
-                        FileLog.e(error);
-                        showForkSecureBackupError(R.string.ForkSecureBackupExportFailed);
-                        return;
-                    }
-                    clearPendingForkSecureBackupArchive();
-                    pendingForkSecureBackupArchive = result;
-                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                    intent.addCategory(Intent.CATEGORY_OPENABLE);
-                    intent.setType("application/octet-stream");
-                    intent.putExtra(Intent.EXTRA_TITLE, "fork-secure-identity.fsbk");
-                    startActivityForResult(intent, FORK_SECURE_BACKUP_EXPORT_REQUEST);
-                });
-            });
-        });
-    }
-
-    private void openForkSecureImportPicker() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("application/octet-stream");
-        startActivityForResult(intent, FORK_SECURE_BACKUP_IMPORT_REQUEST);
-    }
-
-    private void showForkSecurePasswordDialog(
-            boolean confirmPassword, ForkSecurePasswordCallback callback) {
-        showForkSecurePasswordDialog(confirmPassword, callback, null);
-    }
-
-    private void showForkSecurePasswordDialog(
-            boolean confirmPassword,
-            ForkSecurePasswordCallback callback,
-            Runnable onCancel) {
-        if (getContext() == null) {
-            if (onCancel != null) {
-                onCancel.run();
-            }
-            return;
-        }
-        LinearLayout content = new LinearLayout(getContext());
-        content.setOrientation(LinearLayout.VERTICAL);
-        int horizontal = AndroidUtilities.dp(24);
-        content.setPadding(horizontal, 0, horizontal, 0);
-        EditText first = createForkSecurePasswordField(
-                getString(R.string.ForkSecureBackupPassword));
-        content.addView(first, LayoutHelper.createLinear(
-                LayoutHelper.MATCH_PARENT, 48));
-        EditText second = null;
-        if (confirmPassword) {
-            second = createForkSecurePasswordField(
-                    getString(R.string.ForkSecureBackupPasswordAgain));
-            content.addView(second, LayoutHelper.createLinear(
-                    LayoutHelper.MATCH_PARENT, 48, 0, 8, 0, 0));
-        }
-        final EditText confirmation = second;
-        AlertDialog dialog = new AlertDialog.Builder(getContext(), getResourceProvider())
-                .setTitle(getString(confirmPassword
-                        ? R.string.ForkSecureExportBackup
-                        : R.string.ForkSecureImportBackup))
-                .setMessage(getString(R.string.ForkSecureBackupPasswordHint))
-                .setView(content)
-                .setPositiveButton(getString(R.string.Continue), null)
-                .setNegativeButton(getString(R.string.Cancel), (ignored, which) -> {
-                    if (onCancel != null) {
-                        onCancel.run();
-                    }
-                })
-                .create();
-        dialog.setOnCancelListener(ignored -> {
-            if (onCancel != null) {
-                onCancel.run();
-            }
-        });
-        dialog.setOnShowListener(ignored -> dialog.getButton(
-                DialogInterface.BUTTON_POSITIVE).setOnClickListener(view -> {
-            char[] password = first.getText().toString().toCharArray();
-            char[] repeated = confirmation == null
-                    ? null
-                    : confirmation.getText().toString().toCharArray();
-            boolean valid = password.length >= 12
-                    && (repeated == null || Arrays.equals(password, repeated));
-            if (repeated != null) {
-                Arrays.fill(repeated, '\0');
-            }
-            first.getText().clear();
-            if (confirmation != null) {
-                confirmation.getText().clear();
-            }
-            if (!valid) {
-                Arrays.fill(password, '\0');
-                BulletinFactory.of(this)
-                        .createErrorBulletin(getString(
-                                R.string.ForkSecureBackupPasswordInvalid))
-                        .show();
-                return;
-            }
-            dialog.dismiss();
-            callback.onPassword(password);
-        }));
-        showDialog(dialog);
-    }
-
-    private EditText createForkSecurePasswordField(String hint) {
-        EditText field = new EditText(getContext());
-        field.setHint(hint);
-        field.setSingleLine(true);
-        field.setSaveEnabled(false);
-        field.setInputType(InputType.TYPE_CLASS_TEXT
-                | InputType.TYPE_TEXT_VARIATION_PASSWORD
-                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
-        }
-        return field;
-    }
-
-    private void handleForkSecureImportUri(Uri uri) {
-        final Context context = getContext();
-        if (context == null || uri == null) {
-            showForkSecureBackupError(R.string.ForkSecureBackupImportFailed);
-            return;
-        }
-        Utilities.globalQueue.postRunnable(() -> {
-            byte[] archive = null;
-            RuntimeException failure = null;
-            try (InputStream input = context.getContentResolver().openInputStream(uri)) {
-                if (input == null) {
-                    throw new IllegalStateException("identity backup input is unavailable");
-                }
-                ByteArrayOutputStream output = new ByteArrayOutputStream();
-                byte[] buffer = new byte[2048];
-                int total = 0;
-                int read;
-                while ((read = input.read(buffer)) != -1) {
-                    total += read;
-                    if (total > FORK_SECURE_BACKUP_MAX_BYTES) {
-                        throw new IllegalArgumentException("identity backup is too large");
-                    }
-                    output.write(buffer, 0, read);
-                }
-                archive = output.toByteArray();
-            } catch (Exception error) {
-                failure = error instanceof RuntimeException
-                        ? (RuntimeException) error
-                        : new IllegalStateException("cannot read identity backup", error);
-            }
-            final byte[] result = archive;
-            final RuntimeException error = failure;
-            AndroidUtilities.runOnUIThread(() -> {
-                if (error != null) {
-                    FileLog.e(error);
-                    showForkSecureBackupError(R.string.ForkSecureBackupImportFailed);
-                    return;
-                }
-                showForkSecurePasswordDialog(
-                        false,
-                        password -> prepareForkSecureImport(result, password),
-                        () -> Arrays.fill(result, (byte) 0));
-            });
-        });
-    }
-
-    private void prepareForkSecureImport(byte[] archive, char[] password) {
-        final Context context = getContext();
-        final long ownerUserId = getUserConfig().getClientUserId();
-        if (context == null || ownerUserId <= 0) {
-            Arrays.fill(password, '\0');
-            Arrays.fill(archive, (byte) 0);
-            showForkSecureBackupError(R.string.ForkSecureBackupImportFailed);
-            return;
-        }
-        BulletinFactory.of(this)
-                .createSimpleBulletin(
-                        R.raw.chats_infotip,
-                        getString(R.string.ForkSecureCheckingBackup))
-                .show();
-        Utilities.globalQueue.postRunnable(() -> {
-            SecureIdentityBackupManager.PreparedImport prepared = null;
-            RuntimeException failure = null;
-            try {
-                prepared = SecureIdentityBackupManager.prepareImport(
-                        context, ownerUserId, archive, password);
-            } catch (RuntimeException error) {
-                failure = error;
-            } finally {
-                Arrays.fill(password, '\0');
-                Arrays.fill(archive, (byte) 0);
-            }
-            final SecureIdentityBackupManager.PreparedImport result = prepared;
-            final RuntimeException error = failure;
-            AndroidUtilities.runOnUIThread(() -> {
-                if (error != null) {
-                    FileLog.e(error);
-                    showForkSecureBackupError(R.string.ForkSecureBackupImportFailed);
-                } else {
-                    showPreparedForkSecureImportDialog(result);
-                }
-            });
-        });
-    }
-
-    private void showPreparedForkSecureImportDialog(
-            SecureIdentityBackupManager.PreparedImport prepared) {
-        if (getContext() == null || prepared == null) {
-            return;
-        }
-        AlertDialog dialog = new AlertDialog.Builder(getContext(), getResourceProvider())
-                .setTitle(getString(R.string.ForkSecureConfirmRestoreTitle))
-                .setMessage(formatString(
-                        R.string.ForkSecureConfirmRestoreBody,
-                        prepared.fingerprint,
-                        prepared.archivedGeneration,
-                        prepared.restoredGeneration))
-                .setPositiveButton(getString(R.string.ForkSecureRestoreIdentity),
-                        (ignored, which) -> commitForkSecureImport())
-                .setNegativeButton(getString(R.string.ForkSecureCancelRestore),
-                        (ignored, which) -> cancelForkSecureImport())
-                .setNeutralButton(getString(R.string.ForkSecureRestoreLater), null)
-                .create();
-        showDialog(dialog);
-    }
-
-    private void commitForkSecureImport() {
-        final Context context = getContext();
-        if (context == null) {
-            return;
-        }
-        Utilities.globalQueue.postRunnable(() -> {
-            SecureIdentityBackupManager.PreparedImport restored = null;
-            RuntimeException failure = null;
-            try {
-                restored = SecureIdentityBackupManager.commitPreparedImport(context);
-            } catch (RuntimeException error) {
-                failure = error;
-            }
-            final SecureIdentityBackupManager.PreparedImport result = restored;
-            final RuntimeException error = failure;
-            AndroidUtilities.runOnUIThread(() -> {
-                if (error != null) {
-                    FileLog.e(error);
-                    showForkSecureBackupError(R.string.ForkSecureBackupRestoreFailed);
-                    return;
-                }
-                secureChatEngine = null;
-                boolean sent = chatActivityEnterView != null
-                        && chatActivityEnterView.processSendingText(
-                                "/secure-start", false, 0, 0, 0);
-                updateSecureModeUi();
-                showDialog(new AlertDialog.Builder(getContext(), getResourceProvider())
-                        .setTitle(getString(R.string.ForkSecureRestoreCompleteTitle))
-                        .setMessage(formatString(
-                                sent
-                                        ? R.string.ForkSecureRestoreCompleteSent
-                                        : R.string.ForkSecureRestoreComplete,
-                                result.fingerprint))
-                        .setPositiveButton(getString(R.string.OK), null)
-                        .create());
-            });
-        });
-    }
-
-    private void cancelForkSecureImport() {
-        final Context context = getContext();
-        if (context == null) {
-            return;
-        }
-        Utilities.globalQueue.postRunnable(() -> {
-            try {
-                SecureIdentityBackupManager.cancelPreparedImport(context);
-            } catch (RuntimeException error) {
-                FileLog.e(error);
-                AndroidUtilities.runOnUIThread(() ->
-                        showForkSecureBackupError(R.string.ForkSecureBackupStateFailed));
-            }
-        });
-    }
-
-    private void writeForkSecureBackup(Uri uri) {
-        final Context context = getContext();
-        final byte[] archive = pendingForkSecureBackupArchive;
-        pendingForkSecureBackupArchive = null;
-        if (context == null || uri == null || archive == null) {
-            if (archive != null) {
-                Arrays.fill(archive, (byte) 0);
-            }
-            showForkSecureBackupError(R.string.ForkSecureBackupExportFailed);
-            return;
-        }
-        Utilities.globalQueue.postRunnable(() -> {
-            RuntimeException failure = null;
-            try (OutputStream output = context.getContentResolver().openOutputStream(
-                    uri, "w")) {
-                if (output == null) {
-                    throw new IllegalStateException("identity backup output is unavailable");
-                }
-                output.write(archive);
-                output.flush();
-            } catch (Exception error) {
-                failure = error instanceof RuntimeException
-                        ? (RuntimeException) error
-                        : new IllegalStateException("cannot write identity backup", error);
-            } finally {
-                Arrays.fill(archive, (byte) 0);
-            }
-            final RuntimeException error = failure;
-            AndroidUtilities.runOnUIThread(() -> {
-                if (error != null) {
-                    FileLog.e(error);
-                    showForkSecureBackupError(R.string.ForkSecureBackupExportFailed);
-                } else {
-                    BulletinFactory.of(this)
-                            .createSimpleBulletin(
-                                    R.raw.chats_infotip,
-                                    getString(R.string.ForkSecureBackupSaved))
-                            .show();
-                }
-            });
-        });
-    }
-
-    private void clearPendingForkSecureBackupArchive() {
-        if (pendingForkSecureBackupArchive != null) {
-            Arrays.fill(pendingForkSecureBackupArchive, (byte) 0);
-            pendingForkSecureBackupArchive = null;
-        }
-    }
-
-    private void showForkSecureBackupError(int stringId) {
-        BulletinFactory.of(this)
-                .createErrorBulletin(getString(stringId))
-                .show();
-    }
-
-    private interface ForkSecurePasswordCallback {
-        void onPassword(char[] password);
     }
 
     private void confirmSecureIdentityReset() {

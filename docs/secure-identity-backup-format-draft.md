@@ -106,15 +106,20 @@ The local recovery-generation record and peer rollback/clone classifier are
 implemented independently of archive import. They use fixed-length,
 Keystore-encrypted records, never mutate peer trust during classification, and
 advance the local generation when the user explicitly resets their identity.
-They are not yet carried in pairing objects, so they do not provide peer-side
-clone detection until the authenticated wire-format revision is reviewed. A
-version-2 pairing codec is now implemented and tested: its identity signature
+A version-2 pairing codec carries that metadata and its identity signature
 covers the canonical pre-key bundle, generation and recovery ID. New pairing
 offers use this format. A higher generation pauses secure sending until the
 distinct recovery dialog is explicitly accepted; rollback, same-generation
 clone, and downgrade offers are rejected without replacing the trusted session.
 Legacy offers remain accepted only until a signed recovery record has been
 stored for that peer.
+
+The Android UI exposes the global identity, generation, current per-account
+secure-state counts, encrypted export, staged restore and identity reset under
+`Settings > Fork-Secure`. The same screen explicitly states that the archive
+does not contain a chat/session roster. After restore, all secure gates are
+cleared and each contact must be paired and verified again; “restore all chats”
+is not claimed.
 
 ## Peer recovery protocol
 
@@ -147,3 +152,19 @@ Acceptance also requires interrupted-restore tests at every marker phase,
 reinstall and two-phone recovery tests, confirmation that Android/Telegram
 backup excludes all Fork-Secure preferences, and proof that temporary plaintext
 and password buffers are not persisted or logged.
+
+## Planned automatic recovery archive
+
+The identity-only `FSBK` archive cannot restore access to historical protected
+messages or attachments. A separate, opt-in automatic archive revision must
+therefore cover the identity plus the minimum ratchet/session records and
+message/media content-key records required by the local encrypted stores. It
+must not upload plaintext messages, decrypted media, passwords, Telegram
+credentials, or raw Keystore wrapping keys.
+
+Before implementation, define and test snapshot consistency, incremental
+versioning, deletion/retention, rollback and clone handling, password/key
+rotation, archive-size limits, interrupted upload/restore, and recovery on a
+clean installation. Automatic Android backup remains excluded. Any future
+provider such as Google Drive receives only an already authenticated encrypted
+archive and must be replaceable by a local-file or other storage backend.

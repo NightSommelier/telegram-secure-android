@@ -11232,6 +11232,20 @@
     <string name="ForkSecureOwnIdentityBody">Your fingerprint:\n%1$s\n\nLong-lived identity for this app installation. Reset it only after a suspected key or device compromise. Every secure chat will be disabled and contacts must verify you again.</string>
     <string name="ForkSecureResetIdentity">Reset identity…</string>
     <string name="ForkSecureBackupAndRestore">Backup or restore</string>
+    <string name="ForkSecureSettingsTitle">Fork-Secure</string>
+    <string name="ForkSecureSettingsSubtitle">Protected identity, backup, and recovery</string>
+    <string name="ForkSecureIdentitySection">Protected identity</string>
+    <string name="ForkSecureFingerprint">Fingerprint</string>
+    <string name="ForkSecureRecoveryGeneration">Recovery generation</string>
+    <string name="ForkSecureChatsSection">Protected chats on this account</string>
+    <string name="ForkSecureProtectedCount">Protected</string>
+    <string name="ForkSecureWaitingCount">Waiting for pairing</string>
+    <string name="ForkSecureVerificationCount">Verification required</string>
+    <string name="ForkSecurePausedCount">Paused</string>
+    <string name="ForkSecureChatsInfo">These are local Fork-Secure states for this Telegram account. After restoring an identity, open each contact and start pairing again.</string>
+    <string name="ForkSecureBackupScope">One encrypted file backs up the global Fork-Secure identity for this Telegram account. It does not include Telegram history, decrypted media, contact trust, or ratchet sessions. Restoring all chats at once is therefore not possible yet; every contact must be paired and verified again.</string>
+    <string name="ForkSecureContinueRestore">Continue prepared restore</string>
+    <string name="ForkSecureDangerZone">Identity reset</string>
     <string name="ForkSecureExportBackup">Export encrypted backup</string>
     <string name="ForkSecureImportBackup">Restore from backup</string>
     <string name="ForkSecureBackupPassword">Backup password</string>
@@ -11253,12 +11267,14 @@
     <string name="ForkSecureRestoreCompleteTitle">Identity restored</string>
     <string name="ForkSecureRestoreComplete">Recovered fingerprint:\n%1$s\n\nTap the shield to send a new pairing offer.</string>
     <string name="ForkSecureRestoreCompleteSent">Recovered fingerprint:\n%1$s\n\nA new pairing offer was sent. The contact must verify the recovery before encrypted messaging resumes.</string>
+    <string name="ForkSecureRestoreCompleteGlobal">Recovered fingerprint:\n%1$s\n\nThe global identity is restored. Open each protected contact and send a new pairing offer; the contact must verify it before encrypted messaging resumes.</string>
     <string name="ForkSecureResetAllTitle">Reset all Fork-Secure sessions?</string>
     <string name="ForkSecureResetAllBody">This destroys your current secure identity and all ratchet sessions on this installation. Telegram chats are not deleted. Old messages already copied by an attacker cannot be revoked.</string>
     <string name="ForkSecureResetAndCreate">Reset and create new key</string>
     <string name="ForkSecureNewIdentityTitle">New Fork-Secure identity</string>
     <string name="ForkSecureNewIdentityCreatedSent">New identity created and pairing offer sent.\n\n</string>
     <string name="ForkSecureNewIdentityCreatedTap">New identity created. Tap the shield to send a pairing offer.\n\n</string>
+    <string name="ForkSecureNewIdentityCreatedGlobal">A new global identity was created. Every previous protected chat is disabled; open each contact and pair again.\n\nNew fingerprint:\n%1$s</string>
     <string name="ForkSecureNewFingerprint">New fingerprint:\n%1$s</string>
     <string name="ForkSecureIdentityResetFailed">Fork-Secure identity reset failed</string>
 </resources>

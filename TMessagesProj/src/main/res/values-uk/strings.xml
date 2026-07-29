@@ -340,6 +340,20 @@
     <string name="ForkSecureOwnIdentityBody">Ваш відбиток:\n%1$s\n\nДовготривала ідентичність цього встановлення. Скидайте її лише за підозри компрометації ключа або пристрою. Усі захищені чати буде вимкнено, а контакти мають перевірити вас повторно.</string>
     <string name="ForkSecureResetIdentity">Скинути ідентичність…</string>
     <string name="ForkSecureBackupAndRestore">Резервна копія або відновлення</string>
+    <string name="ForkSecureSettingsTitle">Fork-Secure</string>
+    <string name="ForkSecureSettingsSubtitle">Захищена ідентичність, копія та відновлення</string>
+    <string name="ForkSecureIdentitySection">Захищена ідентичність</string>
+    <string name="ForkSecureFingerprint">Відбиток</string>
+    <string name="ForkSecureRecoveryGeneration">Покоління відновлення</string>
+    <string name="ForkSecureChatsSection">Захищені чати цього акаунта</string>
+    <string name="ForkSecureProtectedCount">Захищено</string>
+    <string name="ForkSecureWaitingCount">Очікують спарювання</string>
+    <string name="ForkSecureVerificationCount">Потрібна перевірка</string>
+    <string name="ForkSecurePausedCount">Призупинено</string>
+    <string name="ForkSecureChatsInfo">Це локальні стани Fork-Secure для цього акаунта Telegram. Після відновлення ідентичності відкрийте кожен контакт і почніть спарювання знову.</string>
+    <string name="ForkSecureBackupScope">Один зашифрований файл резервує глобальну ідентичність Fork-Secure цього акаунта Telegram. Він не містить історію Telegram, розшифровані медіа, довіру до контактів або ratchet-сеанси. Тому відновити всі чати одразу поки неможливо: кожен контакт потрібно спарити й перевірити повторно.</string>
+    <string name="ForkSecureContinueRestore">Продовжити підготовлене відновлення</string>
+    <string name="ForkSecureDangerZone">Скидання ідентичності</string>
     <string name="ForkSecureExportBackup">Експортувати зашифровану копію</string>
     <string name="ForkSecureImportBackup">Відновити з резервної копії</string>
     <string name="ForkSecureBackupPassword">Пароль резервної копії</string>
@@ -361,12 +375,14 @@
     <string name="ForkSecureRestoreCompleteTitle">Ідентичність відновлено</string>
     <string name="ForkSecureRestoreComplete">Відновлений відбиток:\n%1$s\n\nНатисніть щит, щоб надіслати нову пропозицію захищеного з’єднання.</string>
     <string name="ForkSecureRestoreCompleteSent">Відновлений відбиток:\n%1$s\n\nНову пропозицію надіслано. Контакт має перевірити відновлення, перш ніж захищене спілкування продовжиться.</string>
+    <string name="ForkSecureRestoreCompleteGlobal">Відновлений відбиток:\n%1$s\n\nГлобальну ідентичність відновлено. Відкрийте кожен захищений контакт і надішліть нову пропозицію спарювання; контакт має перевірити її до відновлення захищеного спілкування.</string>
     <string name="ForkSecureResetAllTitle">Скинути всі сеанси Fork-Secure?</string>
     <string name="ForkSecureResetAllBody">Це знищить поточну захищену ідентичність і всі ratchet-сеанси цього встановлення. Чати Telegram не видаляються. Уже скопійовані зловмисником старі повідомлення відкликати неможливо.</string>
     <string name="ForkSecureResetAndCreate">Скинути й створити новий ключ</string>
     <string name="ForkSecureNewIdentityTitle">Нова ідентичність Fork-Secure</string>
     <string name="ForkSecureNewIdentityCreatedSent">Нову ідентичність створено, пропозицію з’єднання надіслано.\n\n</string>
     <string name="ForkSecureNewIdentityCreatedTap">Нову ідентичність створено. Натисніть щит, щоб надіслати пропозицію з’єднання.\n\n</string>
+    <string name="ForkSecureNewIdentityCreatedGlobal">Нову глобальну ідентичність створено. Усі попередні захищені чати вимкнено; відкрийте кожен контакт і виконайте спарювання знову.\n\nНовий відбиток:\n%1$s</string>
     <string name="ForkSecureNewFingerprint">Новий відбиток:\n%1$s</string>
     <string name="ForkSecureIdentityResetFailed">Не вдалося скинути ідентичність Fork-Secure</string>
 </resources>

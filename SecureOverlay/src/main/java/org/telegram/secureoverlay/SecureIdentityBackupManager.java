@@ -53,6 +53,39 @@ public final class SecureIdentityBackupManager {
         }
     }
 
+    public static final class IdentityInfo {
+        public final long generation;
+        public final String fingerprint;
+
+        IdentityInfo(long generation, String fingerprint) {
+            this.generation = generation;
+            this.fingerprint = fingerprint;
+        }
+    }
+
+    public static IdentityInfo getIdentityInfo(Context context) {
+        if (context == null) {
+            throw new IllegalArgumentException("context is required");
+        }
+        Context appContext = context.getApplicationContext();
+        synchronized (LOCK) {
+            resumeInterruptedImport(appContext);
+            SecureChatState chatState = new SecureChatState(appContext);
+            SecureRecoveryGenerationStore.Record recovery =
+                    new SecureRecoveryGenerationStore(appContext).ensureLocalIdentity(
+                            generationForEpoch(chatState.getIdentityEpoch()));
+            byte[] serializedIdentity = new KeystoreSignalProtocolStore(appContext)
+                    .getIdentityKeyPair()
+                    .serialize();
+            try {
+                return new IdentityInfo(
+                        recovery.generation, fingerprint(serializedIdentity));
+            } finally {
+                Arrays.fill(serializedIdentity, (byte) 0);
+            }
+        }
+    }
+
     public static byte[] exportArchive(
             Context context, long ownerUserId, char[] password) {
         if (context == null || ownerUserId <= 0) {
