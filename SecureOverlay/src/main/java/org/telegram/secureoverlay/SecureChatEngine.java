@@ -83,13 +83,16 @@ public final class SecureChatEngine {
         if (account < 0 || peerUserId <= 0) throw new IllegalArgumentException("secure chats require an account and user peer");
         this.account = account;
         this.peerUserId = peerUserId;
-        store = new KeystoreSignalProtocolStore(context.getApplicationContext());
+        Context appContext = context.getApplicationContext();
+        state = new SecureChatState(appContext);
+        new SecureRecoveryGenerationStore(appContext)
+                .ensureLocalIdentity(generationForEpoch(state.getIdentityEpoch()));
+        store = new KeystoreSignalProtocolStore(appContext);
         peerAddress = new SignalProtocolAddress("telegram-user-" + peerUserId, 1);
         sessions = new LibsignalSessionAdapter(store, new SignalProtocolAddress("local-account-" + account, 1));
-        state = new SecureChatState(context.getApplicationContext());
-        localText = new SecureLocalTextStore(context.getApplicationContext(), account, peerUserId);
+        localText = new SecureLocalTextStore(appContext, account, peerUserId);
         localContent =
-                new SecureLocalContentStore(context.getApplicationContext(), account, peerUserId);
+                new SecureLocalContentStore(appContext, account, peerUserId);
         identityEpoch = state.getIdentityEpoch();
     }
 
@@ -754,9 +757,19 @@ public final class SecureChatEngine {
     public static String resetOwnIdentity(Context context) {
         Context appContext = context.getApplicationContext();
         KeystoreSignalProtocolStore.resetProtocolState(appContext);
-        new SecureChatState(appContext).resetForNewIdentity();
+        SecureChatState chatState = new SecureChatState(appContext);
+        chatState.resetForNewIdentity();
+        new SecureRecoveryGenerationStore(appContext)
+                .advanceLocalIdentity(generationForEpoch(chatState.getIdentityEpoch()));
         return fingerprint(new KeystoreSignalProtocolStore(appContext)
                 .getIdentityKeyPair().getPublicKey().serialize());
+    }
+
+    private static long generationForEpoch(long identityEpoch) {
+        if (identityEpoch < 0 || identityEpoch == Long.MAX_VALUE) {
+            throw new SecureChatException("invalid secure identity epoch", null);
+        }
+        return identityEpoch + 1;
     }
 
     private void requireCurrentIdentity() {

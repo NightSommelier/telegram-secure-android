@@ -76,6 +76,9 @@ public final class SecureIdentityRotationTest {
     public void ownIdentityResetInvalidatesEnginesAndDestroysSessions() {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
+        SecureRecoveryGenerationStore recovery =
+                new SecureRecoveryGenerationStore(context);
+        SecureRecoveryGenerationStore.Record oldRecovery = recovery.getLocalIdentity();
         long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
         SecureChatEngine oldEngine = new SecureChatEngine(context, 0, peer);
         String oldFingerprint = oldEngine.getOwnFingerprint();
@@ -85,6 +88,9 @@ public final class SecureIdentityRotationTest {
         String newFingerprint = SecureChatEngine.resetOwnIdentity(context);
         assertNotEquals(oldFingerprint, newFingerprint);
         assertTrue(oldEngine.isStale());
+        SecureRecoveryGenerationStore.Record newRecovery = recovery.getLocalIdentity();
+        assertTrue(newRecovery.generation > oldRecovery.generation);
+        assertNotEquals(oldRecovery.recoveryId, newRecovery.recoveryId);
 
         SecureChatEngine newEngine = new SecureChatEngine(context, 0, peer);
         assertEquals(newFingerprint, newEngine.getOwnFingerprint());

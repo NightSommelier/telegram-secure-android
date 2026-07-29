@@ -90,6 +90,13 @@ range validation before any state mutation.
 The storage layer needs a reviewed multi-record commit API before this flow can
 be implemented.
 
+The local recovery-generation record and peer rollback/clone classifier are
+implemented independently of archive import. They use fixed-length,
+Keystore-encrypted records, never mutate peer trust during classification, and
+advance the local generation when the user explicitly resets their identity.
+They are not yet carried in pairing objects, so they do not provide peer-side
+clone detection until the authenticated wire-format revision is reviewed.
+
 ## Peer recovery protocol
 
 The next pairing object must authenticate `identity_generation` and a random
