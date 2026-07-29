@@ -22,7 +22,7 @@ java_major=""
 if command -v java >/dev/null 2>&1; then
     java_major=$(java -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -n 1)
 fi
-check "$(test "$java_major" = 17 && printf yes)" "Java 17 on PATH"
+check "$(test "$java_major" = 21 && printf yes)" "Java 21 on PATH"
 check "$(command -v adb)" "adb on PATH"
 check "${sdk_dir:+yes}" "Android SDK path (ANDROID_SDK_ROOT, ANDROID_HOME, or local.properties)"
 

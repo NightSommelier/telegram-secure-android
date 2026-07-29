@@ -4,6 +4,13 @@ apply plugin: 'kotlin-android'
 repositories {
     google()
     mavenCentral()
+    maven { url 'https://build-artifacts.signal.org/libraries/maven/' }
+}
+
+configurations {
+    libsignalClientInput {
+        transitive = false
+    }
 }
 
 android {
@@ -11,20 +18,66 @@ android {
     compileSdkVersion 35
 
     defaultConfig {
-        minSdkVersion 21
+        minSdkVersion 23
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
+        coreLibraryDesugaringEnabled true
     }
 
     kotlinOptions {
         jvmTarget = '1.8'
     }
+
+    buildTypes {
+        // Telegram's app/library graph has a release-equivalent "standalone"
+        // variant. Publish the overlay for that graph without changing its code.
+        standalone {
+            initWith release
+        }
+    }
+}
+
+def prepareLibsignalClient = tasks.register('prepareLibsignalClient', Jar) {
+    archiveFileName = 'libsignal-client-0.86.6-overlay.jar'
+    destinationDirectory = layout.buildDirectory.dir('generated/libsignal')
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from({
+        zipTree(configurations.libsignalClientInput.singleFile)
+    })
+
+    // Telegram does not use Signal's service/network layer. Removing it also
+    // removes Java Record bytecode that AGP cannot dex in this application
+    // graph. The two other excluded Record APIs are unrelated to the 1:1
+    // protocol adapter. Keep this allow-by-exclusion transform deterministic
+    // and covered by the SecureOverlay device tests.
+    exclude 'org/signal/libsignal/net/**'
+    exclude 'org/signal/libsignal/protocol/SignedPublicPreKey.class'
+    exclude 'org/signal/libsignal/zkgroup/groupsend/GroupSendEndorsementsResponse*.class'
 }
 
 dependencies {
-    // Intentionally no dependency on TMessagesProj or transport code.
-    // The integration adapter is added only after protocol review approval.
+    // The protocol implementation stays isolated from TMessagesProj and its
+    // transport.  The app adapter is intentionally not added in this change.
+    implementation('org.signal:libsignal-android:0.86.6') {
+        // The Telegram fork currently builds Kotlin with 1.9.20.  The
+        // libsignal public protocol API used by the adapter is Java-facing;
+        // keep the host application's Kotlin/coroutines graph unchanged.
+        exclude group: 'org.jetbrains.kotlin'
+        exclude group: 'org.jetbrains.kotlinx'
+        exclude group: 'org.signal', module: 'libsignal-client'
+    }
+    libsignalClientInput 'org.signal:libsignal-client:0.86.6'
+    implementation files(prepareLibsignalClient)
+
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test:core:1.6.1'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 }

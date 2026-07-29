@@ -103,6 +103,9 @@
 # Don't warn about checkerframework and Kotlin annotations
 -dontwarn org.checkerframework.**
 -dontwarn javax.annotation.**
+# The MVP's local libsignal-client JAR removes this Java Record from the
+# unrelated username/network API. SecureOverlay uses only the 1:1 protocol API.
+-dontwarn org.signal.libsignal.net.LookUpUsernameLinkFailure
 
 -keep class io.nano.tex.** {*;}
 

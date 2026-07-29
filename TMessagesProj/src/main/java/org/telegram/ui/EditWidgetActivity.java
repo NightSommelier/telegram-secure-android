@@ -417,7 +417,9 @@ public class EditWidgetActivity extends BaseFragment {
                                         FileLog.e(e);
                                     }
                                 } else if (message.messageOwner.message != null) {
-                                    String mess = message.messageOwner.message;
+                                    String mess = message.isForkSecureCarrier()
+                                            ? message.messageText.toString()
+                                            : message.messageOwner.message;
                                     if (mess.length() > 150) {
                                         mess = mess.substring(0, 150);
                                     }

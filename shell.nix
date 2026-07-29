@@ -19,12 +19,12 @@ let
 in
 pkgs.mkShell {
   packages = [
-    pkgs.jdk17
+    pkgs.jdk21
     androidSdk
   ];
 
   shellHook = ''
-    export JAVA_HOME=${pkgs.jdk17}
+    export JAVA_HOME=${pkgs.jdk21}
     export ANDROID_HOME=${androidSdk}/libexec/android-sdk
     export ANDROID_SDK_ROOT="$ANDROID_HOME"
     export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"

@@ -69,6 +69,8 @@ import com.google.common.collect.Lists;
 import org.telegram.messenger.support.LongSparseIntArray;
 import org.telegram.messenger.utils.tlutils.TlUtils;
 import org.telegram.messenger.voip.VoIPGroupNotification;
+import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_account;
@@ -1796,6 +1798,72 @@ public class NotificationsController extends BaseController implements Notificat
         NotificationBadge.applyCount(count);
     }
 
+    /**
+     * Resolves Fork-Secure text before Android notification rendering. Marked failures never fall
+     * back to the Telegram carrier, and pairing offers remain display-only.
+     */
+    private String resolveForkSecureNotificationText(MessageObject messageObject) {
+        if (messageObject == null
+                || messageObject.messageOwner == null
+                || !SecureCarrierCodec.isMarked(messageObject.messageOwner.message)) {
+            return null;
+        }
+        long peerId = messageObject.getDialogId();
+        if (!DialogObject.isUserDialog(peerId)
+                || peerId == getUserConfig().getClientUserId()) {
+            return LocaleController.getString(R.string.ForkSecureMessageFailed);
+        }
+        if (SecureChatEngine.isStateTemporarilyUnavailable(
+                ApplicationLoader.applicationContext)) {
+            return LocaleController.getString(R.string.ForkSecureReplyPreview);
+        }
+        String result;
+        try {
+            SecureCarrierCodec.Decoded decoded =
+                    SecureCarrierCodec.decode(messageObject.messageOwner.message);
+            if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+                result = LocaleController.getString(messageObject.isOutOwner()
+                        ? R.string.ForkSecurePairingOfferSent
+                        : R.string.ForkSecurePairingOfferReceived);
+            } else {
+                SecureChatEngine secureChat = new SecureChatEngine(
+                        ApplicationLoader.applicationContext, currentAccount, peerId);
+                result = messageObject.isOutOwner()
+                        ? secureChat.getOutgoingText(messageObject.messageOwner.message)
+                        : secureChat.decryptText(messageObject.messageOwner.message);
+                if (result == null) {
+                    result = LocaleController.getString(
+                            R.string.ForkSecureOutgoingUnavailable);
+                } else if (SecureChatEngine.isPairingAcknowledgementDisplay(result)) {
+                    result = LocaleController.getString(
+                            R.string.ForkSecurePairingConfirmed);
+                } else if (SecureChatEngine.isPairingRejectionDisplay(result)) {
+                    result = LocaleController.getString(
+                            R.string.ForkSecurePairingRejected);
+                } else if (SecureChatEngine.isStaticStickerDisplay(result)) {
+                    result = LocaleController.getString(
+                            R.string.ForkSecureEncryptedSticker);
+                } else if (SecureChatEngine.isPhotoDisplay(result)) {
+                    result = LocaleController.getString(
+                            R.string.ForkSecureEncryptedPhoto);
+                } else if (SecureChatEngine.isFileDisplay(result)) {
+                    result = LocaleController.getString(
+                            R.string.ForkSecureEncryptedFile);
+                }
+            }
+        } catch (RuntimeException error) {
+            if (SecureChatEngine.isStateTemporarilyUnavailable(
+                    ApplicationLoader.applicationContext)) {
+                result = LocaleController.getString(R.string.ForkSecureReplyPreview);
+            } else {
+                FileLog.e(error);
+                result = LocaleController.getString(R.string.ForkSecureMessageFailed);
+            }
+        }
+        messageObject.messageText = result;
+        return result;
+    }
+
     public String getShortStringForMessage(MessageObject messageObject, String[] userName, boolean[] preview) {
         if (AndroidUtilities.needShowPasscode() || SharedConfig.isWaitingForPasscodeEnter) {
             return LocaleController.getString(R.string.NotificationHiddenMessage);
@@ -1835,6 +1903,10 @@ public class NotificationsController extends BaseController implements Notificat
                         return LocaleController.formatString(R.string.NotificationMessageGroupNoText, messageObject.localUserName, messageObject.localName);
                     }
                 }
+            }
+            String secureText = resolveForkSecureNotificationText(messageObject);
+            if (secureText != null) {
+                return secureText;
             }
             return replaceSpoilers(messageObject);
         }
@@ -1919,6 +1991,10 @@ public class NotificationsController extends BaseController implements Notificat
                 return messageObject.messageText.toString();
             }
             if (dialogPreviewEnabled && (chat_id == 0 && fromId != 0 && preferences.getBoolean("EnablePreviewAll", true) || chat_id != 0 && (!isChannel && preferences.getBoolean("EnablePreviewGroup", true) || isChannel && preferences.getBoolean("EnablePreviewChannel", true)))) {
+                String secureText = resolveForkSecureNotificationText(messageObject);
+                if (secureText != null) {
+                    return secureText;
+                }
                 if (messageObject.messageOwner instanceof TLRPC.TL_messageService) {
                     userName[0] = null;
                     if (messageObject.messageOwner.action instanceof TLRPC.TL_messageActionSetSameChatWallPaper) {
@@ -2521,6 +2597,11 @@ public class NotificationsController extends BaseController implements Notificat
                     }
                 }
             }
+            String secureText = resolveForkSecureNotificationText(messageObject);
+            if (secureText != null) {
+                text[0] = true;
+                return secureText;
+            }
             text[0] = true;
             return (String) messageObject.messageText;
         }
@@ -2582,6 +2663,12 @@ public class NotificationsController extends BaseController implements Notificat
         } else {
             if (chatId == 0 && fromId != 0) {
                 if (dialogPreviewEnabled && preferences.getBoolean("EnablePreviewAll", true)) {
+                    String secureText = resolveForkSecureNotificationText(messageObject);
+                    if (secureText != null) {
+                        text[0] = true;
+                        return LocaleController.formatString(
+                                R.string.NotificationMessageText, name, secureText);
+                    }
                     if (messageObject.messageOwner instanceof TLRPC.TL_messageService) {
                         if (messageObject.messageOwner.action instanceof TLRPC.TL_messageActionChangeCreator ||
                             messageObject.messageOwner.action instanceof TLRPC.TL_messageActionNewCreatorPending) {

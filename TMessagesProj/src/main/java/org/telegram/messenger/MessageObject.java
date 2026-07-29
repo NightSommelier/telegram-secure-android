@@ -54,6 +54,7 @@ import org.telegram.messenger.browser.Browser;
 import org.telegram.messenger.ringtone.RingtoneDataStore;
 import org.telegram.messenger.utils.tlutils.AmountUtils;
 import org.telegram.messenger.utils.tlutils.TlUtils;
+import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.SerializedData;
 import org.telegram.tgnet.TLObject;
@@ -126,6 +127,9 @@ import java.util.regex.Pattern;
 import me.vkryl.core.BitwiseUtils;
 
 public class MessageObject {
+    private static final int FORK_SECURE_MEDIA_UI_CACHE_LIMIT = 256;
+    private static final HashMap<String, ForkSecureMediaUiState>
+            forkSecureMediaUiCache = new HashMap<>();
     private static final int MESSAGE_ID_RESERVED_BITS_MASK = 0x70000000;
     private static final int MESSAGE_ID_EPHEMERAL_BITS_MASK = 0x60000000;
 
@@ -196,9 +200,213 @@ public class MessageObject {
     public CharSequence messageText;
     public CharSequence messageTextShort;
     public CharSequence messageTextForReply;
+    /** In-memory UI proof set only after Fork-Secure verified or locally matched this carrier. */
+    public boolean forkSecureVerified;
+    /** Local-only verified text for a nested Fork-Secure reply/quote preview. */
+    public CharSequence forkSecureReplyText;
+    /** Local-only authenticated plaintext media path; never serialized into Telegram storage. */
+    public String forkSecureMediaPath;
+    /** Local-only Telegram ciphertext path retained while plaintext media is prepared. */
+    public String forkSecureCipherPath;
+    /** Authenticated local-only dimensions; Telegram's opaque document remains unchanged. */
+    public int forkSecureMediaWidth;
+    public int forkSecureMediaHeight;
+    public static final int FORK_SECURE_MEDIA_KIND_NONE = 0;
+    public static final int FORK_SECURE_MEDIA_KIND_STICKER = 1;
+    public static final int FORK_SECURE_MEDIA_KIND_FILE = 2;
+    public static final int FORK_SECURE_MEDIA_KIND_PHOTO = 3;
+    public int forkSecureMediaKind;
+    public String forkSecureMediaName;
+    public String forkSecureMediaMime;
+    public String forkSecureMediaCaption;
+    /** Hides opaque transport metadata while authenticated media is prepared in background. */
+    public boolean forkSecureMediaPending;
     public CharSequence linkDescription;
     public CharSequence caption;
     public CharSequence quizExplanation;
+
+    /**
+     * Returns whether this ordinary one-to-one Telegram message carries Fork-Secure data.
+     *
+     * <p>Native Telegram Secret Chats use their own message classes and remain outside this
+     * overlay.</p>
+     */
+    public boolean isForkSecureCarrier() {
+        return messageOwner != null
+                && !(messageOwner instanceof TLRPC.TL_message_secret)
+                && !(messageOwner instanceof TLRPC.TL_message_secret_layer72)
+                && messageOwner.peer_id != null
+                && messageOwner.peer_id.user_id != 0
+                && SecureCarrierCodec.isMarked(messageOwner.message);
+    }
+
+    public void markForkSecureMediaPending(int width, int height) {
+        markForkSecureMediaPending(
+                FORK_SECURE_MEDIA_KIND_STICKER,
+                width,
+                height,
+                null,
+                null,
+                null);
+    }
+
+    public void markForkSecureMediaPending(
+            int kind,
+            int width,
+            int height,
+            String name,
+            String mime,
+            String caption) {
+        if (!isForkSecureCarrier()) {
+            return;
+        }
+        synchronized (forkSecureMediaUiCache) {
+            ForkSecureMediaUiState existing =
+                    forkSecureMediaUiCache.get(messageOwner.message);
+            if (existing != null
+                    && !TextUtils.isEmpty(existing.path)
+                    && new File(existing.path).isFile()) {
+                applyForkSecureMediaUiState(existing);
+                return;
+            }
+            putForkSecureMediaUiState(
+                    messageOwner.message,
+                    new ForkSecureMediaUiState(
+                            null, kind, width, height, name, mime, caption, true));
+        }
+        forkSecureMediaPending = true;
+        forkSecureMediaKind = kind;
+        forkSecureMediaName = name;
+        forkSecureMediaMime = mime;
+        forkSecureMediaCaption = caption;
+        if (width > 0 && height > 0) {
+            forkSecureMediaWidth = width;
+            forkSecureMediaHeight = height;
+        }
+    }
+
+    public void markForkSecureMediaReady(String path, int width, int height) {
+        markForkSecureMediaReady(
+                path,
+                FORK_SECURE_MEDIA_KIND_STICKER,
+                width,
+                height,
+                null,
+                null,
+                null);
+    }
+
+    public void markForkSecureMediaReady(
+            String path,
+            int kind,
+            int width,
+            int height,
+            String name,
+            String mime,
+            String caption) {
+        if (!isForkSecureCarrier() || TextUtils.isEmpty(path)) {
+            return;
+        }
+        ForkSecureMediaUiState state =
+                new ForkSecureMediaUiState(
+                        path, kind, width, height, name, mime, caption, false);
+        synchronized (forkSecureMediaUiCache) {
+            putForkSecureMediaUiState(messageOwner.message, state);
+        }
+        applyForkSecureMediaUiState(state);
+    }
+
+    /**
+     * Restores a process-local media result that was already authenticated for this exact carrier.
+     *
+     * <p>The caller must still keep the Telegram document opaque. A missing or evicted file
+     * returns {@code false} so the secure layer performs its normal persistent-state lookup.</p>
+     */
+    public boolean restoreReadyForkSecureMedia() {
+        syncForkSecureMediaUiState();
+        return !TextUtils.isEmpty(forkSecureMediaPath)
+                && new File(forkSecureMediaPath).isFile();
+    }
+
+    private void syncForkSecureMediaUiState() {
+        if (!isForkSecureCarrier()) {
+            return;
+        }
+        ForkSecureMediaUiState state;
+        synchronized (forkSecureMediaUiCache) {
+            state = forkSecureMediaUiCache.get(messageOwner.message);
+        }
+        if (state == null) {
+            return;
+        }
+        if (!TextUtils.isEmpty(state.path) && !new File(state.path).isFile()) {
+            forkSecureMediaPath = null;
+            forkSecureMediaPending = true;
+            return;
+        }
+        applyForkSecureMediaUiState(state);
+    }
+
+    private void applyForkSecureMediaUiState(ForkSecureMediaUiState state) {
+        forkSecureMediaPath = state.path;
+        forkSecureMediaKind = state.kind;
+        forkSecureMediaWidth = state.width;
+        forkSecureMediaHeight = state.height;
+        forkSecureMediaName = state.name;
+        forkSecureMediaMime = state.mime;
+        forkSecureMediaCaption = state.caption;
+        forkSecureMediaPending = state.pending;
+        if (!TextUtils.isEmpty(state.path)) {
+            attachPathExists = true;
+            if (state.kind == FORK_SECURE_MEDIA_KIND_STICKER) {
+                messageText = "";
+                caption = null;
+            }
+        }
+    }
+
+    private static void putForkSecureMediaUiState(
+            String carrier, ForkSecureMediaUiState state) {
+        if (!forkSecureMediaUiCache.containsKey(carrier)
+                && forkSecureMediaUiCache.size() >= FORK_SECURE_MEDIA_UI_CACHE_LIMIT) {
+            Iterator<String> oldest = forkSecureMediaUiCache.keySet().iterator();
+            if (oldest.hasNext()) {
+                oldest.next();
+                oldest.remove();
+            }
+        }
+        forkSecureMediaUiCache.put(carrier, state);
+    }
+
+    private static final class ForkSecureMediaUiState {
+        final String path;
+        final int kind;
+        final int width;
+        final int height;
+        final String name;
+        final String mime;
+        final String caption;
+        final boolean pending;
+
+        ForkSecureMediaUiState(
+                String path,
+                int kind,
+                int width,
+                int height,
+                String name,
+                String mime,
+                String caption,
+                boolean pending) {
+            this.path = path;
+            this.kind = kind;
+            this.width = width;
+            this.height = height;
+            this.name = name;
+            this.mime = mime;
+            this.caption = caption;
+            this.pending = pending;
+        }
+    }
     public CharSequence youtubeDescription;
     public MessageObject replyMessageObject;
     public int type = 1000;
@@ -3743,6 +3951,11 @@ public class MessageObject {
         if (TextUtils.isEmpty(text)) {
             return;
         }
+        if (isForkSecureCarrier() && TextUtils.equals(text, messageOwner.message)) {
+            // Translation resets and metadata refreshes can restore the raw transport value.
+            text = getString(R.string.ForkSecureReplyPreview);
+            forkSecureVerified = false;
+        }
         TLRPC.User fromUser = null;
         if (isFromUser()) {
             fromUser = MessagesController.getInstance(currentAccount).getUser(messageOwner.from_id.user_id);
@@ -6056,6 +6269,13 @@ public class MessageObject {
 
         if (messageText == null) {
             messageText = "";
+        }
+        // MessageObject is also used by search, pinned previews, widgets and transient metadata
+        // replacements. Those surfaces must never render a recognized carrier before the
+        // chat-specific layer has restored an authenticated local plaintext copy.
+        if (isForkSecureCarrier()) {
+            messageText = getString(R.string.ForkSecureReplyPreview);
+            forkSecureVerified = false;
         }
 
         isEmbedVideoCached = null;
@@ -11072,11 +11292,17 @@ public class MessageObject {
     }
 
     public boolean isAnyKindOfSticker() {
-        return type == TYPE_STICKER || type == TYPE_ANIMATED_STICKER || type == TYPE_EMOJIS;
+        syncForkSecureMediaUiState();
+        return forkSecureMediaKind == FORK_SECURE_MEDIA_KIND_STICKER
+                && (forkSecureMediaPending
+                        || !TextUtils.isEmpty(forkSecureMediaPath))
+                || type == TYPE_STICKER
+                || type == TYPE_ANIMATED_STICKER
+                || type == TYPE_EMOJIS;
     }
 
     public boolean shouldDrawWithoutBackground() {
-        return !isSponsored() && (type == TYPE_STICKER || type == TYPE_ANIMATED_STICKER || type == TYPE_ROUND_VIDEO || type == TYPE_EMOJIS || isExpiredStory());
+        return !isSponsored() && (isAnyKindOfSticker() || type == TYPE_ROUND_VIDEO || isExpiredStory());
     }
 
     public boolean isAnimatedEmojiStickers() {

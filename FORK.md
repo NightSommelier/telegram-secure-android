@@ -2,7 +2,10 @@
 
 ## Status
 
-This directory is the local upstream checkout for the **Telegram Secure** product fork. It is not yet a published product fork and does not contain secure-overlay implementation changes.
+This directory is the local upstream checkout for the **Telegram Secure**
+private-group MVP. It is not a public product release. Builds that include the
+secure overlay use AGPLv3 `libsignal`; every APK recipient must receive the
+corresponding source code and third-party notices.
 
 ## Upstream baseline
 
@@ -38,7 +41,7 @@ The in-repository review draft is `docs/secure-overlay-protocol-v1.md`. It is an
 This fork has a reproducible local NixOS development shell in `shell.nix`.
 It provides the following versions, matching the upstream Gradle configuration:
 
-- JDK 17
+- JDK 21
 - Android SDK platform 35 and build-tools 35.0.0 (plus 34.0.0, required by
   the upstream AGP configuration)
 - Android NDK 27.2.12479018

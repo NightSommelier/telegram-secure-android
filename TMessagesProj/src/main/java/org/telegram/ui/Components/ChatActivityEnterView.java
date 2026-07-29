@@ -145,6 +145,7 @@ import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SharedPrefsHelper;
 import org.telegram.messenger.UserConfig;
+import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
@@ -6657,6 +6658,13 @@ public class ChatActivityEnterView extends FrameLayout implements
         }
     }
 
+    private SecureChatEngine getSecureChatEngine() {
+        if (parentFragment instanceof ChatActivity) {
+            return ((ChatActivity) parentFragment).getSecureChatEngine();
+        }
+        return new SecureChatEngine(getContext(), currentAccount, dialog_id);
+    }
+
     public void setChatInfo(TLRPC.ChatFull chatInfo) {
         info = chatInfo;
         if (emojiView != null) {
@@ -7711,6 +7719,70 @@ public class ChatActivityEnterView extends FrameLayout implements
         boolean hasOnlyEmoji = emojiOnly[0] > 0;
         if (!hasOnlyEmoji) {
             text = AndroidUtilities.getTrimmedString(text);
+        }
+        // This overlay is intentionally separate from Telegram's native Secret Chats.
+        if (DialogObject.isUserDialog(dialog_id) && text.length() != 0) {
+            try {
+                SecureChatEngine secureChat = getSecureChatEngine();
+                String entered = text.toString();
+                if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED) {
+                    if ("/secure-reject".equals(entered)
+                            || "/secure-off".equals(entered)) {
+                        text = secureChat.createPairingRejection();
+                        secureChat.rejectPendingIdentity();
+                        notify = false;
+                        notifySecureModeChanged();
+                    } else {
+                        if (parentFragment != null) {
+                        BulletinFactory.of(parentFragment)
+                                .createErrorBulletin(
+                                        getString(R.string.ForkSecureKeyChangedSendBlocked))
+                                .show();
+                        }
+                        // Never downgrade to plaintext while a changed identity is unresolved.
+                        return false;
+                    }
+                } else if ("/secure-ack".equals(entered)) {
+                    if (!secureChat.isPaired()) {
+                        return false;
+                    }
+                    text = secureChat.createPairingAcknowledgement();
+                    notify = false;
+                    notifySecureModeChanged();
+                } else if ("/secure-start".equals(entered)) {
+                    if (secureChat.isPaired()) {
+                        return false;
+                    }
+                    if (secureChat.resumeIfPaused()) {
+                        notifySecureModeChanged();
+                        return true;
+                    }
+                    text = secureChat.createPairingOffer();
+                    notify = false;
+                    notifySecureModeChanged();
+                } else if ("/secure-off".equals(entered)) {
+                    secureChat.disable();
+                    notifySecureModeChanged();
+                    return true;
+                } else if (secureChat.isPaired()) {
+                    // The carrier expands the input; keep it safely below Telegram's text limit.
+                    if (entered.length() > 2800) {
+                        return false;
+                    }
+                    text = secureChat.encryptText(entered);
+                }
+            } catch (RuntimeException error) {
+                // Do not log message text or key material; the stack trace is enough for diagnosis.
+                android.util.Log.e("ForkSecure", "Secure text setup/send failed", error);
+                FileLog.e(error);
+                if (parentFragment != null) {
+                    BulletinFactory.of(parentFragment)
+                            .createErrorBulletin(
+                                    getString(R.string.ForkSecureSetupSendFailed))
+                            .show();
+                }
+                return false;
+            }
         }
         boolean supportsNewEntities = supportsSendingNewEntities();
         int maxLength = accountInstance.getMessagesController().getMaxMessageLength();
@@ -11675,6 +11747,12 @@ public class ChatActivityEnterView extends FrameLayout implements
             }
         }
         return true;
+    }
+
+    private void notifySecureModeChanged() {
+        if (parentFragment instanceof ChatActivity) {
+            ((ChatActivity) parentFragment).updateSecureModeUi();
+        }
     }
 
     public boolean isPopupView(View view) {

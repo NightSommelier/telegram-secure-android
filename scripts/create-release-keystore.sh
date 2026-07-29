@@ -13,7 +13,7 @@ if [[ -e "$keystore_file" || -e "$properties_file" ]]; then
 fi
 
 command -v keytool >/dev/null || {
-    printf 'keytool is required (install or expose JDK 17 first).\n' >&2
+    printf 'keytool is required (install or expose JDK 21 first).\n' >&2
     exit 1
 }
 

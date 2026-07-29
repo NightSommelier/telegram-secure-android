@@ -12,10 +12,15 @@ if (releaseSigningPropertiesFile.isFile()) {
 }
 def releaseSigningKeys = ['RELEASE_STORE_FILE', 'RELEASE_STORE_PASSWORD', 'RELEASE_KEY_ALIAS', 'RELEASE_KEY_PASSWORD']
 def releaseSigningConfigured = releaseSigningKeys.every { releaseSigningProperties.getProperty(it) }
+def localMvpReleaseSigning = (project.findProperty('LOCAL_MVP_RELEASE_SIGNING') ?: 'false').toBoolean()
+if (localMvpReleaseSigning && !releaseSigningConfigured) {
+    throw new GradleException('LOCAL_MVP_RELEASE_SIGNING requires signing.properties.')
+}
 
 repositories {
     mavenCentral()
     google()
+    maven { url 'https://build-artifacts.signal.org/libraries/maven/' }
 }
 
 configurations {
@@ -29,6 +34,7 @@ configurations.all {
 
 dependencies {
     implementation project(':TMessagesProj')
+    implementation project(':SecureOverlay')
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
     implementation files('../TMessagesProj/libs/libgsaverification-client.aar')
 }
@@ -40,6 +46,14 @@ android {
     defaultConfig.applicationId = APP_PACKAGE
 
     sourceSets.main.jniLibs.srcDirs = ['../TMessagesProj/jni/']
+
+    packagingOptions {
+        jniLibs {
+            // libsignal ships a test-only JNI companion for each ABI.  It is
+            // never loaded by the MVP and must not be copied into the APK.
+            excludes += ['**/libsignal_jni_testing.so']
+        }
+    }
 
     lintOptions {
         disable 'MissingTranslation'
@@ -69,6 +83,9 @@ android {
         debug {
             debuggable true
             jniDebuggable true
+            if (localMvpReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             shrinkResources false
             multiDexEnabled true
@@ -141,6 +158,8 @@ android {
             buildConfigField "boolean", "BUNDLE", "true"
         }
         afat {
+            // libsignal's Android artifact supports API 23 and later.
+            minSdkVersion 23
             ndk {
                 if (localMvpAbi) {
                     abiFilters localMvpAbi

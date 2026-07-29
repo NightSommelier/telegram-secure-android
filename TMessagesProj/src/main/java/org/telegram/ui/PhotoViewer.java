@@ -1137,6 +1137,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private boolean wasRotated;
 
     private int keyboardSize;
+    private MessageObject forkSecureLocalViewerMessage;
 
     private float currentPanTranslationY;
 
@@ -15860,7 +15861,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 showAfterAnimation = currentPlaceObject;
             }
         }
-        currentPlaceObject = placeProvider.getPlaceForPhoto(currentMessageObject, getFileLocation(currentFileLocation), currentIndex, false, false);
+        currentPlaceObject = placeProvider.getPlaceForPhoto(
+                currentMessageObject != null
+                        ? currentMessageObject : forkSecureLocalViewerMessage,
+                getFileLocation(currentFileLocation),
+                currentIndex,
+                false,
+                false);
         if (currentPlaceObject != null && !currentPlaceObject.keepImageReceiverVisible) {
             if (animationInProgress == 0) {
                 currentPlaceObject.imageReceiver.setVisible(false, true);
@@ -17017,7 +17024,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (currentPlaceObject != null) {
             currentPlaceObject.imageReceiver.setVisible(true, true);
         }
-        currentPlaceObject = placeProvider == null ? null : placeProvider.getPlaceForPhoto(currentMessageObject, getFileLocation(currentFileLocation), currentIndex, false, false);
+        currentPlaceObject = placeProvider == null ? null : placeProvider.getPlaceForPhoto(
+                currentMessageObject != null
+                        ? currentMessageObject : forkSecureLocalViewerMessage,
+                getFileLocation(currentFileLocation),
+                currentIndex,
+                false,
+                false);
         if (currentPlaceObject != null && !currentPlaceObject.keepImageReceiverVisible) {
             currentPlaceObject.imageReceiver.setVisible(false, true);
         }
@@ -17049,6 +17062,48 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
     public boolean openPhoto(final TLRPC.FileLocation fileLocation, final ImageLocation imageLocation, final PhotoViewerProvider provider) {
         return openPhoto(null, fileLocation, imageLocation, null, null, null, null, 0, provider, null, 0, 0, 0, true, null, null);
+    }
+
+    public boolean openForkSecurePhoto(
+            MessageObject messageObject,
+            File file,
+            int width,
+            int height,
+            ChatActivity chatActivity,
+            PhotoViewerProvider provider) {
+        if (messageObject == null || file == null || !file.isFile()) {
+            return false;
+        }
+        Pair<Integer, Integer> orientation = AndroidUtilities.getImageOrientation(file);
+        MediaController.PhotoEntry entry = new MediaController.PhotoEntry(
+                0,
+                lastImageId--,
+                0,
+                file.getAbsolutePath(),
+                orientation.first,
+                false,
+                width,
+                height,
+                file.length()).setOrientation(orientation);
+        ArrayList<Object> photos = new ArrayList<>();
+        photos.add(entry);
+        forkSecureLocalViewerMessage = messageObject;
+        try {
+            boolean opened = openPhotoForSelect(
+                    photos,
+                    0,
+                    SELECT_TYPE_NO_SELECT,
+                    false,
+                    provider,
+                    chatActivity);
+            if (!opened) {
+                forkSecureLocalViewerMessage = null;
+            }
+            return opened;
+        } catch (RuntimeException error) {
+            forkSecureLocalViewerMessage = null;
+            throw error;
+        }
     }
 
     public boolean openPhoto(final ArrayList<MessageObject> messages, final int index, long dialogId, long mergeDialogId, long topicId, final PhotoViewerProvider provider) {
@@ -17418,7 +17473,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             return false;
         }
 
-        final PlaceProviderObject object = provider.getPlaceForPhoto(messageObject, fileLocation, index, true, false);
+        MessageObject placeMessageObject = messageObject != null
+                ? messageObject : forkSecureLocalViewerMessage;
+        final PlaceProviderObject object = provider.getPlaceForPhoto(
+                placeMessageObject, fileLocation, index, true, false);
         WindowManager wm = (WindowManager) parentActivity.getSystemService(Context.WINDOW_SERVICE);
         if (attachedToWindow) {
             try {
@@ -17436,10 +17494,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR |
                 WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM |
                 WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS;
+            MessageObject secureWindowMessage = messageObject != null
+                    ? messageObject : forkSecureLocalViewerMessage;
             if (chatActivity != null && chatActivity.getCurrentEncryptedChat() != null ||
                 avatarsDialogId != 0 && MessagesController.getInstance(currentAccount).isPeerNoForwards(avatarsDialogId) ||
-                messageObject != null && (MessagesController.getInstance(currentAccount).isPeerNoForwards(messageObject.getDialogId()) ||
-                (messageObject.messageOwner != null && messageObject.messageOwner.noforwards)) || messageObject != null && messageObject.hasRevealedExtendedMedia()
+                secureWindowMessage != null && (MessagesController.getInstance(currentAccount).isPeerNoForwards(secureWindowMessage.getDialogId()) ||
+                (secureWindowMessage.messageOwner != null && secureWindowMessage.messageOwner.noforwards)) || secureWindowMessage != null && secureWindowMessage.hasRevealedExtendedMedia()
             ) {
                 windowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_SECURE;
                 AndroidUtilities.logFlagSecure();
@@ -18185,7 +18245,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         final boolean[] allowStart = new boolean[] { true };
         final Runnable[] start = new Runnable[1];
-        final PlaceProviderObject object = placeProvider == null ? null : placeProvider.getPlaceForPhoto(currentMessageObject, getFileLocation(currentFileLocation), currentIndex, true, true);
+        final PlaceProviderObject object = placeProvider == null ? null : placeProvider.getPlaceForPhoto(
+                currentMessageObject != null
+                        ? currentMessageObject : forkSecureLocalViewerMessage,
+                getFileLocation(currentFileLocation),
+                currentIndex,
+                true,
+                true);
         if (videoPlayer != null && object != null) {
             AnimatedFileDrawable animation = object.imageReceiver.getAnimation();
             if (animation != null) {
@@ -18671,6 +18737,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         currentSecureDocument = null;
         currentPageBlock = null;
         currentPathObject = null;
+        forkSecureLocalViewerMessage = null;
         dialogPhotos = null;
         if (ads != null) {
             ads.stop();

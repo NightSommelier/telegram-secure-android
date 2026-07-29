@@ -141,6 +141,7 @@ public class TranslateController extends BaseController {
             messageObject != null &&
             messageObject.messageOwner != null &&
             messageObject.messageOwner.summary_from_language != null &&
+            !messageObject.isForkSecureCarrier() &&
             !messageObject.isOutOwner() &&
             !messageObject.isRestrictedMessage &&
             !messageObject.isSponsored() &&
@@ -164,6 +165,7 @@ public class TranslateController extends BaseController {
         return (
             messageObject != null &&
             messageObject.messageOwner != null &&
+            !messageObject.isForkSecureCarrier() &&
             !messageObject.isOutOwner() &&
             !messageObject.isRestrictedMessage &&
             !messageObject.isSponsored() &&

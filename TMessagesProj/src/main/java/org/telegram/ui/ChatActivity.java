@@ -185,6 +185,11 @@ import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
+import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureChatEngine;
+import org.telegram.secureoverlay.SecureContentCodec;
+import org.telegram.secureoverlay.SecureMediaCache;
+import org.telegram.secureoverlay.SecureMediaCrypto;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.messenger.camera.CameraView;
 import org.telegram.messenger.support.LongSparseIntArray;
@@ -433,6 +438,12 @@ public class ChatActivity extends BaseFragment implements
     private int chatActivityEnterViewAnimateFromTop;
     private boolean chatActivityEnterViewAnimateBeforeSending;
     private ActionBarMenuItem.Item timeItem2;
+    private ActionBarMenuItem secureModeItem;
+    private SecureChatEngine secureChatEngine;
+    private final HashSet<Integer> forkSecureDeferredMessages = new HashSet<>();
+    private final HashSet<String> forkSecureMediaPreparing = new HashSet<>();
+    private final HashSet<String> forkSecureMediaDownloadAttempted = new HashSet<>();
+    private final HashSet<String> forkSecureMediaRejected = new HashSet<>();
     private ComposeDrawable otherIcon;
     private ActionBarMenu.LazyItem attachItem;
     private ActionBarMenuItem.Item savedChatsItem, savedChatsGap;;
@@ -1665,6 +1676,7 @@ public class ChatActivity extends BaseFragment implements
     private final static int charge_fee = 72;
 
     private final static int chat_menu_topic_create = 73;
+    private final static int secure_chat_toggle = 75;
 
     private final static int id_chat_compose_panel = 1000;
 
@@ -2910,6 +2922,7 @@ public class ChatActivity extends BaseFragment implements
             .add(NotificationCenter.messagePlayingGoingToStop)
             .add(NotificationCenter.messagePlayingPlayStateChanged)
             .add(NotificationCenter.blockedUsersDidLoad)
+            .add(NotificationCenter.fileLoaded)
             .add(NotificationCenter.fileNewChunkAvailable)
             .add(NotificationCenter.didCreatedNewDeleteTask)
             .add(NotificationCenter.messagePlayingDidStart)
@@ -3686,6 +3699,8 @@ public class ChatActivity extends BaseFragment implements
                             finishFragment();
                         }
                     }
+                } else if (id == secure_chat_toggle) {
+                    toggleSecureMode();
                 } else if (id == view_as_topics) {
                     if (getUserConfig().getClientUserId() == dialog_id) {
                         getMessagesController().setSavedViewAs(true);
@@ -4199,7 +4214,14 @@ public class ChatActivity extends BaseFragment implements
             });
             getConnectionsManager().bindRequestToGuid(req, classGuid);
         } else {
-            actionBar.addView(avatarContainer, 0, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.MATCH_PARENT, Gravity.TOP | Gravity.LEFT, !inPreviewMode ? 52 : 0, 0, 52, 0));
+            actionBar.addView(avatarContainer, 0, LayoutHelper.createFrame(
+                    LayoutHelper.WRAP_CONTENT,
+                    LayoutHelper.MATCH_PARENT,
+                    Gravity.TOP | Gravity.LEFT,
+                    !inPreviewMode ? 52 : 0,
+                    0,
+                    getAvatarContainerRightMargin(52),
+                    0));
             actionBar.createMenu().bringToFront();
         }
         actionBar.setOnActionModeFactorChangeListener(() -> {
@@ -4207,6 +4229,16 @@ public class ChatActivity extends BaseFragment implements
         });
 
         ActionBarMenu menu = actionBar.createMenu();
+
+        if (isSecureModeUiEligible()) {
+            secureModeItem = menu.addItem(
+                    secure_chat_toggle, R.drawable.outline_shield_plain_24);
+            secureModeItem.setOnLongClickListener(view -> {
+                showSecureIdentityDialog();
+                return true;
+            });
+            updateSecureModeUi();
+        }
 
         if (chatMode == MODE_QUICK_REPLIES && !QuickRepliesController.isSpecial(quickReplyShortcut)) {
             menu.addItem(edit_quick_reply, R.drawable.group_edit).setContentDescription(LocaleController.getString(R.string.Edit));
@@ -14274,6 +14306,18 @@ public class ChatActivity extends BaseFragment implements
         if (arrayList == null || arrayList.isEmpty()) {
             return;
         }
+        boolean containsForkSecure = false;
+        for (int i = 0; i < arrayList.size(); i++) {
+            MessageObject message = arrayList.get(i);
+            if (message != null && message.isForkSecureCarrier()) {
+                containsForkSecure = true;
+                break;
+            }
+        }
+        if (containsForkSecure) {
+            forwardForkSecureTextMessages(arrayList, notify, scheduleDate);
+            return;
+        }
         if (!checkSlowModeAlert()) {
             return;
         }
@@ -14291,6 +14335,103 @@ public class ChatActivity extends BaseFragment implements
                 hideFieldPanel(true);
             });
         }
+    }
+
+    /**
+     * A Signal message belongs to one peer session, so forwarding its TGS1 carrier verbatim would
+     * be unreadable in another chat. Resolve only already-authenticated local text, then encrypt a
+     * fresh message for the protected destination. Telegram receives neither the source carrier
+     * nor plaintext, and no inbound ratchet is advanced by the forwarding UI.
+     */
+    private void forwardForkSecureTextMessages(
+            ArrayList<MessageObject> messagesToForward, boolean notify, int scheduleDate) {
+        if (!DialogObject.isUserDialog(dialog_id)) {
+            showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
+            return;
+        }
+        if (!checkSlowModeAlert()) {
+            return;
+        }
+        try {
+            SecureChatEngine targetChat = getSecureChatEngine();
+            if (targetChat.getMode() != SecureChatEngine.Mode.PROTECTED) {
+                showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
+                return;
+            }
+            ArrayList<String> plaintextMessages = new ArrayList<>();
+            for (int i = 0; i < messagesToForward.size(); i++) {
+                MessageObject sourceMessage = messagesToForward.get(i);
+                if (sourceMessage == null
+                        || !sourceMessage.isForkSecureCarrier()
+                        || !DialogObject.isUserDialog(sourceMessage.getDialogId())) {
+                    showForkSecureForwardError(R.string.ForkSecureForwardTextOnly);
+                    return;
+                }
+                String sourceCarrier = sourceMessage.messageOwner.message;
+                SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(sourceCarrier);
+                if (decoded == null
+                        || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+                    showForkSecureForwardError(R.string.ForkSecureForwardTextOnly);
+                    return;
+                }
+                SecureChatEngine sourceChat = new SecureChatEngine(
+                        getContext(), currentAccount, sourceMessage.getDialogId());
+                String plaintext = sourceMessage.isOutOwner()
+                        ? sourceChat.getOutgoingText(sourceCarrier)
+                        : sourceChat.getIncomingText(sourceCarrier);
+                if (TextUtils.isEmpty(plaintext)
+                        || SecureChatEngine.isPairingAcknowledgementDisplay(plaintext)
+                        || SecureChatEngine.isPairingRejectionDisplay(plaintext)
+                        || SecureChatEngine.isStaticStickerDisplay(plaintext)
+                        || SecureChatEngine.isAttachmentDisplay(plaintext)) {
+                    showForkSecureForwardError(R.string.ForkSecureForwardTextOnly);
+                    return;
+                }
+                plaintextMessages.add(plaintext);
+            }
+            ArrayList<String> encryptedMessages = new ArrayList<>(plaintextMessages.size());
+            for (int i = 0; i < plaintextMessages.size(); i++) {
+                encryptedMessages.add(targetChat.encryptText(plaintextMessages.get(i)));
+            }
+            if ((scheduleDate != 0) == (chatMode == MODE_SCHEDULED)) {
+                waitingForSendingMessageLoad = true;
+                if (chatAdapter != null) {
+                    chatAdapter.checkRemoveBotForumRowsStartThreadRow(true);
+                }
+            }
+            for (int i = 0; i < encryptedMessages.size(); i++) {
+                SendMessagesHelper.SendMessageParams params =
+                        SendMessagesHelper.SendMessageParams.of(
+                                encryptedMessages.get(i),
+                                dialog_id,
+                                null,
+                                getThreadMessage(),
+                                null,
+                                false,
+                                null,
+                                null,
+                                null,
+                                notify,
+                                scheduleDate,
+                                0,
+                                null,
+                                false);
+                params.quick_reply_shortcut = quickReplyShortcut;
+                params.quick_reply_shortcut_id = getQuickReplyId();
+                params.monoForumPeer = getSendMonoForumPeerId();
+                params.suggestionParams = getSendMessageSuggestionParams();
+                getSendMessagesHelper().sendMessage(params);
+            }
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            showForkSecureForwardError(R.string.ForkSecureForwardFailed);
+        }
+    }
+
+    private void showForkSecureForwardError(int stringId) {
+        BulletinFactory.of(this)
+                .createErrorBulletin(getString(stringId))
+                .show();
     }
 
     public boolean shouldShowImport() {
@@ -14616,6 +14757,12 @@ public class ChatActivity extends BaseFragment implements
     public void showFieldPanel(boolean show, MessageObject messageObjectToReply, MessageObject messageObjectToEdit, ArrayList<MessageObject> messageObjectsToForward, TLRPC.WebPage webPage, boolean notify, int scheduleDate, ReplyQuote quote, boolean cancel, long payStars, MessageSuggestionParams suggestionParams, boolean animated) {
         if (chatActivityEnterView == null) {
             return;
+        }
+        if (messageObjectToReply != null
+                && applySecureComposerReplyOverlay(messageObjectToReply)) {
+            // Explicit Telegram quotes embed quote_text in the transport. Keep only the ordinary
+            // reply_to message id so decrypted Fork-Secure text never leaves this client.
+            quote = null;
         }
 
         chatActivityEnterView.setSuggestionButtonVisible(!show && ChatObject.isMonoForum(currentChat), animated);
@@ -18148,11 +18295,13 @@ public class ChatActivity extends BaseFragment implements
                 }
                 if (showSearchAsIcon || showAudioCallAsIcon || UserObject.isBotForumWithEditableTopics(currentUser)) {
                     if (avatarContainer != null && avatarContainer.getLayoutParams() != null) {
-                        ((ViewGroup.MarginLayoutParams) avatarContainer.getLayoutParams()).rightMargin = AndroidUtilities.dp(chatMode == MODE_SAVED ? 52 : 92);
+                        ((ViewGroup.MarginLayoutParams) avatarContainer.getLayoutParams()).rightMargin =
+                                AndroidUtilities.dp(getAvatarContainerRightMargin(chatMode == MODE_SAVED ? 52 : 92));
                     }
                 } else {
                     if (avatarContainer != null && avatarContainer.getLayoutParams() != null) {
-                        ((ViewGroup.MarginLayoutParams) avatarContainer.getLayoutParams()).rightMargin = AndroidUtilities.dp(52);
+                        ((ViewGroup.MarginLayoutParams) avatarContainer.getLayoutParams()).rightMargin =
+                                AndroidUtilities.dp(getAvatarContainerRightMargin(52));
                     }
                 }
                 if (showSearchAsIcon) {
@@ -18988,14 +19137,18 @@ public class ChatActivity extends BaseFragment implements
                     if (!messageObject.isAnimatedEmoji() && (messageObject.isSticker() || messageObject.isAnimatedSticker()) && MessageObject.isStickerHasSet(messageObject.getDocument())) {
                         selectedMessagesCanStarIds[index].remove(messageObject.getId());
                     }
-                    if (messageObject.canEditMessage(currentChat)) {
+                    if (messageObject.canEditMessage(currentChat)
+                            && !messageObject.isForkSecureCarrier()) {
                         canEditMessagesCount--;
                     }
                     if (!messageObject.canDeleteMessage(chatMode == MODE_SCHEDULED, currentChat)) {
                         cantDeleteMessagesCount--;
                     }
                     boolean noforwards = isPeerNoForwards();
-                    if (chatMode == MODE_SCHEDULED || !messageObject.canForwardMessage() || noforwards) {
+                    if (chatMode == MODE_SCHEDULED
+                            || !messageObject.canForwardMessage()
+                            || noforwards
+                            || messageObject.isForkSecureCarrier()) {
                         cantForwardMessagesCount--;
                     } else {
                         canForwardMessagesCount--;
@@ -19025,14 +19178,18 @@ public class ChatActivity extends BaseFragment implements
                     if (!messageObject.isAnimatedEmoji() && (messageObject.isSticker() || messageObject.isAnimatedSticker()) && MessageObject.isStickerHasSet(messageObject.getDocument())) {
                         selectedMessagesCanStarIds[index].put(messageObject.getId(), messageObject);
                     }
-                    if (messageObject.canEditMessage(currentChat)) {
+                    if (messageObject.canEditMessage(currentChat)
+                            && !messageObject.isForkSecureCarrier()) {
                         canEditMessagesCount++;
                     }
                     if (!messageObject.canDeleteMessage(chatMode == MODE_SCHEDULED, currentChat)) {
                         cantDeleteMessagesCount++;
                     }
                     boolean noforwards = isPeerNoForwards();
-                    if (chatMode == MODE_SCHEDULED || !messageObject.canForwardMessage() || noforwards) {
+                    if (chatMode == MODE_SCHEDULED
+                            || !messageObject.canForwardMessage()
+                            || noforwards
+                            || messageObject.isForkSecureCarrier()) {
                         cantForwardMessagesCount++;
                     } else {
                         canForwardMessagesCount++;
@@ -20372,6 +20529,1227 @@ public class ChatActivity extends BaseFragment implements
         }
     }
 
+    /**
+     * Renders recognized secure-text carriers only in this direct user chat. The Telegram message
+     * database keeps the carrier. Inbound plaintext exists only in this in-memory view; outbound
+     * plaintext is loaded from the app's Keystore-encrypted local display cache.
+     */
+    public SecureChatEngine getSecureChatEngine() {
+        if (secureChatEngine == null || secureChatEngine.isStale()) {
+            secureChatEngine = new SecureChatEngine(getContext(), currentAccount, dialog_id);
+        }
+        return secureChatEngine;
+    }
+
+    private void applySecureTextOverlay(ArrayList<MessageObject> candidates) {
+        // Telegram Secret Chats keep their native protocol and never enter this overlay.
+        if (!DialogObject.isUserDialog(dialog_id) || candidates == null || candidates.isEmpty()) {
+            return;
+        }
+        final SecureChatEngine secureChat;
+        try {
+            secureChat = getSecureChatEngine();
+        } catch (RuntimeException e) {
+            FileLog.e(e);
+            return;
+        }
+        boolean shouldSendPairingAcknowledgement = false;
+        for (int i = 0; i < candidates.size(); i++) {
+            MessageObject message = candidates.get(i);
+            if (message == null || message.messageOwner == null) {
+                continue;
+            }
+            applySecureReplyOverlay(message, secureChat);
+            String carrier = message.messageOwner.message;
+            try {
+                message.forkSecureVerified = false;
+                SecureCarrierCodec.Decoded decoded;
+                try {
+                    decoded = SecureCarrierCodec.decode(carrier);
+                } catch (IllegalArgumentException malformedCarrier) {
+                    // Old/truncated marked messages remain fail-closed. Avoid serializing a full
+                    // stack trace to disk on every chat open.
+                    message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                    continue;
+                }
+                if (decoded == null) {
+                    continue;
+                }
+                if (decoded.type != SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                        && restorePreparedSecureSticker(message)) {
+                    continue;
+                }
+                if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+                    if (message.isOutOwner()) {
+                        message.applyNewText(getString(R.string.ForkSecurePairingOfferSent));
+                    } else {
+                        SecureChatEngine.PairingOfferResult result =
+                                secureChat.receivePairingOffer(carrier, message.getId());
+                        if (result == SecureChatEngine.PairingOfferResult.ACCEPTED_INITIAL) {
+                            message.applyNewText(getString(
+                                    R.string.ForkSecurePairingCompletedConfirming));
+                            shouldSendPairingAcknowledgement = true;
+                        } else if (result
+                                == SecureChatEngine.PairingOfferResult.IDENTITY_CHANGE_PENDING) {
+                            message.applyNewText(getString(
+                                    R.string.ForkSecureIdentityChangedMessage));
+                        } else if (result
+                                == SecureChatEngine.PairingOfferResult.SAME_IDENTITY) {
+                            if (secureChat.isPaired()) {
+                                message.applyNewText(getString(
+                                        R.string.ForkSecurePairingCompletedConfirming));
+                                shouldSendPairingAcknowledgement = true;
+                            } else {
+                                message.applyNewText(getString(
+                                        R.string.ForkSecurePairingMatches));
+                            }
+                        } else {
+                            message.applyNewText(getString(
+                                    R.string.ForkSecurePairingIgnored));
+                        }
+                    }
+                } else if (message.isOutOwner()) {
+                    String localText = secureChat.getOutgoingText(carrier);
+                    if (localText != null) {
+                        message.applyNewText(formatForkSecureDisplayText(localText));
+                        message.forkSecureVerified = true;
+                        if (SecureChatEngine.isStaticStickerDisplay(localText)) {
+                            applySecureStickerMedia(message, secureChat, carrier);
+                        } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
+                            applySecureAttachmentMedia(
+                                    message,
+                                    secureChat,
+                                    carrier,
+                                    SecureChatEngine.isPhotoDisplay(localText));
+                        }
+                    } else {
+                        // Never feed our own outbound message into the inbound ratchet.
+                        message.applyNewText(getString(
+                                R.string.ForkSecureOutgoingUnavailable));
+                    }
+                } else {
+                    String localText = secureChat.decryptText(carrier);
+                    message.applyNewText(formatForkSecureDisplayText(localText));
+                    message.forkSecureVerified = true;
+                    if (SecureChatEngine.isStaticStickerDisplay(localText)) {
+                        applySecureStickerMedia(message, secureChat, carrier);
+                    } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
+                        applySecureAttachmentMedia(
+                                message,
+                                secureChat,
+                                carrier,
+                                SecureChatEngine.isPhotoDisplay(localText));
+                    }
+                }
+            } catch (RuntimeException e) {
+                // A marked carrier never falls back to rendering as a normal plaintext message.
+                if (SecureChatEngine.isStateTemporarilyUnavailable(getContext())) {
+                    forkSecureDeferredMessages.add(message.getId());
+                    message.applyNewText(getString(R.string.ForkSecureReplyPreview));
+                } else {
+                    FileLog.e(e);
+                    message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                }
+            } finally {
+                syncSecureMediaCaption(message);
+            }
+        }
+        updateSecureModeUi();
+        if (shouldSendPairingAcknowledgement && chatActivityEnterView != null) {
+            sendForkSecurePairingAcknowledgement();
+        }
+    }
+
+    /**
+     * Applies the secure display boundary to the nested MessageObject used by Telegram's reply
+     * preview. Pairing offers are display-only here: quoting an old offer must never accept a key
+     * or emit a new acknowledgement.
+     */
+    private void applySecureReplyOverlay(
+            MessageObject parentMessage, SecureChatEngine secureChat) {
+        applySecureReplyOverlay(parentMessage, secureChat, false);
+    }
+
+    private void applySecureReplyOverlay(
+            MessageObject parentMessage, SecureChatEngine secureChat, boolean cacheOnly) {
+        if (parentMessage == null || parentMessage.messageOwner == null) {
+            return;
+        }
+        MessageObject reply = parentMessage.replyMessageObject;
+        boolean resolvedReply = reply != null
+                && reply != parentMessage
+                && reply.messageOwner != null
+                && applySecureMessageDisplayOnly(reply, secureChat, cacheOnly);
+        if (resolvedReply && reply.messageText != null) {
+            parentMessage.forkSecureReplyText = reply.messageText;
+        }
+
+        // Some Telegram updates carry only quote_text and no nested reply MessageObject. Never
+        // render a carrier in that case. Upgrade the generic label to plaintext later if the
+        // referenced message is loaded and authenticated.
+        if (parentMessage.messageOwner.reply_to != null
+                && SecureCarrierCodec.isMarked(
+                        parentMessage.messageOwner.reply_to.quote_text)) {
+            String quoteCarrier = parentMessage.messageOwner.reply_to.quote_text;
+            if (TextUtils.isEmpty(parentMessage.forkSecureReplyText)) {
+                // The referenced bubble may already have been authenticated but not be attached
+                // as replyMessageObject. Both lookups are cache-only and cannot advance a ratchet.
+                String cachedText = secureChat.getOutgoingText(quoteCarrier);
+                if (cachedText == null) {
+                    cachedText = secureChat.getIncomingText(quoteCarrier);
+                }
+                if (cachedText != null) {
+                    parentMessage.forkSecureReplyText =
+                            formatForkSecureDisplayText(cachedText);
+                }
+            }
+            if (TextUtils.isEmpty(parentMessage.forkSecureReplyText)) {
+                parentMessage.forkSecureReplyText =
+                        getString(R.string.ForkSecureReplyPreview);
+            }
+            parentMessage.messageOwner.reply_to.quote_text =
+                    parentMessage.forkSecureReplyText.toString();
+            if (parentMessage.messageOwner.reply_to.quote_entities != null) {
+                parentMessage.messageOwner.reply_to.quote_entities.clear();
+            }
+        }
+    }
+
+    /**
+     * Resolves one already-associated message for a local-only preview. Pairing offers are never
+     * accepted here and no control message is emitted.
+     */
+    private boolean applySecureMessageDisplayOnly(
+            MessageObject message, SecureChatEngine secureChat) {
+        return applySecureMessageDisplayOnly(message, secureChat, false);
+    }
+
+    private boolean applySecureMessageDisplayOnly(
+            MessageObject message, SecureChatEngine secureChat, boolean cacheOnly) {
+        if (message == null || message.messageOwner == null) {
+            return false;
+        }
+        String carrier = message.messageOwner.message;
+        if (!SecureCarrierCodec.isMarked(carrier)) {
+            return false;
+        }
+        try {
+            message.forkSecureVerified = false;
+            SecureCarrierCodec.Decoded decoded;
+            try {
+                decoded = SecureCarrierCodec.decode(carrier);
+            } catch (IllegalArgumentException malformedCarrier) {
+                message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                syncSecureMediaCaption(message);
+                return true;
+            }
+            if (decoded.type != SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                    && restorePreparedSecureSticker(message)) {
+                return true;
+            }
+            if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+                message.applyNewText(getString(message.isOutOwner()
+                        ? R.string.ForkSecurePairingOfferSent
+                        : R.string.ForkSecurePairingOfferReceived));
+            } else if (message.isOutOwner()) {
+                String localText = secureChat.getOutgoingText(carrier);
+                if (localText == null) {
+                    message.applyNewText(getString(R.string.ForkSecureOutgoingUnavailable));
+                } else {
+                    message.applyNewText(formatForkSecureDisplayText(localText));
+                    message.forkSecureVerified = true;
+                    if (SecureChatEngine.isStaticStickerDisplay(localText)) {
+                        applySecureStickerMedia(message, secureChat, carrier);
+                    } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
+                        applySecureAttachmentMedia(
+                                message,
+                                secureChat,
+                                carrier,
+                                SecureChatEngine.isPhotoDisplay(localText));
+                    }
+                }
+            } else {
+                String localText = cacheOnly
+                        ? secureChat.getIncomingText(carrier)
+                        : secureChat.decryptText(carrier);
+                if (localText == null) {
+                    // A replacement received before its original bubble is authenticated must
+                    // never expose the marked Telegram carrier.
+                    message.applyNewText(getString(R.string.ForkSecureReplyPreview));
+                } else {
+                    message.applyNewText(formatForkSecureDisplayText(localText));
+                    message.forkSecureVerified = true;
+                    if (SecureChatEngine.isStaticStickerDisplay(localText)) {
+                        applySecureStickerMedia(message, secureChat, carrier);
+                    } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
+                        applySecureAttachmentMedia(
+                                message,
+                                secureChat,
+                                carrier,
+                                SecureChatEngine.isPhotoDisplay(localText));
+                    }
+                }
+            }
+        } catch (RuntimeException error) {
+            if (SecureChatEngine.isStateTemporarilyUnavailable(getContext())) {
+                message.applyNewText(getString(R.string.ForkSecureReplyPreview));
+            } else {
+                FileLog.e(error);
+                message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+            }
+        }
+        syncSecureMediaCaption(message);
+        return true;
+    }
+
+    /**
+     * Telegram stores a document caption separately from MessageObject.messageText. Server
+     * replacements and cold reloads therefore recreate the raw carrier caption even after the
+     * secure overlay has replaced messageText. Keep the caption inside the same fail-closed
+     * display boundary: a ready sticker has no caption, while a pending/failed attachment shows
+     * only the localized safe status.
+     */
+    private void syncSecureMediaCaption(MessageObject message) {
+        if (message == null
+                || message.messageOwner == null
+                || message.getDocument() == null
+                || !SecureCarrierCodec.isMarked(message.messageOwner.message)) {
+            return;
+        }
+        if (message.forkSecureMediaKind
+                == MessageObject.FORK_SECURE_MEDIA_KIND_STICKER) {
+            message.caption = TextUtils.isEmpty(message.forkSecureMediaPath)
+                    ? message.messageText
+                    : null;
+        } else if (message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                || message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+            message.caption = TextUtils.isEmpty(message.forkSecureMediaPath)
+                    ? message.messageText
+                    : TextUtils.isEmpty(message.forkSecureMediaCaption)
+                            ? null : message.forkSecureMediaCaption;
+        } else {
+            message.caption = message.messageText;
+        }
+    }
+
+    private void applySecureAttachmentMedia(
+            MessageObject message,
+            SecureChatEngine secureChat,
+            String carrier,
+            boolean photo) {
+        if (message.getDocument() == null || TextUtils.isEmpty(carrier)) {
+            return;
+        }
+        final int mediaKind = photo
+                ? MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                : MessageObject.FORK_SECURE_MEDIA_KIND_FILE;
+        message.markForkSecureMediaPending(
+                mediaKind, 0, 0, null, null, null);
+        normalizeSecureTransportDocument(message.getDocument());
+        if (message.restoreReadyForkSecureMedia()) {
+            applyPreparedSecureAttachmentPresentation(message);
+            return;
+        }
+        final String prepareKey = message.getId() + ":" + carrier;
+        if (forkSecureMediaRejected.contains(prepareKey)
+                || !forkSecureMediaPreparing.add(prepareKey)) {
+            return;
+        }
+        final boolean downloadAlreadyAttempted =
+                forkSecureMediaDownloadAttempted.contains(prepareKey);
+        final int messageId = message.getId();
+        final boolean outgoing = message.isOutOwner();
+        final TLRPC.Document originalDocument = message.getDocument();
+        final String knownCipherPath = message.forkSecureCipherPath;
+        final String attachPath = message.messageOwner.attachPath;
+        final TLRPC.Message messageOwner = message.messageOwner;
+        final Context applicationContext = getContext().getApplicationContext();
+        final int account = currentAccount;
+        final long peer = dialog_id;
+        Utilities.globalQueue.postRunnable(() -> {
+            SecureContentCodec.Attachment manifest = null;
+            File destination = null;
+            File ciphertext = null;
+            RuntimeException failure = null;
+            boolean ciphertextRejected = false;
+            try {
+                SecureChatEngine backgroundEngine =
+                        new SecureChatEngine(applicationContext, account, peer);
+                manifest = outgoing
+                        ? backgroundEngine.getOutgoingAttachment(carrier)
+                        : backgroundEngine.decryptAttachmentManifest(carrier);
+                if (manifest != null) {
+                    destination = new File(
+                            new File(
+                                    applicationContext.getCacheDir(),
+                                    "fork-secure-attachments-in"),
+                            secureMediaIdHex(manifest.mediaId)
+                                    + secureAttachmentExtension(manifest.mimeType));
+                    if (!destination.isFile()
+                            || destination.length() != manifest.plaintextSize) {
+                        if (!TextUtils.isEmpty(knownCipherPath)) {
+                            File candidate = new File(knownCipherPath);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext == null
+                                && !TextUtils.isEmpty(attachPath)
+                                && attachPath.endsWith(".bin")) {
+                            File candidate = new File(attachPath);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext == null) {
+                            File candidate = FileLoader.getInstance(account)
+                                    .getPathToAttach(originalDocument, true);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext == null) {
+                            File candidate = FileLoader.getInstance(account)
+                                    .getPathToAttach(originalDocument);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext == null) {
+                            File candidate = FileLoader.getInstance(account)
+                                    .getPathToMessage(messageOwner);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext != null) {
+                            try {
+                                SecureMediaCrypto.decryptAttachmentFile(
+                                        ciphertext, destination, manifest);
+                            } catch (IllegalArgumentException
+                                    invalidCachedCiphertext) {
+                                ciphertextRejected = true;
+                                if (!downloadAlreadyAttempted) {
+                                    ciphertext.delete();
+                                }
+                                ciphertext = null;
+                            }
+                        }
+                    }
+                    if (destination.isFile()
+                            && destination.length() == manifest.plaintextSize) {
+                        SecureMediaCache.touchAndPrune(
+                                destination, 32, 256L * 1024L * 1024L);
+                    }
+                }
+            } catch (RuntimeException error) {
+                failure = error;
+            }
+            final SecureContentCodec.Attachment readyManifest = manifest;
+            final File readyDestination = destination;
+            final File readyCiphertext = ciphertext;
+            final RuntimeException readyFailure = failure;
+            final boolean readyCiphertextRejected = ciphertextRejected;
+            AndroidUtilities.runOnUIThread(() -> {
+                forkSecureMediaPreparing.remove(prepareKey);
+                if (readyFailure != null) {
+                    FileLog.e(readyFailure);
+                    return;
+                }
+                if (readyManifest == null) {
+                    return;
+                }
+                MessageObject current =
+                        findCurrentSecureMessage(messageId, carrier, message);
+                if (readyCiphertextRejected && downloadAlreadyAttempted) {
+                    forkSecureMediaRejected.add(prepareKey);
+                    current.markForkSecureMediaPending(
+                            readyManifest.photo
+                                    ? MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                                    : MessageObject.FORK_SECURE_MEDIA_KIND_FILE,
+                            readyManifest.width,
+                            readyManifest.height,
+                            readyManifest.fileName,
+                            readyManifest.mimeType,
+                            readyManifest.caption);
+                    updateSecureStickerRow(current);
+                    return;
+                }
+                if (readyDestination == null
+                        || !readyDestination.isFile()
+                        || readyDestination.length() != readyManifest.plaintextSize) {
+                    current.markForkSecureMediaPending(
+                            readyManifest.photo
+                                    ? MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                                    : MessageObject.FORK_SECURE_MEDIA_KIND_FILE,
+                            readyManifest.width,
+                            readyManifest.height,
+                            readyManifest.fileName,
+                            readyManifest.mimeType,
+                            readyManifest.caption);
+                    syncSecureMediaCaption(current);
+                    updateSecureStickerRow(current);
+                    if (!downloadAlreadyAttempted) {
+                        forkSecureMediaDownloadAttempted.add(prepareKey);
+                        FileLoader.getInstance(account).loadFile(
+                                originalDocument,
+                                current,
+                                FileLoader.PRIORITY_HIGH,
+                                1);
+                    } else {
+                        forkSecureMediaRejected.add(prepareKey);
+                    }
+                    return;
+                }
+                applyPreparedSecureAttachment(
+                        current,
+                        readyManifest,
+                        readyDestination,
+                        readyCiphertext);
+                updateSecureStickerRow(current);
+            });
+        });
+    }
+
+    private void applySecureStickerMedia(
+            MessageObject message, SecureChatEngine secureChat, String carrier) {
+        if (message.getDocument() == null || TextUtils.isEmpty(carrier)) {
+            return;
+        }
+        message.markForkSecureMediaPending(0, 0);
+        normalizeSecureTransportDocument(message.getDocument());
+        if (message.restoreReadyForkSecureMedia()) {
+            return;
+        }
+        final String prepareKey = message.getId() + ":" + carrier;
+        if (forkSecureMediaRejected.contains(prepareKey)) {
+            return;
+        }
+        if (!forkSecureMediaPreparing.add(prepareKey)) {
+            return;
+        }
+        final boolean downloadAlreadyAttempted =
+                forkSecureMediaDownloadAttempted.contains(prepareKey);
+        final int messageId = message.getId();
+        final boolean outgoing = message.isOutOwner();
+        final TLRPC.Document originalDocument = message.getDocument();
+        final String knownCipherPath = message.forkSecureCipherPath;
+        final String attachPath = message.messageOwner.attachPath;
+        final TLRPC.Message messageOwner = message.messageOwner;
+        final Context applicationContext = getContext().getApplicationContext();
+        final int account = currentAccount;
+        final long peer = dialog_id;
+        Utilities.globalQueue.postRunnable(() -> {
+            SecureContentCodec.StaticSticker manifest = null;
+            File destination = null;
+            File ciphertext = null;
+            RuntimeException failure = null;
+            boolean ciphertextRejected = false;
+            try {
+                SecureChatEngine backgroundEngine =
+                        new SecureChatEngine(applicationContext, account, peer);
+                manifest = outgoing
+                        ? backgroundEngine.getOutgoingStaticSticker(carrier)
+                        : backgroundEngine.decryptStaticStickerManifest(carrier);
+                if (manifest != null) {
+                    destination = new File(
+                            new File(applicationContext.getCacheDir(),
+                                    "fork-secure-media-in"),
+                            secureMediaIdHex(manifest.mediaId)
+                                    + secureStickerExtension(manifest.format));
+                    if (!destination.isFile()
+                            || destination.length() != manifest.plaintextSize) {
+                        if (!TextUtils.isEmpty(knownCipherPath)) {
+                            File candidate = new File(knownCipherPath);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext == null
+                                && !TextUtils.isEmpty(attachPath)
+                                && (attachPath.endsWith(".tgse")
+                                        || attachPath.endsWith(".bin"))) {
+                            File candidate = new File(attachPath);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext == null) {
+                            File candidate = FileLoader.getInstance(account)
+                                    .getPathToAttach(originalDocument, true);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext == null) {
+                            File candidate = FileLoader.getInstance(account)
+                                    .getPathToAttach(originalDocument);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext == null) {
+                            File candidate = FileLoader.getInstance(account)
+                                    .getPathToMessage(messageOwner);
+                            if (candidate.isFile()) {
+                                ciphertext = candidate;
+                            }
+                        }
+                        if (ciphertext != null) {
+                            try {
+                                SecureMediaCrypto.decryptStickerFile(
+                                        ciphertext, destination, manifest);
+                            } catch (IllegalArgumentException invalidCachedCiphertext) {
+                                // A previous beta mutated the opaque Document MIME and could map
+                                // this message onto the wrong local cache file. Authentication
+                                // detects that condition. A single server re-download may recover
+                                // such a cache entry, but a server file that still fails must be
+                                // rejected permanently for this screen instead of entering an
+                                // unbounded download/decrypt/delete loop.
+                                ciphertextRejected = true;
+                                if (!downloadAlreadyAttempted && !ciphertext.delete()) {
+                                    FileLog.d("ForkSecure stale ciphertext cache was absent");
+                                }
+                                ciphertext = null;
+                            }
+                        }
+                    }
+                    if (destination.isFile()
+                            && destination.length() == manifest.plaintextSize) {
+                        SecureMediaCache.touchAndPrune(
+                                destination, 64, 32L * 1024L * 1024L);
+                    }
+                }
+            } catch (RuntimeException error) {
+                failure = error;
+            }
+            final SecureContentCodec.StaticSticker readyManifest = manifest;
+            final File readyDestination = destination;
+            final File readyCiphertext = ciphertext;
+            final RuntimeException readyFailure = failure;
+            final boolean readyCiphertextRejected = ciphertextRejected;
+            AndroidUtilities.runOnUIThread(() -> {
+                forkSecureMediaPreparing.remove(prepareKey);
+                if (readyFailure != null) {
+                    FileLog.e(readyFailure);
+                    return;
+                }
+                if (readyManifest == null) {
+                    return;
+                }
+                MessageObject current =
+                        findCurrentSecureMessage(messageId, carrier, message);
+                if (readyCiphertextRejected && downloadAlreadyAttempted) {
+                    forkSecureMediaRejected.add(prepareKey);
+                    current.markForkSecureMediaPending(
+                            readyManifest.width, readyManifest.height);
+                    FileLog.e("ForkSecure rejected sticker ciphertext after one server download"
+                            + " message=" + messageId);
+                    updateSecureStickerRow(current);
+                    return;
+                }
+                if (readyDestination == null
+                        || !readyDestination.isFile()
+                        || readyDestination.length() != readyManifest.plaintextSize) {
+                    current.markForkSecureMediaPending(
+                            readyManifest.width, readyManifest.height);
+                    updateSecureStickerRow(current);
+                    if (!downloadAlreadyAttempted) {
+                        forkSecureMediaDownloadAttempted.add(prepareKey);
+                        FileLoader.getInstance(account).loadFile(
+                                originalDocument, current, FileLoader.PRIORITY_HIGH, 1);
+                    } else {
+                        forkSecureMediaRejected.add(prepareKey);
+                    }
+                    return;
+                }
+                applyPreparedSecureSticker(
+                        current, readyManifest, readyDestination, readyCiphertext);
+                updateSecureStickerRow(current);
+            });
+        });
+    }
+
+    private boolean restorePreparedSecureSticker(MessageObject message) {
+        if (message == null
+                || message.getDocument() == null
+                || !message.restoreReadyForkSecureMedia()) {
+            return false;
+        }
+        normalizeSecureTransportDocument(message.getDocument());
+        if (message.forkSecureMediaKind
+                == MessageObject.FORK_SECURE_MEDIA_KIND_STICKER) {
+            message.applyNewText(getString(R.string.ForkSecureEncryptedSticker));
+        } else {
+            applyPreparedSecureAttachmentPresentation(message);
+        }
+        message.forkSecureVerified = true;
+        syncSecureMediaCaption(message);
+        return true;
+    }
+
+    private MessageObject findCurrentSecureMessage(
+            int messageId, String carrier, MessageObject fallback) {
+        for (int i = 0; i < messages.size(); i++) {
+            MessageObject candidate = messages.get(i);
+            if (candidate != null
+                    && candidate.getId() == messageId
+                    && candidate.messageOwner != null
+                    && TextUtils.equals(carrier, candidate.messageOwner.message)) {
+                return candidate;
+            }
+        }
+        return fallback;
+    }
+
+    private void updateSecureStickerRow(MessageObject message) {
+        if (fragmentView != null && chatAdapter != null) {
+            chatAdapter.updateRowWithMessageObject(message, true, false);
+        }
+    }
+
+    private static void normalizeSecureTransportDocument(TLRPC.Document document) {
+        document.mime_type = "application/octet-stream";
+        for (int i = document.attributes.size() - 1; i >= 0; i--) {
+            TLRPC.DocumentAttribute attribute = document.attributes.get(i);
+            if (attribute instanceof TLRPC.TL_documentAttributeSticker
+                    || attribute instanceof TLRPC.TL_documentAttributeImageSize
+                    || attribute instanceof TLRPC.TL_documentAttributeVideo
+                    || attribute instanceof TLRPC.TL_documentAttributeFilename) {
+                document.attributes.remove(i);
+            }
+        }
+        document.thumbs.clear();
+        document.video_thumbs.clear();
+    }
+
+    private void applyPreparedSecureSticker(
+            MessageObject message,
+            SecureContentCodec.StaticSticker manifest,
+            File destination,
+            File ciphertext) {
+        message.markForkSecureMediaReady(
+                destination.getAbsolutePath(), manifest.width, manifest.height);
+        message.forkSecureCipherPath =
+                ciphertext == null ? null : ciphertext.getAbsolutePath();
+        // Keep Telegram's original opaque Document unchanged so FileLoader can locate and
+        // re-download ciphertext after Android purges either cache.
+        FileLog.d("ForkSecure sticker UI ready message=" + message.getId()
+                + " format=" + manifest.format + " bytes=" + manifest.plaintextSize);
+    }
+
+    private void applyPreparedSecureAttachment(
+            MessageObject message,
+            SecureContentCodec.Attachment manifest,
+            File destination,
+            File ciphertext) {
+        message.markForkSecureMediaReady(
+                destination.getAbsolutePath(),
+                manifest.photo
+                        ? MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                        : MessageObject.FORK_SECURE_MEDIA_KIND_FILE,
+                manifest.width,
+                manifest.height,
+                manifest.fileName,
+                manifest.mimeType,
+                manifest.caption);
+        message.forkSecureCipherPath =
+                ciphertext == null ? null : ciphertext.getAbsolutePath();
+        applyPreparedSecureAttachmentPresentation(message);
+    }
+
+    private void applyPreparedSecureAttachmentPresentation(MessageObject message) {
+        if (message == null
+                || message.getDocument() == null
+                || TextUtils.isEmpty(message.forkSecureMediaPath)) {
+            return;
+        }
+        TLRPC.Document document = message.getDocument();
+        normalizeSecureTransportDocument(document);
+        document.mime_type = TextUtils.isEmpty(message.forkSecureMediaMime)
+                ? "application/octet-stream" : message.forkSecureMediaMime;
+        TLRPC.TL_documentAttributeFilename fileName =
+                new TLRPC.TL_documentAttributeFilename();
+        fileName.file_name = TextUtils.isEmpty(message.forkSecureMediaName)
+                ? "file" : message.forkSecureMediaName;
+        document.attributes.add(fileName);
+        message.attachPathExists = true;
+        // applyNewText() regenerates the upstream layout and calls MessageObject.setType(), which
+        // classifies the opaque Telegram transport as a generic Document. Run it before applying
+        // the authenticated process-local photo presentation so TYPE_PHOTO remains authoritative.
+        message.applyNewText(getString(message.forkSecureMediaKind
+                == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                        ? R.string.ForkSecureEncryptedPhoto
+                        : R.string.ForkSecureEncryptedFile));
+        if (message.forkSecureMediaKind
+                == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+            /*
+             * Feed only an unavailable, process-local size descriptor into Telegram's native
+             * photo-cell layout. The server-side object remains the opaque encrypted Document,
+             * and ImageLoader receives the authenticated local path explicitly below.
+             */
+            TLRPC.TL_photoSize localPhoto = new TLRPC.TL_photoSize();
+            localPhoto.type = "x";
+            localPhoto.w = message.forkSecureMediaWidth;
+            localPhoto.h = message.forkSecureMediaHeight;
+            localPhoto.size = (int) Math.min(
+                    Integer.MAX_VALUE, new File(message.forkSecureMediaPath).length());
+            localPhoto.location = new TLRPC.TL_fileLocationUnavailable();
+            message.photoThumbs = new ArrayList<>();
+            message.photoThumbs.add(localPhoto);
+            message.photoThumbsObject = document;
+            message.type = MessageObject.TYPE_PHOTO;
+        }
+        message.forkSecureVerified = true;
+        syncSecureMediaCaption(message);
+    }
+
+    private static String secureAttachmentExtension(String mimeType) {
+        if ("image/jpeg".equals(mimeType)) {
+            return ".jpg";
+        }
+        if ("image/png".equals(mimeType)) {
+            return ".png";
+        }
+        if ("image/webp".equals(mimeType)) {
+            return ".webp";
+        }
+        if ("image/gif".equals(mimeType)) {
+            return ".gif";
+        }
+        if ("application/pdf".equals(mimeType)) {
+            return ".pdf";
+        }
+        if ("text/plain".equals(mimeType)) {
+            return ".txt";
+        }
+        return ".bin";
+    }
+
+    private static String secureStickerExtension(int format) {
+        if (format == SecureContentCodec.STICKER_FORMAT_WEBP) {
+            return ".webp";
+        }
+        if (format == SecureContentCodec.STICKER_FORMAT_TGS) {
+            return ".tgs";
+        }
+        if (format == SecureContentCodec.STICKER_FORMAT_WEBM) {
+            return ".webm";
+        }
+        throw new IllegalArgumentException("unknown secure sticker format");
+    }
+
+    private static String secureMediaIdHex(byte[] mediaId) {
+        StringBuilder result = new StringBuilder(mediaId.length * 2);
+        for (byte value : mediaId) {
+            result.append(Character.forDigit((value >>> 4) & 0x0f, 16));
+            result.append(Character.forDigit(value & 0x0f, 16));
+        }
+        return result.toString();
+    }
+
+    /**
+     * Restores secure display text after Telegram replaces or rebinds a message for metadata-only
+     * updates such as reactions. This path is cache-only: it must never advance the Signal
+     * session, accept a pairing offer, or emit a control message.
+     */
+    private void applyCachedSecureTextOverlay(ArrayList<MessageObject> candidates) {
+        if (!DialogObject.isUserDialog(dialog_id)
+                || candidates == null
+                || candidates.isEmpty()) {
+            return;
+        }
+        boolean containsSecureDisplay = false;
+        for (int i = 0; i < candidates.size(); i++) {
+            if (hasSecureDisplayCarrier(candidates.get(i))) {
+                containsSecureDisplay = true;
+                break;
+            }
+        }
+        if (!containsSecureDisplay) {
+            return;
+        }
+        final SecureChatEngine secureChat;
+        try {
+            secureChat = getSecureChatEngine();
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            return;
+        }
+        for (int i = 0; i < candidates.size(); i++) {
+            MessageObject message = candidates.get(i);
+            if (message == null || message.messageOwner == null) {
+                continue;
+            }
+            applyCachedSecureTextOverlay(message, secureChat);
+        }
+    }
+
+    private void applyCachedSecureTextOverlay(MessageObject message) {
+        if (!DialogObject.isUserDialog(dialog_id) || !hasSecureDisplayCarrier(message)) {
+            return;
+        }
+        try {
+            applyCachedSecureTextOverlay(message, getSecureChatEngine());
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+        }
+    }
+
+    private void applyCachedSecureTextOverlay(
+            MessageObject message, SecureChatEngine secureChat) {
+        applySecureReplyOverlay(message, secureChat, true);
+        applySecureMessageDisplayOnly(message, secureChat, true);
+    }
+
+    private boolean hasSecureDisplayCarrier(MessageObject message) {
+        if (message == null || message.messageOwner == null) {
+            return false;
+        }
+        if (SecureCarrierCodec.isMarked(message.messageOwner.message)) {
+            return true;
+        }
+        MessageObject reply = message.replyMessageObject;
+        if (reply != null
+                && reply.messageOwner != null
+                && SecureCarrierCodec.isMarked(reply.messageOwner.message)) {
+            return true;
+        }
+        return message.messageOwner.reply_to != null
+                && SecureCarrierCodec.isMarked(message.messageOwner.reply_to.quote_text);
+    }
+
+    /**
+     * Prepares the composer reply panel while keeping decrypted text local. The Telegram transport
+     * receives only the ordinary reply_to message id, never a plaintext quote_text.
+     */
+    private boolean applySecureComposerReplyOverlay(MessageObject message) {
+        if (!DialogObject.isUserDialog(dialog_id)
+                || message == null
+                || message.messageOwner == null
+                || !SecureCarrierCodec.isMarked(message.messageOwner.message)) {
+            return false;
+        }
+        try {
+            return applySecureMessageDisplayOnly(message, getSecureChatEngine());
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+            return true;
+        }
+    }
+
+    private void applySecureReplyOverlay(MessageObject parentMessage) {
+        if (!DialogObject.isUserDialog(dialog_id)) {
+            return;
+        }
+        try {
+            applySecureReplyOverlay(parentMessage, getSecureChatEngine());
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+        }
+    }
+
+    private void sendForkSecurePairingAcknowledgement() {
+        AndroidUtilities.runOnUIThread(() -> {
+            try {
+                if (chatActivityEnterView == null
+                                || !getSecureChatEngine().isPaired()
+                        || !chatActivityEnterView.processSendingText(
+                                "/secure-ack", false, 0, 0, 0)) {
+                    BulletinFactory.of(this)
+                            .createErrorBulletin(
+                                    getString(R.string.ForkSecureConfirmationNotSent))
+                            .show();
+                }
+            } catch (RuntimeException error) {
+                FileLog.e(error);
+                BulletinFactory.of(this)
+                        .createErrorBulletin(
+                                getString(R.string.ForkSecureConfirmationFailed))
+                        .show();
+            }
+        });
+    }
+
+    private CharSequence formatForkSecureDisplayText(String plaintext) {
+        if (SecureChatEngine.isPairingAcknowledgementDisplay(plaintext)) {
+            return getString(R.string.ForkSecurePairingConfirmed);
+        }
+        if (SecureChatEngine.isPairingRejectionDisplay(plaintext)) {
+            return getString(R.string.ForkSecurePairingRejected);
+        }
+        if (SecureChatEngine.isStaticStickerDisplay(plaintext)) {
+            return getString(R.string.ForkSecureEncryptedSticker);
+        }
+        if (SecureChatEngine.isPhotoDisplay(plaintext)) {
+            return getString(R.string.ForkSecureEncryptedPhoto);
+        }
+        if (SecureChatEngine.isFileDisplay(plaintext)) {
+            return getString(R.string.ForkSecureEncryptedFile);
+        }
+        return plaintext;
+    }
+
+    private boolean isSecureModeUiEligible() {
+        return chatMode == MODE_DEFAULT
+                && currentEncryptedChat == null
+                && DialogObject.isUserDialog(dialog_id)
+                && currentUser != null
+                && !UserObject.isUserSelf(currentUser)
+                && !currentUser.bot
+                && !UserObject.isService(currentUser.id)
+                && !isReport()
+                && !inPreviewMode;
+    }
+
+    private int getAvatarContainerRightMargin(int baseMarginDp) {
+        return baseMarginDp + (isSecureModeUiEligible() ? 48 : 0);
+    }
+
+    public void updateSecureModeUi() {
+        if (secureModeItem == null) {
+            return;
+        }
+        try {
+            SecureChatEngine.Mode mode = getSecureChatEngine().getMode();
+            if (mode == SecureChatEngine.Mode.PROTECTED) {
+                secureModeItem.setIcon(R.drawable.outline_shield_check, true);
+                secureModeItem.setContentDescription(
+                        getString(R.string.ForkSecureProtectedDescription));
+            } else if (mode == SecureChatEngine.Mode.WAITING) {
+                secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
+                secureModeItem.setContentDescription(
+                        getString(R.string.ForkSecureWaitingDescription));
+            } else if (mode == SecureChatEngine.Mode.PAUSED) {
+                secureModeItem.setIcon(R.drawable.outline_shield_plain_24, true);
+                secureModeItem.setContentDescription(
+                        getString(R.string.ForkSecurePausedDescription));
+            } else if (mode == SecureChatEngine.Mode.IDENTITY_CHANGED) {
+                secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
+                secureModeItem.setContentDescription(
+                        getString(R.string.ForkSecureIdentityChangedDescription));
+            } else {
+                secureModeItem.setIcon(R.drawable.outline_shield_plain_24, true);
+                secureModeItem.setContentDescription(
+                        getString(R.string.ForkSecureOffDescription));
+            }
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            secureModeItem.setIcon(R.drawable.outline_shield_plain_24, true);
+            secureModeItem.setContentDescription(
+                    getString(R.string.ForkSecureStateUnavailable));
+        }
+    }
+
+    private void toggleSecureMode() {
+        if (!isSecureModeUiEligible() || chatActivityEnterView == null) {
+            return;
+        }
+        try {
+            SecureChatEngine secureChat = getSecureChatEngine();
+            SecureChatEngine.Mode mode = secureChat.getMode();
+            if (mode == SecureChatEngine.Mode.IDENTITY_CHANGED) {
+                showSecureIdentityChangeDialog();
+                return;
+            }
+            if (mode == SecureChatEngine.Mode.PROTECTED
+                    || mode == SecureChatEngine.Mode.WAITING) {
+                secureChat.disable();
+                updateSecureModeUi();
+                BulletinFactory.of(this)
+                        .createSimpleBulletin(
+                                R.raw.chats_infotip,
+                                getString(R.string.ForkSecureSendingDisabled))
+                        .show();
+                return;
+            }
+            if (secureChat.resumeIfPaused()) {
+                updateSecureModeUi();
+                BulletinFactory.of(this)
+                        .createSimpleBulletin(
+                                R.raw.chats_infotip,
+                                getString(R.string.ForkSecureSendingResumed))
+                        .show();
+                return;
+            }
+            if (chatActivityEnterView.processSendingText(
+                    "/secure-start", false, 0, 0, 0)) {
+                updateSecureModeUi();
+                BulletinFactory.of(this)
+                        .createSimpleBulletin(
+                                R.raw.chats_infotip,
+                                getString(R.string.ForkSecureOfferSent))
+                        .show();
+            }
+        } catch (RuntimeException error) {
+            android.util.Log.e("ForkSecure", "Secure mode toggle failed", error);
+            FileLog.e(error);
+            BulletinFactory.of(this)
+                    .createErrorBulletin(getString(R.string.ForkSecureModeChangeFailed))
+                    .show();
+            updateSecureModeUi();
+        }
+    }
+
+    private void showSecureIdentityChangeDialog() {
+        if (!isSecureModeUiEligible() || getContext() == null) {
+            return;
+        }
+        final SecureChatEngine secureChat;
+        final String oldFingerprint;
+        final String newFingerprint;
+        try {
+            secureChat = getSecureChatEngine();
+            if (secureChat.getMode() != SecureChatEngine.Mode.IDENTITY_CHANGED) {
+                return;
+            }
+            oldFingerprint = secureChat.getTrustedFingerprint();
+            newFingerprint = secureChat.getPendingFingerprint();
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            BulletinFactory.of(this)
+                    .createErrorBulletin(
+                            getString(R.string.ForkSecureIdentityVerificationFailed))
+                    .show();
+            return;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(getContext(), getResourceProvider())
+                .setTitle(getString(R.string.ForkSecureIdentityChangedTitle))
+                .setMessage(formatString(
+                        R.string.ForkSecureIdentityChangedBody,
+                        oldFingerprint == null
+                                ? getString(R.string.ForkSecureFingerprintUnavailable)
+                                : oldFingerprint,
+                        newFingerprint == null
+                                ? getString(R.string.ForkSecureFingerprintUnavailable)
+                                : newFingerprint))
+                .setPositiveButton(getString(R.string.ForkSecureVerifyAccept), (di, which) -> {
+                    try {
+                        secureChat.acceptPendingIdentity();
+                        updateSecureModeUi();
+                        sendForkSecurePairingAcknowledgement();
+                        BulletinFactory.of(this)
+                                .createSimpleBulletin(
+                                        R.raw.chats_infotip,
+                                        getString(R.string.ForkSecureNewIdentityAccepted))
+                                .show();
+                    } catch (RuntimeException error) {
+                        FileLog.e(error);
+                        BulletinFactory.of(this)
+                                .createErrorBulletin(
+                                        getString(R.string.ForkSecureAcceptIdentityFailed))
+                                .show();
+                    }
+                })
+                .setNegativeButton(getString(R.string.Cancel), null)
+                .setNeutralButton(getString(R.string.ForkSecureRejectNewKey),
+                        (di, which) -> confirmRejectForkSecureIdentity(secureChat))
+                .create();
+        showDialog(dialog);
+    }
+
+    private void confirmRejectForkSecureIdentity(SecureChatEngine secureChat) {
+        if (getContext() == null) {
+            return;
+        }
+        showDialog(new AlertDialog.Builder(getContext(), getResourceProvider())
+                .setTitle(getString(R.string.ForkSecureRejectTitle))
+                .setMessage(getString(R.string.ForkSecureRejectBody))
+                .setPositiveButton(getString(R.string.ForkSecureRejectAndUsePlain),
+                        (di, which) -> {
+                            try {
+                                if (chatActivityEnterView == null
+                                        || !chatActivityEnterView.processSendingText(
+                                                "/secure-reject", false, 0, 0, 0)) {
+                                    BulletinFactory.of(this)
+                                            .createErrorBulletin(
+                                                    getString(
+                                                            R.string.ForkSecureRejectionNotSent))
+                                            .show();
+                                    return;
+                                }
+                                BulletinFactory.of(this)
+                                        .createSimpleBulletin(
+                                                R.raw.chats_infotip,
+                                                getString(R.string.ForkSecureKeyRejected))
+                                        .show();
+                            } catch (RuntimeException error) {
+                                FileLog.e(error);
+                            }
+                        })
+                .setNegativeButton(getString(R.string.Cancel), null)
+                .create());
+    }
+
+    private void showSecureIdentityDialog() {
+        if (!isSecureModeUiEligible() || getContext() == null) {
+            return;
+        }
+        final String fingerprint;
+        try {
+            fingerprint = getSecureChatEngine().getOwnFingerprint();
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            BulletinFactory.of(this)
+                    .createErrorBulletin(
+                            getString(R.string.ForkSecureIdentityUnavailable))
+                    .show();
+            return;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(getContext(), getResourceProvider())
+                .setTitle(getString(R.string.ForkSecureOwnIdentityTitle))
+                .setMessage(formatString(
+                        R.string.ForkSecureOwnIdentityBody, fingerprint))
+                .setPositiveButton(getString(R.string.ForkSecureResetIdentity), (di, which) ->
+                        confirmSecureIdentityReset())
+                .setNegativeButton(getString(R.string.Close), null)
+                .create();
+        showDialog(dialog);
+    }
+
+    private void confirmSecureIdentityReset() {
+        if (getContext() == null) {
+            return;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(getContext(), getResourceProvider())
+                .setTitle(getString(R.string.ForkSecureResetAllTitle))
+                .setMessage(getString(R.string.ForkSecureResetAllBody))
+                .setPositiveButton(getString(R.string.ForkSecureResetAndCreate), (di, which) -> {
+                    try {
+                        String newFingerprint =
+                                SecureChatEngine.resetOwnIdentity(getContext());
+                        secureChatEngine = null;
+                        boolean sent = chatActivityEnterView != null
+                                && chatActivityEnterView.processSendingText(
+                                        "/secure-start", false, 0, 0, 0);
+                        updateSecureModeUi();
+                        String result = sent
+                                ? getString(R.string.ForkSecureNewIdentityCreatedSent)
+                                : getString(R.string.ForkSecureNewIdentityCreatedTap);
+                        showDialog(new AlertDialog.Builder(getContext(), getResourceProvider())
+                                .setTitle(getString(R.string.ForkSecureNewIdentityTitle))
+                                .setMessage(result + formatString(
+                                        R.string.ForkSecureNewFingerprint,
+                                        newFingerprint))
+                                .setPositiveButton(getString(R.string.OK), null)
+                                .create());
+                    } catch (RuntimeException error) {
+                        FileLog.e(error);
+                        BulletinFactory.of(this)
+                                .createErrorBulletin(
+                                        getString(R.string.ForkSecureIdentityResetFailed))
+                                .show();
+                        updateSecureModeUi();
+                    }
+                })
+                .setNegativeButton(getString(R.string.Cancel), null)
+                .create();
+        showDialog(dialog);
+    }
+
     @Override
     public void didReceivedNotification(int id, int account, final Object... args) {
         if (id == NotificationCenter.messagesDidLoad) {
@@ -20420,6 +21798,7 @@ public class ChatActivity extends BaseFragment implements
             postponedScrollToLastMessageQueryIndex = 0;
         }
         ArrayList<MessageObject> messArr = (ArrayList<MessageObject>) args[2];
+        applySecureTextOverlay(messArr);
 
         boolean universalNotify = false;
         HashMap<Integer, MessageObject> oldMessages = null;
@@ -21855,6 +23234,7 @@ public class ChatActivity extends BaseFragment implements
                     FileLog.d("ChatActivity didReceiveNewMessages return: opened scheduled messages");
                     return;
                 }
+                applySecureTextOverlay(arr);
                 processNewMessages(arr);
             } else if (ChatObject.isChannel(currentChat) && !currentChat.megagroup && chatInfo != null && did == -chatInfo.linked_chat_id) {
                 for (int a = 0, N = arr.size(); a < N; a++) {
@@ -22659,6 +24039,27 @@ public class ChatActivity extends BaseFragment implements
                     updateBottomOverlay();
                 }
             }
+        } else if (id == NotificationCenter.fileLoaded) {
+            if (DialogObject.isUserDialog(dialog_id)) {
+                String loadedFileName = (String) args[0];
+                for (int i = 0; i < messages.size(); i++) {
+                    MessageObject secureMessage = messages.get(i);
+                    TLRPC.Document secureDocument =
+                            secureMessage == null ? null : secureMessage.getDocument();
+                    if (secureDocument != null
+                            && TextUtils.isEmpty(secureMessage.forkSecureMediaPath)
+                            && secureMessage.isForkSecureCarrier()
+                            && TextUtils.equals(
+                                    loadedFileName,
+                                    FileLoader.getAttachFileName(secureDocument))) {
+                        if (args.length > 1 && args[1] instanceof File) {
+                            secureMessage.forkSecureCipherPath =
+                                    ((File) args[1]).getAbsolutePath();
+                        }
+                        applyCachedSecureTextOverlay(secureMessage);
+                    }
+                }
+            }
         } else if (id == NotificationCenter.fileNewChunkAvailable) {
             MessageObject messageObject = (MessageObject) args[0];
             long finalSize = (Long) args[3];
@@ -23204,6 +24605,12 @@ public class ChatActivity extends BaseFragment implements
         } else if (id == NotificationCenter.replaceMessagesObjects) {
             long did = (long) args[0];
             final ArrayList<MessageObject> messageObjects = (ArrayList<MessageObject>) args[1];
+            if (did == dialog_id) {
+                // Reaction and other metadata updates can replace MessageObject with a fresh
+                // instance whose messageText is the raw carrier. Restore only authenticated
+                // local display copies before reply/composer previews observe the replacement.
+                applyCachedSecureTextOverlay(messageObjects);
+            }
             if (replyingMessageObject != null) {
                 for (int i = 0; i < messageObjects.size(); ++i) {
                     MessageObject messageObject = messageObjects.get(i);
@@ -25147,6 +26554,7 @@ public class ChatActivity extends BaseFragment implements
                     object.replyMessageObject = emptyMessage;
                 } else {
                     object.replyMessageObject = update;
+                    applySecureReplyOverlay(object);
                 }
                 if (chatAdapter != null) {
                     chatAdapter.updateRowWithMessageObject(object, true, false);
@@ -25376,6 +26784,7 @@ public class ChatActivity extends BaseFragment implements
             }
 
             if (messageObject.replyMessageObject != null) {
+                applySecureReplyOverlay(messageObject);
                 repliesMessagesDict.put(messageObject.replyMessageObject.getId(), messageObject.replyMessageObject);
                 addReplyMessageOwner(messageObject, 0);
             }
@@ -26473,6 +27882,9 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void replaceMessageObjects(ArrayList<MessageObject> messageObjects, int loadIndex, boolean remove, boolean ignoreDateCheckBeforeRemove) {
+        if (loadIndex == 0) {
+            applyCachedSecureTextOverlay(messageObjects);
+        }
         LongSparseArray<MessageObject.GroupedMessages> newGroups = null;
         for (int a = 0; a < messageObjects.size(); a++) {
             MessageObject messageObject = messageObjects.get(a);
@@ -28439,6 +29851,8 @@ public class ChatActivity extends BaseFragment implements
                 }
                 CharSequence pinnedText = null;
                 pinnedMessageObject.updateTranslation(false);
+                // updateTranslation may restore messageText from the Telegram transport value.
+                applyCachedSecureTextOverlay(pinnedMessageObject);
                 if (pinnedMessageObject.type == MessageObject.TYPE_MUSIC) {
                     pinnedText = String.format("%s - %s", pinnedMessageObject.getMusicAuthor(), pinnedMessageObject.getMusicTitle());
                 } else if (pinnedMessageObject.type == MessageObject.TYPE_POLL) {
@@ -29508,7 +30922,14 @@ public class ChatActivity extends BaseFragment implements
         }
         if (avatarContainer != null) {
             avatarContainer.setOccupyStatusBar(!value);
-            avatarContainer.setLayoutParams(LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.MATCH_PARENT, Gravity.TOP | Gravity.LEFT, !inPreviewMode ? 52 : 0, 0, 52, 0));
+            avatarContainer.setLayoutParams(LayoutHelper.createFrame(
+                    LayoutHelper.WRAP_CONTENT,
+                    LayoutHelper.MATCH_PARENT,
+                    Gravity.TOP | Gravity.LEFT,
+                    !inPreviewMode ? 52 : 0,
+                    0,
+                    getAvatarContainerRightMargin(52),
+                    0));
         }
         if (chatActivityEnterView != null) {
             chatActivityEnterView.setVisibility(!value ? View.VISIBLE : View.INVISIBLE);
@@ -29582,6 +31003,18 @@ public class ChatActivity extends BaseFragment implements
     @Override
     public void onResume() {
         super.onResume();
+        if (!forkSecureDeferredMessages.isEmpty()
+                && !SecureChatEngine.isStateTemporarilyUnavailable(getContext())) {
+            ArrayList<MessageObject> deferred = new ArrayList<>();
+            for (int i = 0; i < messages.size(); i++) {
+                MessageObject message = messages.get(i);
+                if (message != null && forkSecureDeferredMessages.contains(message.getId())) {
+                    deferred.add(message);
+                }
+            }
+            forkSecureDeferredMessages.clear();
+            applySecureTextOverlay(deferred);
+        }
         checkShowBlur(false);
         activityResumeTime = System.currentTimeMillis();
         if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {
@@ -30669,7 +32102,12 @@ public class ChatActivity extends BaseFragment implements
         boolean noforwards = isPeerNoForwards() || message.messageOwner.noforwards || getDialogId() == UserObject.VERIFY;
         boolean noforwardsOrPaidMedia = noforwards || message.type == MessageObject.TYPE_PAID_MEDIA;
         boolean allowUnpin = message.getDialogId() != mergeDialogId && allowPin && (pinnedMessageObjects.containsKey(message.getId()) || groupedMessages != null && !groupedMessages.messages.isEmpty() && pinnedMessageObjects.containsKey(groupedMessages.messages.get(0).getId())) && !message.isExpiredStory();
-        boolean allowEdit = message.canEditMessage(currentChat) && !chatActivityEnterView.hasAudioToSend() && message.getDialogId() != mergeDialogId && message.type != MessageObject.TYPE_STORY && message.type != MessageObject.TYPE_POLL;
+        boolean allowEdit = message.canEditMessage(currentChat)
+                && !message.isForkSecureCarrier()
+                && !chatActivityEnterView.hasAudioToSend()
+                && message.getDialogId() != mergeDialogId
+                && message.type != MessageObject.TYPE_STORY
+                && message.type != MessageObject.TYPE_POLL;
         if (allowEdit && groupedMessages != null) {
             int captionsCount = 0;
             for (int a = 0, N = groupedMessages.messages.size(); a < N; a++) {
@@ -32755,6 +34193,9 @@ public class ChatActivity extends BaseFragment implements
         if (fragmentView == null) {
             return;
         }
+        // Final common path for reaction, translation, fact-check, poll and other metadata
+        // redraws, including callers that bypass updateMessageAnimated().
+        applyCachedSecureTextOverlay(message);
         MessageObject.GroupedMessages group = groupedMessagesMap.get(message.getGroupId());
         if (group != null) {
             if (chatListItemAnimator != null) {
@@ -32849,6 +34290,12 @@ public class ChatActivity extends BaseFragment implements
 
     private void startEditingMessageObject(MessageObject messageObject, boolean asSuggestion) {
         if (messageObject == null || getParentActivity() == null) {
+            return;
+        }
+        if (messageObject.isForkSecureCarrier()) {
+            BulletinFactory.of(this)
+                    .createErrorBulletin(getString(R.string.ForkSecureEditUnsupported))
+                    .show();
             return;
         }
         if (selectionReactionsOverlay != null && selectionReactionsOverlay.isVisible()) {
@@ -41084,6 +42531,39 @@ public class ChatActivity extends BaseFragment implements
             } else if (message.isSending()) {
                 return;
             }
+            if ((message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                    || message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO)
+                    && !TextUtils.isEmpty(message.forkSecureMediaPath)) {
+                File verifiedFile = new File(message.forkSecureMediaPath);
+                if (!verifiedFile.isFile()) {
+                    alertUserOpenError(message);
+                    return;
+                }
+                if (message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+                    openForkSecurePhotoViewer(cell, message, verifiedFile);
+                    return;
+                }
+                try {
+                    String mimeType = TextUtils.isEmpty(message.forkSecureMediaMime)
+                            ? "application/octet-stream" : message.forkSecureMediaMime;
+                    String fileName = TextUtils.isEmpty(message.forkSecureMediaName)
+                            ? verifiedFile.getName() : message.forkSecureMediaName;
+                    if (!AndroidUtilities.openForView(
+                            verifiedFile,
+                            fileName,
+                            mimeType,
+                            getParentActivity(),
+                            themeDelegate,
+                            false)) {
+                        alertUserOpenError(message);
+                    }
+                } catch (Exception e) {
+                    FileLog.e(e);
+                    alertUserOpenError(message);
+                }
+                return;
+            }
             if (fullPreview && message != null && message.messageOwner != null && message.messageOwner.media != null && message.messageOwner.media.webpage != null && !TextUtils.isEmpty(message.messageOwner.media.webpage.url)) {
                 final String url = message.messageOwner.media.webpage.url;
                 final String host = AndroidUtilities.getHostAuthority(url);
@@ -41280,6 +42760,51 @@ public class ChatActivity extends BaseFragment implements
                         alertUserOpenError(message);
                     }
                 }
+            }
+        }
+
+        /**
+         * Opens authenticated plaintext in Telegram's native viewer without ever attaching its
+         * path to the transport-backed MessageObject. The viewer receives a process-local copy
+         * with forwarding/sharing disabled until those actions can re-encrypt for their target.
+         */
+        private void openForkSecurePhotoViewer(
+                ChatMessageCell cell, MessageObject source, File verifiedFile) {
+            try {
+                TLRPC.TL_message localOwner = copy(source.messageOwner);
+                localOwner.media = source.messageOwner.media;
+                localOwner.attachPath = verifiedFile.getAbsolutePath();
+                localOwner.message = TextUtils.isEmpty(source.forkSecureMediaCaption)
+                        ? "" : source.forkSecureMediaCaption;
+                localOwner.noforwards = true;
+                MessageObject localPhoto =
+                        new MessageObject(currentAccount, localOwner, false, true);
+                localPhoto.type = MessageObject.TYPE_PHOTO;
+                localPhoto.photoThumbs = source.photoThumbs;
+                localPhoto.photoThumbsObject = source.photoThumbsObject;
+                localPhoto.forkSecureVerified = true;
+                localPhoto.forkSecureMediaKind =
+                        MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO;
+                localPhoto.forkSecureMediaPath = verifiedFile.getAbsolutePath();
+                localPhoto.forkSecureMediaName = source.forkSecureMediaName;
+                localPhoto.forkSecureMediaMime = source.forkSecureMediaMime;
+                localPhoto.forkSecureMediaCaption = source.forkSecureMediaCaption;
+                localPhoto.mediaExists = true;
+                localPhoto.attachPathExists = true;
+                PhotoViewer.getInstance().setParentActivity(
+                        ChatActivity.this, themeDelegate);
+                if (!PhotoViewer.getInstance().openForkSecurePhoto(
+                        localPhoto,
+                        verifiedFile,
+                        source.forkSecureMediaWidth,
+                        source.forkSecureMediaHeight,
+                        ChatActivity.this,
+                        photoViewerProvider)) {
+                    alertUserOpenError(source);
+                }
+            } catch (RuntimeException error) {
+                FileLog.e(error);
+                alertUserOpenError(source);
             }
         }
 

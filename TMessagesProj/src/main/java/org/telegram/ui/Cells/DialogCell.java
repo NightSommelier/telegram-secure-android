@@ -85,6 +85,8 @@ import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.utils.DrawableUtils;
+import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
@@ -500,6 +502,8 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
     private TLRPC.User user;
     private TLRPC.Chat chat;
     private TLRPC.EncryptedChat encryptedChat;
+    private SecureChatEngine securePreviewEngine;
+    private long securePreviewPeerId;
     private CharSequence lastPrintString;
     private int printingStringType;
     private boolean draftVoice;
@@ -1319,6 +1323,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         if (message != null) {
             message.updateTranslation();
         }
+        // Translation can rebuild messageText from the transport carrier. Resolve the local
+        // secure preview afterwards so the dialogs list never regresses to TGS1 or a placeholder.
+        applyForkSecureDialogPreview();
         CharSequence msgText = message != null ? message.messageText : null;
         if (msgText instanceof Spannable) {
             Spannable sp = new SpannableStringBuilder(msgText);
@@ -1881,7 +1888,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                                     } else {
                                         emoji = "\uD83D\uDCCE ";
                                     }
-                                    if (message.hasHighlightedWords() && !TextUtils.isEmpty(message.messageOwner.message)) {
+                                    if (message.hasHighlightedWords()
+                                            && !message.isForkSecureCarrier()
+                                            && !TextUtils.isEmpty(message.messageOwner.message)) {
                                         CharSequence text = message.messageTrimmedToHighlight;
                                         int w = getMeasuredWidth() - dp(messagePaddingStart + 23 + 24);
                                         if (hasNameInMessage) {
@@ -1976,7 +1985,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                                             messageString = getString(R.string.StoryMentionInDialog);
                                         }
                                     } else {
-                                        if (message.hasHighlightedWords() && !TextUtils.isEmpty(message.messageOwner.message)){
+                                        if (message.hasHighlightedWords()
+                                            && !message.isForkSecureCarrier()
+                                            && !TextUtils.isEmpty(message.messageOwner.message)){
                                             messageString = message.messageTrimmedToHighlight;
                                             if (message.messageTrimmedToHighlight != null) {
                                                 messageString = message.messageTrimmedToHighlight;
@@ -2009,7 +2020,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                                     messageString = builder;
                                 }
                                 if (thumbsCount > 0) {
-                                    if (message.hasHighlightedWords() && !TextUtils.isEmpty(message.messageOwner.message)) {
+                                    if (message.hasHighlightedWords()
+                                        && !message.isForkSecureCarrier()
+                                        && !TextUtils.isEmpty(message.messageOwner.message)) {
                                         messageString = message.messageTrimmedToHighlight;
                                         if (message.messageTrimmedToHighlight != null) {
                                             messageString = message.messageTrimmedToHighlight;
@@ -2941,6 +2954,81 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             }
         }
         updateThumbsPosition();
+    }
+
+    /**
+     * Resolves Fork-Secure carriers only for ordinary one-to-one user dialogs.
+     * Native Telegram Secret Chats, groups, bots, self, and service dialogs never enter this path.
+     */
+    private void applyForkSecureDialogPreview() {
+        if (message == null
+                || message.messageOwner == null
+                || !DialogObject.isUserDialog(currentDialogId)
+                || currentDialogId == UserConfig.getInstance(currentAccount).getClientUserId()) {
+            return;
+        }
+        TLRPC.User peer = MessagesController.getInstance(currentAccount).getUser(currentDialogId);
+        if (peer == null || peer.bot || UserObject.isService(peer.id)) {
+            return;
+        }
+        String carrier = message.messageOwner.message;
+        if (carrier == null || !carrier.startsWith(SecureCarrierCodec.PREFIX)) {
+            return;
+        }
+        // Fail closed before consulting the local secure cache. Document captions are stored
+        // separately and otherwise win over messageText in getMessageStringFormatted().
+        message.applyNewText(message.getDocument() != null
+                ? getString(R.string.ForkSecureEncryptedFile)
+                : getString(R.string.ForkSecureReplyPreview));
+        try {
+            if (securePreviewEngine == null
+                    || securePreviewPeerId != currentDialogId
+                    || securePreviewEngine.isStale()) {
+                securePreviewEngine =
+                        new SecureChatEngine(getContext(), currentAccount, currentDialogId);
+                securePreviewPeerId = currentDialogId;
+            }
+            SecureChatEngine.DialogPreview preview = securePreviewEngine.resolveDialogPreview(
+                    carrier, message.isOutOwner());
+            if (preview == null) {
+                return;
+            }
+            if (preview.kind == SecureChatEngine.DialogPreview.Kind.PLAINTEXT) {
+                message.applyNewText(preview.plaintext);
+            } else if (preview.kind == SecureChatEngine.DialogPreview.Kind.PAIRING_ACK) {
+                message.applyNewText(getString(R.string.ForkSecurePairingConfirmed));
+            } else if (preview.kind
+                    == SecureChatEngine.DialogPreview.Kind.PAIRING_REJECTED) {
+                message.applyNewText(getString(R.string.ForkSecurePairingRejected));
+            } else if (preview.kind
+                    == SecureChatEngine.DialogPreview.Kind.STATIC_STICKER) {
+                message.applyNewText(getString(R.string.ForkSecureEncryptedSticker));
+            } else if (preview.kind
+                    == SecureChatEngine.DialogPreview.Kind.PHOTO) {
+                message.applyNewText(getString(R.string.ForkSecureEncryptedPhoto));
+            } else if (preview.kind
+                    == SecureChatEngine.DialogPreview.Kind.FILE) {
+                message.applyNewText(getString(R.string.ForkSecureEncryptedFile));
+            } else if (preview.kind
+                    == SecureChatEngine.DialogPreview.Kind.PAIRING_OFFER_SENT) {
+                message.applyNewText(getString(R.string.ForkSecurePairingOfferSent));
+            } else if (preview.kind
+                    == SecureChatEngine.DialogPreview.Kind.PAIRING_OFFER_RECEIVED) {
+                message.applyNewText(getString(R.string.ForkSecurePairingOfferReceived));
+            } else {
+                message.applyNewText(getString(R.string.ForkSecureOutgoingUnavailable));
+            }
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            // A marked carrier must never leak ciphertext into the dialogs list.
+            message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+        } finally {
+            if (message.getDocument() != null) {
+                // A secure sticker is presented as a sticker, not as a document caption.
+                // Keeping caption populated makes Telegram prepend its paperclip file marker.
+                message.caption = null;
+            }
+        }
     }
 
     public void setTitleOverride(String s) {
@@ -5909,7 +5997,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             } else {
                 emoji = "\uD83D\uDCCE ";
             }
-            if (message.hasHighlightedWords() && !TextUtils.isEmpty(message.messageOwner.message)) {
+            if (message.hasHighlightedWords()
+                && !message.isForkSecureCarrier()
+                && !TextUtils.isEmpty(message.messageOwner.message)) {
                 CharSequence text = message.messageTrimmedToHighlight;
                 int w = getMeasuredWidth() - dp(messagePaddingStart + 23 + 24);
                 if (hasNameInMessage) {
@@ -6022,8 +6112,10 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 }
             }
         } else if (message.messageOwner.message != null) {
-            CharSequence mess = message.messageOwner.message;
-            if (message.hasHighlightedWords()) {
+            CharSequence mess = message.isForkSecureCarrier()
+                    ? message.messageText
+                    : message.messageOwner.message;
+            if (message.hasHighlightedWords() && !message.isForkSecureCarrier()) {
                 if (message.messageTrimmedToHighlight != null) {
                     mess = message.messageTrimmedToHighlight;
                 }
