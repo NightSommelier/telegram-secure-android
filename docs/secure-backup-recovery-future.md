@@ -51,17 +51,20 @@ The application manifest enables Android backup for Telegram's custom
 still needs an automated manifest/backup regression test, because a future
 upstream backup configuration change must not silently include secure state.
 
-Before export/import implementation, local display/content records also need
-bounded retention and deletion hooks. Otherwise backup policy and Telegram
-message deletion would disagree about which plaintext remains recoverable on
-the device.
+Per-message and per-dialog deletion hooks now purge the matching encrypted
+display/content records. In-memory display text and decrypted/encrypted media
+cache directories are bounded. Durable encrypted display/content records are
+intentionally not evicted automatically yet: without a history archive, that
+would make old carriers permanently unreadable. A reviewed retention/history
+policy remains required before old-message backup.
 
 ## Delivery plan
 
 1. Decide and document the recovery threat model: lost phone, damaged app data,
    voluntary migration, stolen archive, compromised active device and cloned
    restore.
-2. Specify the identity-only archive and a fresh-session recovery handshake.
+2. Review `secure-identity-backup-format-draft.md`, including its identity-only
+   archive and fresh-session recovery handshake.
    Do not serialize live ratchet/session objects into the first format.
 3. Produce deterministic format, wrong-password, tamper, rollback, account
    mismatch and duplicate-device fixtures with two independent consumers.

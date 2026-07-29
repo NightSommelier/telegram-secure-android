@@ -6,10 +6,10 @@ Secret Chats and group chats are not changed by Fork-Secure.
 
 ## Executive result
 
-The current build is a working text/photo/document/sticker prototype, not yet a
-chat-wide security boundary. Secure mode has individual send-path hooks, so an
-unsupported Telegram action may still use the normal cloud-chat path. Before
-testing with friends, protected chats need one central fail-closed outbound gate.
+The current build is a working text/photo/document/sticker prototype with a
+central fail-closed send boundary. Unsupported outbound actions are blocked
+before Telegram upload, but the media/state protocols and recovery design are
+still incomplete.
 
 Telegram will still observe both account IDs, message and file timing, carrier
 and ciphertext sizes, delivery/read activity, scheduling, and IP/network data.
@@ -19,8 +19,8 @@ Fork-Secure cannot hide those properties while using Telegram transport.
 
 | Capability | Current result | Remaining exposure or gap |
 | --- | --- | --- |
-| Text | Encrypted `TGS1:` carrier; local display cache | Cloud draft and link-preview paths are not isolated |
-| Replies and quotes | Encrypted message body displays locally | Reply message ID is metadata; quote text/entities may be sent separately |
+| Text | Encrypted `TGS1:` carrier; local display cache | Telegram still observes carrier size/timing |
+| Replies and quotes | Encrypted body; plaintext quote fields stripped | Reply message ID remains Telegram metadata |
 | Forwarding | Secure text is decrypted locally and re-encrypted for the destination | Secure media forwarding is blocked |
 | Silent send | `notify=false` is preserved | Telegram sees the silent flag |
 | Scheduled send | Encrypted carrier and schedule parameters are preserved | Telegram sees schedule; delayed/out-of-order ratchet behavior needs tests |
@@ -28,29 +28,23 @@ Fork-Secure cannot hide those properties while using Telegram transport.
 | Photos | Original bytes, name, MIME and caption are encrypted; native viewer works | Albums, spoilers and view-once are incomplete |
 | Documents | File bytes and authenticated metadata are encrypted | Native media-specific playback is incomplete |
 | Edits | Blocked fail-closed | Needs an authenticated edit control message |
-| Reactions | UI remains usable | Emoji, target message ID and actor remain normal Telegram data |
-| Deletion | Telegram carrier can be deleted | Local decrypted text/content cache is not purged by message deletion |
+| Reactions | Blocked before send in protected mode | Authenticated reaction controls are not implemented |
+| Deletion | Telegram carrier and matching local text/content records are deleted | Authenticated remote delete controls are not implemented |
 | Identity reset | Supported with re-pairing | No recovery archive or safe multi-device protocol |
 
-## P0 leaks and unsafe fallback paths
+## Closed P0 fallback paths
 
-1. **Cloud drafts:** Telegram drafts synchronize typed text between devices.
-   `ChatActivity.saveDraft()` currently has no Fork-Secure exception, so text
-   typed but not sent in a protected chat may be uploaded as plaintext.
-2. **Link previews:** preview discovery starts from the plaintext URL. After the
-   message is replaced with a carrier, the existing `messageWebPage` can still
-   be attached, revealing the URL and preview to Telegram.
-3. **Reply quotes:** Telegram's reply structure includes a target message ID and
-   may include `quote_text` and `quote_entities`. Only the ID may remain as
-   unavoidable routing metadata; quoted content must move inside the encrypted
-   payload.
-4. **Non-central interception:** voice notes, round videos, native video, music,
-   GIF/inline results, contacts, geo/live geo, polls, dice and other structured
-   media do not all pass the four existing secure hooks. Protected mode must
-   block every non-allowlisted outbound type instead of falling back.
-5. **Local retention:** encrypted display records are durable and currently
-   unbounded. Telegram deletion and cache cleanup do not remove the matching
-   Fork-Secure records.
+1. Cloud drafts are cleared and not saved while the chat is protected.
+2. Server link-preview discovery and attached webpage metadata are suppressed.
+3. Plaintext quote text/entities and other reply-side content are stripped.
+4. A central send gate plus direct edit/reaction/vote/todo guards reject
+   unallowlisted protected-chat actions.
+5. Telegram message/dialog deletion removes matching local display/content
+   records; display memory and media files use bounded caches.
+
+Durable encrypted display/content records remain intentionally unbounded until
+history recovery exists. Evicting them now would permanently remove access to
+old message plaintext after the ratchet has advanced.
 
 ## Telegram feature matrix
 
