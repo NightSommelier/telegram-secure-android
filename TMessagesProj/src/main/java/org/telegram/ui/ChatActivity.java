@@ -21675,6 +21675,11 @@ public class ChatActivity extends BaseFragment implements
         if (!groupedMessages.messages.contains(message)) {
             groupedMessages.messages.add(message);
         }
+        // Manifest decryption completes in arbitrary order. Telegram's native album path
+        // sorts the group by message id before calculating positions; doing the same here keeps
+        // the secure grid stable instead of laying out cells in decrypt-completion order.
+        Collections.sort(groupedMessages.messages, (first, second) ->
+                Integer.compare(first.getId(), second.getId()));
         groupedMessages.calculate();
         if (chatAdapter != null) {
             chatAdapter.notifyDataSetChanged(true);
