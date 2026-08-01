@@ -154,6 +154,16 @@ album marker inside the encrypted caption metadata and strip it again before dis
 keeps grouping and the no-autoplay guard stable after a process restart; legacy index entries
 without the marker remain usable as standalone media.
 
+Album layout has an explicit metadata barrier. `ChatActivity` first remembers each carrier's
+original Telegram `grouped_id`, keeps that native document group while any member is still
+pending, and only then creates the secure visual group. A secure album is eligible only when all
+members have the same authenticated album id, a positive width/height, and a photo or video
+manifest. The member list is sorted by message id and `GroupedMessages.calculate()` runs only
+when that ordered set changes. Later ciphertext/plaintext completion therefore fills existing
+cells without recalculating the grid after every file. The sender records video dimensions while
+building the manifest, so new albums do not wait for a decrypted file merely to discover their
+aspect ratios.
+
 ### Telegram visual/performance settings
 
 Secure UI must follow existing Telegram controls instead of adding a parallel

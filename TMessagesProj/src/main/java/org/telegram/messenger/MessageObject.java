@@ -226,6 +226,8 @@ public class MessageObject {
     public String forkSecureMediaCaption;
     /** Local-only authenticated album identifier carried inside the encrypted manifest. */
     public String forkSecureAlbumId;
+    /** Local-only original Telegram grouped id, retained before secure presentation remapping. */
+    public long forkSecureNativeGroupId;
     /** Hides opaque transport metadata while authenticated media is prepared in background. */
     public boolean forkSecureMediaPending;
     public CharSequence linkDescription;

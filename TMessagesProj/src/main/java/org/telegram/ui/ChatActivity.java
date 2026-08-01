@@ -21637,34 +21637,101 @@ public class ChatActivity extends BaseFragment implements
             message.type = MessageObject.TYPE_PHOTO;
         }
         applySecureAlbumGrouping(message);
-        // The group was initially laid out while the encrypted transport was still a generic
-        // document. Recalculate it after authenticated photo/video metadata is restored so a
-        // protected album uses the same stacked layout as a normal Telegram album.
-        long groupId = message.getGroupId();
-        if (groupId != 0) {
-            MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(groupId);
-            if (groupedMessages != null) {
-                groupedMessages.calculate();
-                if (chatAdapter != null) {
-                    chatAdapter.notifyDataSetChanged(true);
-                }
-            }
-        }
         message.forkSecureVerified = true;
         syncSecureMediaCaption(message);
     }
 
-    private void applySecureAlbumGrouping(MessageObject message) {
+    private long rememberSecureNativeGroupId(MessageObject message) {
+        if (message == null || message.messageOwner == null) {
+            return 0;
+        }
+        if (message.forkSecureNativeGroupId == 0) {
+            long groupId = message.getGroupIdForUse();
+            if (groupId != 0) {
+                message.forkSecureNativeGroupId = groupId;
+            }
+        }
+        return message.forkSecureNativeGroupId;
+    }
+
+    private ArrayList<MessageObject> collectSecureNativeAlbumMembers(
+            MessageObject seed, long nativeGroupId) {
+        ArrayList<MessageObject> result = new ArrayList<>();
+        HashSet<Integer> messageIds = new HashSet<>();
+        if (nativeGroupId == 0) {
+            if (seed != null && seed.isForkSecureCarrier()) {
+                result.add(seed);
+            }
+            return result;
+        }
+        for (MessageObject candidate : messages) {
+            if (candidate == null || candidate.messageOwner == null
+                    || !candidate.isForkSecureCarrier()
+                    || rememberSecureNativeGroupId(candidate) != nativeGroupId
+                    || !messageIds.add(candidate.getId())) {
+                continue;
+            }
+            result.add(candidate);
+        }
+        if (seed != null && seed.isForkSecureCarrier()
+                && (nativeGroupId == 0 || rememberSecureNativeGroupId(seed) == nativeGroupId)
+                && messageIds.add(seed.getId())) {
+            result.add(seed);
+        }
+        return result;
+    }
+
+    private boolean secureAlbumMetadataReady(
+            ArrayList<MessageObject> members, String albumId) {
+        if (members.size() < 2 || TextUtils.isEmpty(albumId)) {
+            return false;
+        }
+        for (MessageObject member : members) {
+            boolean photo = member.forkSecureMediaKind
+                    == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO;
+            boolean video = member.forkSecureMediaKind
+                    == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                    && member.forkSecureMediaMime != null
+                    && member.forkSecureMediaMime.startsWith("video/");
+            if (!TextUtils.equals(albumId, member.forkSecureAlbumId)
+                    || (!photo && !video)
+                    || member.forkSecureMediaWidth <= 0
+                    || member.forkSecureMediaHeight <= 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean applySecureAlbumGrouping(MessageObject message) {
         if (message == null || TextUtils.isEmpty(message.forkSecureAlbumId)
                 || message.messageOwner == null) {
-            return;
+            return false;
         }
+        long nativeGroupId = rememberSecureNativeGroupId(message);
+        ArrayList<MessageObject> members = collectSecureNativeAlbumMembers(
+                message, nativeGroupId);
+        if (nativeGroupId != 0 && members.size() > 1
+                && !secureAlbumMetadataReady(members, message.forkSecureAlbumId)) {
+            // Keep Telegram's original document grouping while manifests/plaintext are still
+            // arriving. Recalculating a partial secure group is what caused visible reflow.
+            return false;
+        }
+        if (nativeGroupId != 0 && members.size() < 2) {
+            return false;
+        }
+        if (members.isEmpty()) {
+            members.add(message);
+        }
+        Collections.sort(members, (first, second) ->
+                Integer.compare(first.getId(), second.getId()));
         long groupId = secureAlbumGroupId(message.forkSecureAlbumId);
         if (groupId == 0) {
-            return;
+            return false;
         }
-        message.messageOwner.grouped_id = groupId;
-        message.messageOwner.flags |= 131072;
+        if (nativeGroupId != 0 && nativeGroupId != groupId) {
+            groupedMessagesMap.remove(nativeGroupId);
+        }
         MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(groupId);
         if (groupedMessages == null) {
             groupedMessages = new MessageObject.GroupedMessages();
@@ -21672,18 +21739,31 @@ public class ChatActivity extends BaseFragment implements
             groupedMessages.reversed = reversed;
             groupedMessagesMap.put(groupId, groupedMessages);
         }
-        if (!groupedMessages.messages.contains(message)) {
-            groupedMessages.messages.add(message);
+        boolean changed = groupedMessages.messages.size() != members.size();
+        if (!changed) {
+            for (int i = 0; i < members.size(); i++) {
+                if (groupedMessages.messages.get(i).getId() != members.get(i).getId()) {
+                    changed = true;
+                    break;
+                }
+            }
         }
-        // Manifest decryption completes in arbitrary order. Telegram's native album path
-        // sorts the group by message id before calculating positions; doing the same here keeps
-        // the secure grid stable instead of laying out cells in decrypt-completion order.
-        Collections.sort(groupedMessages.messages, (first, second) ->
-                Integer.compare(first.getId(), second.getId()));
+        groupedMessages.messages.clear();
+        for (MessageObject member : members) {
+            member.messageOwner.grouped_id = groupId;
+            member.messageOwner.flags |= 131072;
+            groupedMessages.messages.add(member);
+        }
+        if (!changed && groupedMessages.positions.size() == members.size()) {
+            return true;
+        }
+        // Manifest dimensions are complete before this point, so calculate exactly once for the
+        // album. Plaintext download completion must not move the already laid-out cells.
         groupedMessages.calculate();
         if (chatAdapter != null) {
             chatAdapter.notifyDataSetChanged(true);
         }
+        return true;
     }
 
     private static long secureAlbumGroupId(String albumId) {

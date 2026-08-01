@@ -2791,6 +2791,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     } else {
                         mimeType = safeForkSecureMime(
                                 resolved.mimeType, null, false);
+                        if (mimeType != null && mimeType.startsWith("video/")) {
+                            TLRPC.TL_documentAttributeVideo videoAttribute =
+                                    new TLRPC.TL_documentAttributeVideo();
+                            fillVideoAttribute(
+                                    resolved.file.getAbsolutePath(), videoAttribute, null);
+                            width = videoAttribute.w;
+                            height = videoAttribute.h;
+                        }
                     }
                     SecureContentCodec.Attachment manifest =
                             SecureMediaCrypto.encryptAttachmentFile(
