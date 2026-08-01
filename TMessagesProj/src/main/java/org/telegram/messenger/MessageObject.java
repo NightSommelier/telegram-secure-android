@@ -1989,11 +1989,38 @@ public class MessageObject {
                     }
                 }
 
+                if (secureVisualLayout) {
+                    /*
+                     * The encrypted transport has no server-side visual layout to reuse. Keep
+                     * large protected albums deterministic: preserve timeline order and split
+                     * them into balanced rows of at most three cells (5 = 2+3, 7 = 2+2+3,
+                     * 9 = 3+3+3, 10 = 2+2+3+3). This avoids the native first-fit layouts such
+                     * as 1+2+3+3, which leave visible empty spans while messages are replaced
+                     * by their server acknowledgements.
+                     */
+                    int rows = (count + 2) / 3;
+                    int baseCount = count / rows;
+                    int extraCells = count % rows;
+                    int[] lineCounts = new int[rows];
+                    float[] heights = new float[rows];
+                    int start = 0;
+                    for (int i = 0; i < rows; i++) {
+                        int lineCount = baseCount + (i >= rows - extraCells ? 1 : 0);
+                        lineCounts[i] = lineCount;
+                        heights[i] = multiHeight(croppedRatios, start, start + lineCount);
+                        start += lineCount;
+                    }
+                    MessageGroupedLayoutAttempt balanced =
+                            new MessageGroupedLayoutAttempt(1, 1, 1.0f, 1.0f);
+                    balanced.lineCounts = lineCounts;
+                    balanced.heights = heights;
+                    attempts.clear();
+                    attempts.add(balanced);
+                }
+
                 MessageGroupedLayoutAttempt optimal = null;
-                // The upstream first-fit fallback produces a 2+4+3 layout for portrait-heavy
-                // secure albums. Their opaque Telegram documents have no server thumbnail, so
-                // that transient choice differs from the stable layout after reopening the chat.
-                // Evaluate all candidates for secure visual albums and keep the best geometry.
+                // The balanced secure candidate above is intentional; regular Telegram albums
+                // preserve the upstream first-fit behavior.
                 float optimalDiff = secureVisualLayout ? Float.MAX_VALUE : 0.0f;
                 float maxHeight = maxSizeWidth / 3 * 4;
                 for (int a = 0; a < attempts.size(); a++) {

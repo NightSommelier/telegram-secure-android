@@ -21740,8 +21740,9 @@ public class ChatActivity extends BaseFragment implements
         if (members.isEmpty()) {
             members.add(message);
         }
-        Collections.sort(members, (first, second) ->
-                Integer.compare(first.getId(), second.getId()));
+        // collectSecureNativeAlbumMembers walks the chat timeline. Keep that order: sorting by
+        // transient local/server ids changes the relation between adapter rows and positions,
+        // which creates empty gaps while acknowledgements arrive.
         long groupId = secureAlbumGroupId(message.forkSecureAlbumId);
         if (groupId == 0) {
             return false;
