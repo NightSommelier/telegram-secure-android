@@ -1148,6 +1148,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private MessageObject forkSecureLocalViewerMessage;
     /** Source messages represented by the process-local Fork-Secure picker entries. */
     private ArrayList<MessageObject> forkSecureLocalViewerMessages;
+    /** True only while the explicit Fork-Secure caption action owns the editor. */
+    private boolean forkSecureCaptionEditing;
+    private CharSequence forkSecureCaptionBeforeEdit;
+    private boolean forkSecureCaptionAboveBeforeEdit;
     /** Local authenticated locations consumed by the normal fullscreen thumbnail strip. */
     private final ArrayList<ImageLocation> forkSecureViewerLocations = new ArrayList<>();
     /** The picker entries currently represented by {@link #forkSecureViewerLocations}. */
@@ -2210,6 +2214,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private final static int gallery_menu_chromecast = 24;
     private final static int gallery_menu_create_sticker = 25;
     private final static int gallery_menu_delete2 = 26;
+    private final static int gallery_menu_edit_caption = 27;
 
     private final static int ads_sponsor_info = 101;
     private final static int ads_about = 102;
@@ -3026,6 +3031,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             return false;
         }
         default void moveCaptionAbove(boolean above) {}
+
+        /** Allows a local, authenticated viewer entry to expose its caption editor. */
+        default boolean allowCaptionEditing() {
+            return false;
+        }
 
         default boolean isEditingMessage() {
             return false;
@@ -5168,6 +5178,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                             ((LaunchActivity) parentActivity).presentFragment(mediaActivity, false, true);
                         }
                     }
+                } else if (id == gallery_menu_edit_caption) {
+                    openForkSecureCaptionEditor();
                 } else if (id == gallery_menu_showinchat || id == gallery_menu_reply) {
                     MessageObject actionMessage = getViewerActionMessage();
                     if (actionMessage == null) {
@@ -5368,7 +5380,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     if (parentActivity == null || placeProvider == null) {
                         return;
                     }
-                    if (isForkSecurePhotoViewer() && parentChatActivity != null) {
+                    if (isForkSecureViewer() && parentChatActivity != null) {
                         MessageObject actionMessage = getViewerActionMessage();
                         parentChatActivity.showDeleteMessageAlertFromViewer(actionMessage);
                         closePhoto(false, false);
@@ -5808,7 +5820,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             public boolean canOpenMenu() {
                 if (currentMessageObject != null
                         || currentSecureDocument != null
-                        || isForkSecurePhotoViewer()) {
+                        || isForkSecureViewer()) {
                     return true;
                 } else if (currentFileLocationVideo != null) {
                     File f = FileLoader.getInstance(currentAccount).getPathToAttach(getFileLocation(currentFileLocationVideo), getFileLocationExt(currentFileLocationVideo), avatarsDialogId != 0 || isEvent);
@@ -5958,6 +5970,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         menuItem.addSubItem(gallery_menu_showinchat, R.drawable.msg_message, getString(R.string.ShowInChat)).setColors(0xfffafafa, 0xfffafafa);
         menuItem.addSubItem(gallery_menu_create_sticker, R.drawable.msg_sticker, getString(R.string.CreateSticker)).setColors(0xfffafafa, 0xfffafafa);
         menuItem.addSubItem(gallery_menu_reply, R.drawable.menu_reply, getString(R.string.Reply)).setColors(0xfffafafa, 0xfffafafa);
+        menuItem.addSubItem(gallery_menu_edit_caption, R.drawable.msg_edit, getString(R.string.EditCaption)).setColors(0xfffafafa, 0xfffafafa);
         menuItem.addSubItem(gallery_menu_report, R.drawable.msg_report, getString(R.string.ReportProfilePhoto)).setColors(0xfffafafa, 0xfffafafa);
         menuItem.addSubItem(gallery_menu_share, R.drawable.msg_shareout, getString(R.string.ShareFile)).setColors(0xfffafafa, 0xfffafafa);
         menuItem.addSubItem(gallery_menu_masks2, R.drawable.msg_sticker, getString(R.string.ShowStickers)).setColors(0xfffafafa, 0xfffafafa);
@@ -6997,6 +7010,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             placeProvider.needAddMorePhotos();
             closePhoto(true, false);
         });
+        captionEdit.setOnKeyboardOpen(this::onForkSecureCaptionKeyboardVisibilityChanged);
 
         topCaptionEdit = new CaptionPhotoViewer(activityContext, windowView, containerView, containerView, resourcesProvider, blurManager, this::applyCaption) {
             private final Path path = new Path();
@@ -7127,6 +7141,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             placeProvider.needAddMorePhotos();
             closePhoto(true, false);
         });
+        topCaptionEdit.setOnKeyboardOpen(this::onForkSecureCaptionKeyboardVisibilityChanged);
 
         stickerMakerBackgroundView = new StickerMakerBackgroundView(activityContext) {
             @Override
@@ -9939,9 +9954,86 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             return;
         }
         if (apply) {
-            applyCaption();
+            CharSequence caption = applyCaption();
+            if (forkSecureCaptionEditing) {
+                finishForkSecureCaptionEditor(caption, true);
+                return;
+            }
+        } else if (forkSecureCaptionEditing) {
+            finishForkSecureCaptionEditor(forkSecureCaptionBeforeEdit, false);
+            return;
         }
         getCaptionView().onBackPressed();
+    }
+
+    private void onForkSecureCaptionKeyboardVisibilityChanged(boolean visible) {
+        if (visible || !forkSecureCaptionEditing || !isVisible()) {
+            return;
+        }
+        // Some keyboards dismiss through their own action/back button and never pass through
+        // PhotoViewer's pre-IME callback. Treat that transition as the explicit edit's commit so
+        // the input layer cannot remain stranded over the fullscreen viewer.
+        CharSequence caption = applyCaption();
+        finishForkSecureCaptionEditor(caption, true);
+    }
+
+    /**
+     * Ends the explicit secure caption edit and returns to the normal viewer caption. The
+     * ordinary Telegram media picker keeps its editor open after the keyboard is dismissed;
+     * secure media is already sent, so leaving that editor visible makes a completed edit look
+     * unfinished and hides the refreshed caption/album UI.
+     */
+    private void finishForkSecureCaptionEditor(CharSequence caption, boolean applied) {
+        if (!forkSecureCaptionEditing) {
+            return;
+        }
+        if (caption == null) {
+            caption = "";
+        }
+        final String captionText = caption.toString();
+        final CharSequence displayCaption = applied ? captionText : forkSecureCaptionBeforeEdit;
+        final Object object = currentIndex >= 0 && currentIndex < imagesArrLocals.size()
+                ? imagesArrLocals.get(currentIndex) : null;
+        if (object instanceof MediaController.PhotoEntry) {
+            ((MediaController.PhotoEntry) object).caption = applied
+                    ? captionText : forkSecureCaptionBeforeEdit;
+        }
+        MessageObject message = getForkSecureViewerMessage();
+        if (message != null) {
+            if (applied) {
+                message.forkSecureMediaCaption = captionText;
+                if (message.messageOwner != null && placeProvider != null) {
+                    message.messageOwner.invert_media = placeProvider.isCaptionAbove();
+                }
+            } else {
+                message.forkSecureMediaCaption = forkSecureCaptionBeforeEdit == null
+                        ? null : forkSecureCaptionBeforeEdit.toString();
+                if (message.messageOwner != null) {
+                    message.messageOwner.invert_media = forkSecureCaptionAboveBeforeEdit;
+                }
+            }
+        }
+
+        forkSecureCaptionEditing = false;
+        forkSecureCaptionBeforeEdit = null;
+        editing = false;
+        needCaptionLayout = false;
+        captionEdit.editText.hidePopup(true);
+        topCaptionEdit.editText.hidePopup(true);
+        captionEdit.closeKeyboard();
+        topCaptionEdit.closeKeyboard();
+        showEditCaption(false, false);
+
+        // The explicit editor can temporarily put the caption switcher in pickerView. Move it
+        // back before setCurrentCaption() so the regular fullscreen caption container becomes
+        // visible again instead of leaving an empty/covered editor layer on screen.
+        if (captionTextViewSwitcher.getParent() == pickerView) {
+            pickerView.removeView(captionTextViewSwitcher);
+        }
+        setCurrentCaption(message, displayCaption, false, true);
+        if (isForkSecureViewer()) {
+            configureForkSecurePhotoActions();
+        }
     }
 
     private CaptionContainerView getCaptionView() {
@@ -13873,8 +13965,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             if (dialogId == 0 && currentMessageObject != null)
                 dialogId = currentMessageObject.getDialogId();
             pickerViewSendButton.setStarsPrice(
-                (placeProvider != null && placeProvider.isEditingMessage() && !placeProvider.isEditingMessageResend()) ? 0 : MessagesController.getInstance(currentAccount).getSendPaidMessagesStars(dialogId),
-                Math.max(1, placeProvider == null ? 1 : placeProvider.getSelectedCount())
+                    (placeProvider != null && placeProvider.isEditingMessage() && !placeProvider.isEditingMessageResend()) ? 0 : MessagesController.getInstance(currentAccount).getSendPaidMessagesStars(dialogId),
+                    Math.max(1, placeProvider == null ? 1 : placeProvider.getSelectedCount())
             );
         }
     }
@@ -13965,6 +14057,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         opennedFromMedia = false;
         openedFromProfile = false;
         needCaptionLayout = false;
+        forkSecureCaptionEditing = false;
+        forkSecureCaptionBeforeEdit = null;
+        forkSecureCaptionAboveBeforeEdit = false;
         containerView.setTag(1);
         playerAutoStarted = false;
         isCurrentVideo = false;
@@ -14044,6 +14139,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         menuItem.hideSubItem(gallery_menu_showinchat);
         menuItem.hideSubItem(gallery_menu_create_sticker);
         menuItem.hideSubItem(gallery_menu_reply);
+        menuItem.hideSubItem(gallery_menu_edit_caption);
         menuItem.hideSubItem(gallery_menu_report);
         menuItem.hideSubItem(gallery_menu_share);
         menuItem.hideSubItem(gallery_menu_openin);
@@ -14364,6 +14460,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 cropItem.setVisibility(obj instanceof MediaController.SearchImage && ((MediaController.SearchImage) obj).type == 0 ? View.VISIBLE : View.GONE);
                 rotateItem.setVisibility(View.GONE);
                 mirrorItem.setVisibility(View.GONE);
+                // A secure viewer is read-only on open. Its provider may support caption edits,
+                // but the editor is entered only through the explicit "Edit Caption" menu item.
                 allowCaption = cropItem.getVisibility() == View.VISIBLE;
             }
             needCaptionLayout = allowCaption && (placeProvider == null || placeProvider.allowCaption());
@@ -14482,9 +14580,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.dialogPhotosUpdate, dialogPhotos);
             }
         }
+        boolean secureViewer = isForkSecureViewer();
         if (currentMessageObject != null && currentMessageObject.isVideo() || currentBotInlineResult != null && (currentBotInlineResult.type.equals("video") || MessageObject.isVideoDocument(currentBotInlineResult.document)) || (pageBlocksAdapter != null && (pageBlocksAdapter.isVideo(index) || pageBlocksAdapter.isHardwarePlayer(index))) || (sendPhotoType == SELECT_TYPE_NO_SELECT && ((MediaController.PhotoEntry)imagesArrLocals.get(index)).isVideo)) {
-            playerAutoStarted = true;
-            onActionClick(false);
+            playerAutoStarted = !secureViewer || SharedConfig.isAutoplayVideo();
+            if (!secureViewer || SharedConfig.isAutoplayVideo()) {
+                onActionClick(false);
+            }
         } else if (!imagesArrLocals.isEmpty()) {
             final Object entry = imagesArrLocals.get(index);
             final TLRPC.User user = parentChatActivity != null ? parentChatActivity.getCurrentUser() : null;
@@ -14544,6 +14645,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private void setIsAboutToSwitchToIndex(int index, boolean init, boolean animated, boolean force) {
         if (!init && switchingToIndex == index && !force) {
             return;
+        }
+        if (isForkSecureViewer()
+                && (!SharedConfig.animationsEnabled()
+                || SharedConfig.getDevicePerformanceClass() == SharedConfig.PERFORMANCE_CLASS_LOW)) {
+            animated = false;
         }
         boolean animateCaption = animated;
         final boolean forward = index >= switchingToIndex;
@@ -16137,6 +16243,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 Math.max(1, placeProvider == null ? 1 : placeProvider.getSelectedCount())
             );
         }
+        if (isForkSecureViewer()) {
+            configureForkSecurePhotoActions();
+        }
     }
 
     private void resetIndexForDeferredImageLoading() {
@@ -17266,6 +17375,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 forkSecureLocalViewerMessages = null;
             } else {
                 setForkSecureViewerLocations(photos);
+                configureForkSecurePhotoActions();
             }
             return opened;
         } catch (RuntimeException error) {
@@ -17528,9 +17638,22 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 ? forkSecureLocalViewerMessage : currentMessageObject;
     }
 
+    /**
+     * Returns the authenticated source currently represented by the local secure PhotoEntry.
+     * Caption edits must use this object, especially when the viewer is on an album item.
+     */
+    public MessageObject getCurrentForkSecureViewerMessage() {
+        if (!isVisible || (forkSecureLocalViewerMessage == null
+                && (forkSecureLocalViewerMessages == null
+                || forkSecureLocalViewerMessages.isEmpty()))) {
+            return null;
+        }
+        return getForkSecureViewerMessage();
+    }
+
     private File getForkSecureViewerFile() {
         MessageObject message = getForkSecureViewerMessage();
-        if (!isForkSecurePhotoViewer()
+        if (!isForkSecureViewer()
                 || TextUtils.isEmpty(message.forkSecureMediaPath)) {
             return null;
         }
@@ -17542,6 +17665,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         MessageObject message = getViewerActionMessage();
         final String mime = TextUtils.isEmpty(message.forkSecureMediaMime)
                 ? "image/jpeg" : message.forkSecureMediaMime;
+        final boolean isVideo = mime.startsWith("video/");
+        final String extension = isVideo ? ".mp4" : ".jpg";
         new Thread(() -> {
             Uri savedUri = null;
             boolean saved = false;
@@ -17549,13 +17674,15 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 if (Build.VERSION.SDK_INT >= 29) {
                     ContentValues values = new ContentValues();
                     values.put(MediaStore.Images.Media.DISPLAY_NAME,
-                            "Fork-Secure-" + System.currentTimeMillis() + ".jpg");
+                            "Fork-Secure-" + System.currentTimeMillis() + extension);
                     values.put(MediaStore.Images.Media.MIME_TYPE, mime);
                     values.put(MediaStore.Images.Media.RELATIVE_PATH,
-                            Environment.DIRECTORY_PICTURES + "/Telegram");
+                            (isVideo ? Environment.DIRECTORY_MOVIES : Environment.DIRECTORY_PICTURES)
+                                    + "/Telegram");
                     values.put(MediaStore.Images.Media.IS_PENDING, 1);
-                    Uri collection = MediaStore.Images.Media.getContentUri(
-                            MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                    Uri collection = isVideo
+                            ? MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                            : MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
                     savedUri = ApplicationLoader.applicationContext.getContentResolver()
                             .insert(collection, values);
                     if (savedUri != null) {
@@ -17580,10 +17707,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 } else {
                     File directory = new File(
                             Environment.getExternalStoragePublicDirectory(
-                                    Environment.DIRECTORY_PICTURES), "Telegram");
+                                    isVideo ? Environment.DIRECTORY_MOVIES : Environment.DIRECTORY_PICTURES),
+                            "Telegram");
                     directory.mkdirs();
                     File destination = new File(directory,
-                            "Fork-Secure-" + System.currentTimeMillis() + ".jpg");
+                            "Fork-Secure-" + System.currentTimeMillis() + extension);
                     try (FileInputStream input = new FileInputStream(sourceFile);
                          OutputStream output = new FileOutputStream(destination)) {
                         byte[] buffer = new byte[32 * 1024];
@@ -17609,18 +17737,32 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             if (saved) {
                 AndroidUtilities.runOnUIThread(() ->
                         BulletinFactory.createSaveToGalleryBulletin(
-                                containerView, false, 0xf9222222, 0xffffffff).show());
+                                containerView, isVideo, 0xf9222222, 0xffffffff).show());
             }
         }, "ForkSecureGallerySave").start();
     }
 
     private MessageObject getViewerActionMessage() {
-        return isForkSecurePhotoViewer()
+        return isForkSecureViewer()
                 ? getForkSecureViewerMessage() : currentMessageObject;
     }
 
+    /** Returns true for an authenticated local photo or video opened by Fork-Secure. */
+    private boolean isForkSecureViewer() {
+        MessageObject message = getForkSecureViewerMessage();
+        if (message == null || !message.forkSecureVerified) {
+            return false;
+        }
+        if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+            return true;
+        }
+        return message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                && !TextUtils.isEmpty(message.forkSecureMediaMime)
+                && message.forkSecureMediaMime.startsWith("video/");
+    }
+
     private void configureForkSecurePhotoActions() {
-        if (!isForkSecurePhotoViewer() || menuItem == null) {
+        if (!isForkSecureViewer() || menuItem == null) {
             return;
         }
         MessageObject message = getViewerActionMessage();
@@ -17642,6 +17784,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         menuItem.setSubItemShown(gallery_menu_showall, currentDialogId != 0);
         menuItem.setSubItemShown(gallery_menu_showinchat, currentDialogId != 0);
         menuItem.setSubItemShown(gallery_menu_reply, currentDialogId != 0 && canWrite);
+        menuItem.setSubItemShown(
+                gallery_menu_edit_caption,
+                placeProvider != null
+                        && placeProvider.allowCaptionEditing()
+                        && message.isOutOwner());
         menuItem.setSubItemShown(gallery_menu_share, !noforwards);
         menuItem.setSubItemShown(
                 gallery_menu_delete,
@@ -17655,6 +17802,32 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         menuItem.setSubItemShown(gallery_menu_masks2, false);
         menuItem.setSubItemShown(gallery_menu_cancel_loading, false);
         menuItem.checkHideMenuItem();
+    }
+
+    /** Enters the secure caption editor only after the user explicitly chose it from the menu. */
+    private void openForkSecureCaptionEditor() {
+        if (!isForkSecureViewer()
+                || placeProvider == null
+                || !placeProvider.allowCaptionEditing()
+                || !getForkSecureViewerMessage().isOutOwner()
+                || isCaptionOpen()) {
+            return;
+        }
+        needCaptionLayout = true;
+        editing = true;
+        forkSecureCaptionEditing = true;
+        forkSecureCaptionAboveBeforeEdit = placeProvider.isCaptionAbove();
+        if (currentIndex >= 0 && currentIndex < imagesArrLocals.size()) {
+            Object current = imagesArrLocals.get(currentIndex);
+            forkSecureCaptionBeforeEdit = current instanceof MediaController.PhotoEntry
+                    ? ((MediaController.PhotoEntry) current).caption : null;
+            updateCaptionTextForCurrentPhoto(imagesArrLocals.get(currentIndex));
+        }
+        captionTextViewSwitcher.setVisibility(View.GONE);
+        showEditCaption(true, true);
+        makeFocusable();
+        getCaptionView().editText.getEditText().requestFocus();
+        AndroidUtilities.runOnUIThread(this::openKeyboard, 100);
     }
 
     public boolean openPhoto(final ArrayList<MessageObject> messages, final int index, long dialogId, long mergeDialogId, long topicId, final PhotoViewerProvider provider) {
@@ -19292,6 +19465,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         forkSecureLocalViewerMessages = null;
         forkSecureViewerPhotos = null;
         forkSecureViewerLocations.clear();
+        forkSecureCaptionEditing = false;
+        forkSecureCaptionBeforeEdit = null;
+        forkSecureCaptionAboveBeforeEdit = false;
         dialogPhotos = null;
         if (ads != null) {
             ads.stop();

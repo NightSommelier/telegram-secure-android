@@ -115,10 +115,52 @@ Long-press/message-menu editing of an authenticated photo or video is handled by
 old manifest, changes only the authenticated caption/above-below marker, creates
 a new carrier, and calls `messages.editMessage`; media bytes, local path, and
 album identity stay unchanged. Only the author may edit a paired 1:1 message.
-The same helper has a separate Saved Messages branch. Fullscreen viewer caption
-editing uses `PhotoViewer.PhotoViewerProvider.onApplyCaption()` instead, so its
-secure provider must be tested/wired separately before claiming that editing from
-the viewer is persistent.
+The same helper has a separate Saved Messages branch. Fullscreen secure viewers
+remain read-only on open. The localized `EditCaption` action is shown in the
+`⋮` menu only for the authenticated author; selecting it explicitly opens the
+normal editor, so the input does not cover the album strip just because a viewer
+was opened. The provider's `onApplyCaption()` callback resolves the currently
+visible authenticated source (including the current item of an album) and calls
+the public `SendMessagesHelper.editForkSecureAttachmentCaption()` bridge with
+the explicit above/below placement. The media bytes, local path, and album
+identity are still unchanged. Caption entry during initial media composition
+remains the normal Telegram flow. On 2026-08-01 this was verified on CPH
+(`636567fd`): a caption was changed to `Secure_caption_test`, the viewer was
+closed and reopened, and the new caption was still present; no Fork-Secure or
+fatal runtime error appeared in the sampled logcat. This is an author-only
+1:1/Saved Messages path; forwarded or non-authenticated media remains outside
+the bridge.
+
+The explicit editor also listens for the caption container's keyboard visibility
+callback: when the keyboard is dismissed after the edit action, the secure edit
+is committed and the input layer is removed, so a stale editor cannot remain over
+the fullscreen viewer.
+
+Secure album videos do not auto-start in the chat cell: the first frame/thumbnail
+and play affordance are shown while browsing the album. A standalone video may
+still autoplay in the chat, and opening any video in the fullscreen viewer uses
+the regular autoplay preference. The in-chat upstream path has the same
+boundary: `GroupMedia` computes autoplay as
+`video && !album && SharedConfig.isAutoplayVideo()`, and `ChatMessageCell`
+requires the single-message position flags before starting a video. The secure
+overlay has an additional explicit guard, `ChatMessageCell.isForkSecureAlbumVideo`,
+in both video-layout branches; it disables animation and requests a single frame
+for authenticated album members even when Telegram's global autoplay preference
+is enabled.
+
+### Telegram visual/performance settings
+
+Secure UI must follow existing Telegram controls instead of adding a parallel
+performance preference. Relevant seams are `SharedConfig.animationsEnabled()`
+and the global `view_animations` preference for transitions,
+`SharedConfig.getDevicePerformanceClass()` for low-device fallbacks,
+`LiteMode` flags for chat scale/blur and animated content, and
+`SharedConfig.isAutoplayVideo()` for ordinary non-secure media. Secure album
+viewers already use static cached thumbnails. The viewer also suppresses its
+transition animation when global animations are disabled or Telegram classifies
+the device as low performance. The next performance pass should measure these
+settings on the CPH and low-class Redmi paths before changing blur, transition,
+or cache behavior.
 
 UI-точки медіа:
 

@@ -1468,6 +1468,16 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
 
     private boolean autoPlayingMedia;
 
+    /** Secure album videos show their authenticated first frame in the chat, never autoplay. */
+    private static boolean isForkSecureAlbumVideo(MessageObject messageObject) {
+        return messageObject != null
+                && messageObject.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                && !TextUtils.isEmpty(messageObject.forkSecureAlbumId)
+                && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
+                && messageObject.forkSecureMediaMime != null
+                && messageObject.forkSecureMediaMime.startsWith("video/");
+    }
+
     private ArrayList<BotButton> botButtons = new ArrayList<>();
     private Path botButtonPath = new Path();
     private float[] botButtonRadii = new float[8];
@@ -8672,7 +8682,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                             } else if (documentAttachType == DOCUMENT_ATTACH_TYPE_VIDEO) {
                                 photoImage.setNeedsQualityThumb(true);
                                 photoImage.setShouldGenerateQualityThumb(true);
-                                if (!isSmallImage && !currentMessageObject.isHiddenSensitive() && (documentCover == null || currentMessageObject.isLivePhoto()) && SharedConfig.isAutoplayVideo() && !currentMessageObject.isRepostPreview && (!currentMessageObject.hasMediaSpoilers() || currentMessageObject.isMediaSpoilersRevealed || currentMessageObject.revealingMediaSpoilers) && (
+                                if (!isSmallImage && !isForkSecureAlbumVideo(messageObject) && !currentMessageObject.isHiddenSensitive() && (documentCover == null || currentMessageObject.isLivePhoto()) && SharedConfig.isAutoplayVideo() && !currentMessageObject.isRepostPreview && (!currentMessageObject.hasMediaSpoilers() || currentMessageObject.isMediaSpoilersRevealed || currentMessageObject.revealingMediaSpoilers) && (
                                     (currentMessageObject.mediaExists || currentMessageObject.attachPathExists) ||
                                     messageObject.canStreamVideo() && DownloadController.getInstance(currentAccount).canDownloadMedia(currentMessageObject)
                                 )) {
@@ -10358,7 +10368,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         currentPhotoObjectThumb.size = -1;
                     }
 
-                    if (!currentMessageObject.isHiddenSensitive() && SharedConfig.isAutoplayVideo() && (!currentMessageObject.hasVideoCover() || currentMessageObject.isLivePhoto()) && !currentMessageObject.isRepostPreview && (!currentMessageObject.hasMediaSpoilers() || currentMessageObject.isMediaSpoilersRevealed || currentMessageObject.revealingMediaSpoilers) && (messageObject.type == MessageObject.TYPE_VIDEO /*|| messageObject.type == MessageObject.TYPE_STORY && messageObject.getDocument() != null*/) && !messageObject.needDrawBluredPreview() &&
+                    if (!isForkSecureAlbumVideo(messageObject) && !currentMessageObject.isHiddenSensitive() && SharedConfig.isAutoplayVideo() && (!currentMessageObject.hasVideoCover() || currentMessageObject.isLivePhoto()) && !currentMessageObject.isRepostPreview && (!currentMessageObject.hasMediaSpoilers() || currentMessageObject.isMediaSpoilersRevealed || currentMessageObject.revealingMediaSpoilers) && (messageObject.type == MessageObject.TYPE_VIDEO /*|| messageObject.type == MessageObject.TYPE_STORY && messageObject.getDocument() != null*/) && !messageObject.needDrawBluredPreview() &&
                             ((currentMessageObject.mediaExists || currentMessageObject.attachPathExists) || messageObject.canStreamVideo() && DownloadController.getInstance(currentAccount).canDownloadMedia(currentMessageObject))
                     ) {
                         if (currentPosition != null) {
@@ -10427,6 +10437,13 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                             && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
                             && messageObject.forkSecureMediaMime != null
                             && messageObject.forkSecureMediaMime.startsWith("video/")) {
+                        boolean secureAlbumVideo = isForkSecureAlbumVideo(messageObject);
+                        boolean secureVideoAutoPlay = !secureAlbumVideo && SharedConfig.isAutoplayVideo();
+                        photoImage.setAllowDecodeSingleFrame(true);
+                        photoImage.setAllowStartAnimation(secureVideoAutoPlay);
+                        if (!secureVideoAutoPlay) {
+                            photoImage.stopAnimation();
+                        }
                         photoImage.setImage(
                                 ImageLocation.getForVideoPath(
                                         messageObject.forkSecureMediaPath),
@@ -10439,6 +10456,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                                 null,
                                 messageObject,
                                 0);
+                        if (!secureVideoAutoPlay) {
+                            photoImage.setAllowStartAnimation(false);
+                            photoImage.stopAnimation();
+                        }
                     } else if (messageObject.type == MessageObject.TYPE_STORY || messageObject.type == MessageObject.TYPE_STORY_MENTION) {
                         TL_stories.StoryItem storyItem = messageObject.messageOwner.media.storyItem;
                         if (storyItem != null) {

@@ -2583,12 +2583,53 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 || !SecureCarrierCodec.isMarked(editingMessageObject.messageOwner.message)) {
             return false;
         }
+        return editForkSecureAttachmentCaptionIfNeeded(
+                accountInstance,
+                editingMessageObject,
+                requestedCaption,
+                dialogId,
+                savedMessages,
+                editingMessageObject.messageOwner.invert_media);
+    }
+
+    /**
+     * Applies a caption from the native fullscreen viewer. The viewer has its own local
+     * PhotoEntry, so it must pass the authenticated source message and the explicit above/below
+     * placement rather than routing through Telegram's normal media-edit preparation path.
+     */
+    public static boolean editForkSecureAttachmentCaption(
+            AccountInstance accountInstance,
+            MessageObject messageObject,
+            CharSequence caption,
+            long dialogId,
+            boolean savedMessages,
+            boolean captionAbove) {
+        return editForkSecureAttachmentCaptionIfNeeded(
+                accountInstance,
+                messageObject,
+                caption == null ? "" : caption.toString(),
+                dialogId,
+                savedMessages,
+                captionAbove);
+    }
+
+    private static boolean editForkSecureAttachmentCaptionIfNeeded(
+            AccountInstance accountInstance,
+            MessageObject editingMessageObject,
+            String requestedCaption,
+            long dialogId,
+            boolean savedMessages,
+            boolean above) {
+        if (editingMessageObject == null
+                || editingMessageObject.messageOwner == null
+                || !SecureCarrierCodec.isMarked(editingMessageObject.messageOwner.message)) {
+            return false;
+        }
         final String oldCarrier = editingMessageObject.messageOwner.message;
         final String caption = requestedCaption != null
                 ? requestedCaption
                 : editingMessageObject.editingMessage == null
                         ? "" : editingMessageObject.editingMessage.toString();
-        final boolean above = editingMessageObject.messageOwner.invert_media;
         final int messageId = editingMessageObject.getId();
         Utilities.globalQueue.postRunnable(() -> {
             SecureChatEngine secureChat = null;

@@ -43520,6 +43520,11 @@ public class ChatActivity extends BaseFragment implements
                             }
 
                             @Override
+                            public boolean allowCaptionEditing() {
+                                return true;
+                            }
+
+                            @Override
                             public boolean isCaptionAbove() {
                                 return captionAbove[0];
                             }
@@ -43527,6 +43532,12 @@ public class ChatActivity extends BaseFragment implements
                             @Override
                             public void moveCaptionAbove(boolean above) {
                                 captionAbove[0] = above;
+                            }
+
+                            @Override
+                            public void onApplyCaption(CharSequence caption) {
+                                applyForkSecureViewerCaption(
+                                        source, caption, captionAbove[0]);
                             }
                         };
                         PhotoViewer.getInstance().setParentActivity(
@@ -43579,6 +43590,11 @@ public class ChatActivity extends BaseFragment implements
                     }
 
                     @Override
+                    public boolean allowCaptionEditing() {
+                        return true;
+                    }
+
+                    @Override
                     public boolean isCaptionAbove() {
                         return captionAbove[0];
                     }
@@ -43586,6 +43602,12 @@ public class ChatActivity extends BaseFragment implements
                     @Override
                     public void moveCaptionAbove(boolean above) {
                         captionAbove[0] = above;
+                    }
+
+                    @Override
+                    public void onApplyCaption(CharSequence caption) {
+                        applyForkSecureViewerCaption(
+                                localPhoto, caption, captionAbove[0]);
                     }
                 };
                 PhotoViewer.getInstance().setParentActivity(
@@ -43634,6 +43656,11 @@ public class ChatActivity extends BaseFragment implements
                         }
 
                         @Override
+                        public boolean allowCaptionEditing() {
+                            return true;
+                        }
+
+                        @Override
                         public boolean isCaptionAbove() {
                             return albumCaptionAbove[0];
                         }
@@ -43641,6 +43668,12 @@ public class ChatActivity extends BaseFragment implements
                         @Override
                         public void moveCaptionAbove(boolean above) {
                             albumCaptionAbove[0] = above;
+                        }
+
+                        @Override
+                        public void onApplyCaption(CharSequence caption) {
+                            applyForkSecureViewerCaption(
+                                    source, caption, albumCaptionAbove[0]);
                         }
                     };
                     PhotoViewer.getInstance().setParentActivity(
@@ -43673,6 +43706,11 @@ public class ChatActivity extends BaseFragment implements
                 }
 
                 @Override
+                public boolean allowCaptionEditing() {
+                    return true;
+                }
+
+                @Override
                 public boolean isCaptionAbove() {
                     return captionAbove[0];
                 }
@@ -43680,6 +43718,11 @@ public class ChatActivity extends BaseFragment implements
                 @Override
                 public void moveCaptionAbove(boolean above) {
                     captionAbove[0] = above;
+                }
+
+                @Override
+                public void onApplyCaption(CharSequence caption) {
+                    applyForkSecureViewerCaption(source, caption, captionAbove[0]);
                 }
             };
             try {
@@ -43698,6 +43741,24 @@ public class ChatActivity extends BaseFragment implements
                 FileLog.e(error);
                 alertUserOpenError(source);
             }
+        }
+
+        /** Persists a caption edited in PhotoViewer without exposing the secure carrier text. */
+        private void applyForkSecureViewerCaption(
+                MessageObject fallbackMessage, CharSequence caption, boolean captionAbove) {
+            MessageObject message = PhotoViewer.getInstance()
+                    .getCurrentForkSecureViewerMessage();
+            if (message == null) {
+                message = fallbackMessage;
+            }
+            if (message == null || !message.forkSecureVerified) {
+                return;
+            }
+            boolean savedMessages = isForkSecureSavedMessagesChat()
+                    && SecureSavedMessagesSettings.isSecureByDefault(
+                            getContext(), currentAccount);
+            SendMessagesHelper.editForkSecureAttachmentCaption(
+                    getAccountInstance(), message, caption, dialog_id, savedMessages, captionAbove);
         }
 
         /**
