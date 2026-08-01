@@ -55,6 +55,7 @@ import org.telegram.messenger.ringtone.RingtoneDataStore;
 import org.telegram.messenger.utils.tlutils.AmountUtils;
 import org.telegram.messenger.utils.tlutils.TlUtils;
 import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.SerializedData;
@@ -352,6 +353,18 @@ public class MessageObject {
             return false;
         }
         File plaintext = new File(entry.plaintextPath);
+        String albumId = "";
+        String displayCaption = entry.caption;
+        try {
+            albumId = SecureContentCodec.albumId(entry.caption);
+            displayCaption = SecureContentCodec.displayCaption(entry.caption);
+        } catch (IllegalArgumentException invalidAlbumMarker) {
+            // Older index records did not persist the encrypted album marker. Keep their
+            // authenticated media usable, but do not infer grouping from malformed metadata.
+            albumId = "";
+            displayCaption = entry.caption;
+        }
+        forkSecureAlbumId = TextUtils.isEmpty(albumId) ? null : albumId;
         ForkSecureMediaUiState state = new ForkSecureMediaUiState(
                 plaintext.isFile() ? plaintext.getAbsolutePath() : null,
                 mediaKind,
@@ -359,14 +372,14 @@ public class MessageObject {
                 entry.height,
                 entry.fileName,
                 entry.mimeType,
-                entry.caption,
+                displayCaption,
                 !plaintext.isFile());
         synchronized (forkSecureMediaUiCache) {
             putForkSecureMediaUiState(messageOwner.message, state);
         }
         applyForkSecureMediaUiState(state);
         forkSecureVerified = true;
-        caption = TextUtils.isEmpty(entry.caption) ? null : entry.caption;
+        caption = TextUtils.isEmpty(displayCaption) ? null : displayCaption;
         messageText = "";
         messageTextShort = null;
         messageTextForReply = null;

@@ -148,6 +148,12 @@ in both video-layout branches; it disables animation and requests a single frame
 for authenticated album members even when Telegram's global autoplay preference
 is enabled.
 
+The authenticated album id is copied to the current UI message after background manifest
+decryption, not only to the worker-side object. Completed media index entries persist the
+album marker inside the encrypted caption metadata and strip it again before display. This
+keeps grouping and the no-autoplay guard stable after a process restart; legacy index entries
+without the marker remain usable as standalone media.
+
 ### Telegram visual/performance settings
 
 Secure UI must follow existing Telegram controls instead of adding a parallel

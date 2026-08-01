@@ -1473,7 +1473,6 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         return messageObject != null
                 && messageObject.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
                 && !TextUtils.isEmpty(messageObject.forkSecureAlbumId)
-                && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
                 && messageObject.forkSecureMediaMime != null
                 && messageObject.forkSecureMediaMime.startsWith("video/");
     }

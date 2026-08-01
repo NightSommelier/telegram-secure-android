@@ -21066,6 +21066,7 @@ public class ChatActivity extends BaseFragment implements
         final long peer = dialog_id;
         Utilities.globalQueue.postRunnable(() -> {
             SecureContentCodec.Attachment manifest = null;
+            String authenticatedAlbumId = "";
             File destination = null;
             File ciphertext = null;
             RuntimeException failure = null;
@@ -21081,7 +21082,11 @@ public class ChatActivity extends BaseFragment implements
                             : backgroundEngine.decryptAttachmentManifest(carrier);
                 }
                 if (manifest != null) {
-                    message.forkSecureAlbumId = SecureContentCodec.albumId(manifest.caption);
+                    // Keep the authenticated album identity separate from the display caption.
+                    // The latter is normalized below, so carrying it only on the worker-side
+                    // MessageObject would lose grouping when the adapter has replaced the row.
+                    authenticatedAlbumId = SecureContentCodec.albumId(manifest.caption);
+                    message.forkSecureAlbumId = authenticatedAlbumId;
                     manifest = normalizeSecureAttachmentCaption(message, manifest);
                     destination = new File(
                             new File(
@@ -21152,6 +21157,7 @@ public class ChatActivity extends BaseFragment implements
             final SecureContentCodec.Attachment readyManifest = manifest;
             final File readyDestination = destination;
             final File readyCiphertext = ciphertext;
+            final String readyAlbumId = authenticatedAlbumId;
             final RuntimeException readyFailure = failure;
             final boolean readyCiphertextRejected = ciphertextRejected;
             AndroidUtilities.runOnUIThread(() -> {
@@ -21165,6 +21171,7 @@ public class ChatActivity extends BaseFragment implements
                 }
                 MessageObject current =
                         findCurrentSecureMessage(messageId, carrier, message);
+                current.forkSecureAlbumId = readyAlbumId;
                 if (readyCiphertextRejected && downloadAlreadyAttempted) {
                     forkSecureMediaRejected.add(prepareKey);
                     current.markForkSecureMediaPending(
@@ -21537,7 +21544,11 @@ public class ChatActivity extends BaseFragment implements
                 message.forkSecureMediaPath,
                 message.forkSecureMediaName,
                 message.forkSecureMediaMime,
-                message.forkSecureMediaCaption,
+                SecureContentCodec.encodeCaption(
+                        SecureContentCodec.displayCaption(message.forkSecureMediaCaption),
+                        message.messageOwner.invert_media,
+                        TextUtils.isEmpty(message.forkSecureAlbumId)
+                                ? null : message.forkSecureAlbumId),
                 message.forkSecureMediaWidth,
                 message.forkSecureMediaHeight));
         getMediaDataController().indexForkSecureMedia(
