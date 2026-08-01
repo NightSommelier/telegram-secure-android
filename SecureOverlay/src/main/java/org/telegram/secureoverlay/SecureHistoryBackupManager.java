@@ -170,12 +170,18 @@ public final class SecureHistoryBackupManager {
                     replacements.put(historyName(targetAccount, record), record.value);
                 }
             }
+            int restoredMessages = 0;
+            for (SecureHistoryBackupCodec.CacheRecord record : payload.cacheRecords) {
+                if (record.kind != SecureHistoryBackupCodec.KIND_SAVED_MESSAGES_KEY) {
+                    restoredMessages++;
+                }
+            }
             replacements.put(
                     MARKER,
                     encodeMarker(
                             targetAccount,
                             restoredGeneration,
-                            payload.cacheRecords.size(),
+                            restoredMessages,
                             payload.peers,
                             payload.serializedIdentity));
             try {
