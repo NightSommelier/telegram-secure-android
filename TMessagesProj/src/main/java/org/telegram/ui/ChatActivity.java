@@ -21655,10 +21655,11 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private ArrayList<MessageObject> collectSecureNativeAlbumMembers(
-            MessageObject seed, long nativeGroupId) {
+            MessageObject seed, long nativeGroupId, String albumId) {
         ArrayList<MessageObject> result = new ArrayList<>();
         HashSet<Integer> messageIds = new HashSet<>();
-        if (nativeGroupId == 0) {
+        HashSet<String> carriers = new HashSet<>();
+        if (nativeGroupId == 0 && TextUtils.isEmpty(albumId)) {
             if (seed != null && seed.isForkSecureCarrier()) {
                 result.add(seed);
             }
@@ -21666,16 +21667,32 @@ public class ChatActivity extends BaseFragment implements
         }
         for (MessageObject candidate : messages) {
             if (candidate == null || candidate.messageOwner == null
-                    || !candidate.isForkSecureCarrier()
-                    || rememberSecureNativeGroupId(candidate) != nativeGroupId
-                    || !messageIds.add(candidate.getId())) {
+                    || !candidate.isForkSecureCarrier()) {
+                continue;
+            }
+            boolean sameNativeGroup = nativeGroupId != 0
+                    && rememberSecureNativeGroupId(candidate) == nativeGroupId;
+            boolean sameAuthenticatedAlbum = !TextUtils.isEmpty(albumId)
+                    && TextUtils.equals(albumId, candidate.forkSecureAlbumId);
+            if (!sameNativeGroup && !sameAuthenticatedAlbum) {
+                continue;
+            }
+            // During the send/ACK transition Telegram can briefly expose both the local
+            // placeholder and its server replacement. They carry the same authenticated
+            // ciphertext but have different message ids; counting both creates a phantom
+            // tenth cell and makes the native layout choose four rows until the chat reloads.
+            if (!messageIds.add(candidate.getId())
+                    || !carriers.add(candidate.messageOwner.message)) {
                 continue;
             }
             result.add(candidate);
         }
         if (seed != null && seed.isForkSecureCarrier()
-                && (nativeGroupId == 0 || rememberSecureNativeGroupId(seed) == nativeGroupId)
-                && messageIds.add(seed.getId())) {
+                && (nativeGroupId == 0
+                        || rememberSecureNativeGroupId(seed) == nativeGroupId
+                        || TextUtils.equals(albumId, seed.forkSecureAlbumId))
+                && messageIds.add(seed.getId())
+                && carriers.add(seed.messageOwner.message)) {
             result.add(seed);
         }
         return result;
@@ -21710,7 +21727,7 @@ public class ChatActivity extends BaseFragment implements
         }
         long nativeGroupId = rememberSecureNativeGroupId(message);
         ArrayList<MessageObject> members = collectSecureNativeAlbumMembers(
-                message, nativeGroupId);
+                message, nativeGroupId, message.forkSecureAlbumId);
         if (nativeGroupId != 0 && members.size() > 1
                 && !secureAlbumMetadataReady(members, message.forkSecureAlbumId)) {
             // Keep Telegram's original document grouping while manifests/plaintext are still
@@ -21755,13 +21772,39 @@ public class ChatActivity extends BaseFragment implements
             groupedMessages.messages.add(member);
         }
         if (!changed && groupedMessages.positions.size() == members.size()) {
-            return true;
+            boolean geometryChanged = false;
+            for (MessageObject member : members) {
+                MessageObject.GroupedMessagePosition position =
+                        groupedMessages.getPosition(member);
+                if (position == null
+                        || member.forkSecureMediaWidth <= 0
+                        || member.forkSecureMediaHeight <= 0) {
+                    geometryChanged = true;
+                    break;
+                }
+                float expectedAspectRatio = member.forkSecureMediaWidth
+                        / (float) member.forkSecureMediaHeight;
+                if (Math.abs(position.aspectRatio - expectedAspectRatio) > 0.001f) {
+                    geometryChanged = true;
+                    break;
+                }
+            }
+            if (!geometryChanged && TextUtils.isEmpty(message.forkSecureMediaPath)) {
+                return true;
+            }
+            changed = geometryChanged;
         }
-        // Manifest dimensions are complete before this point, so calculate exactly once for the
-        // album. Plaintext download completion must not move the already laid-out cells.
-        groupedMessages.calculate();
-        if (chatAdapter != null) {
-            chatAdapter.notifyDataSetChanged(true);
+        // Manifest dimensions are complete before this point, so calculate only when the
+        // authenticated geometry changed. A ready plaintext path still requires a full adapter
+        // refresh: the initial send can already have bound cells with the old native-document
+        // positions, while reopening the chat rebuilds them correctly by accident.
+        if (changed) {
+            groupedMessages.calculate();
+        }
+        if (changed || !TextUtils.isEmpty(message.forkSecureMediaPath)) {
+            if (chatAdapter != null) {
+                chatAdapter.notifyDataSetChanged(true);
+            }
         }
         return true;
     }

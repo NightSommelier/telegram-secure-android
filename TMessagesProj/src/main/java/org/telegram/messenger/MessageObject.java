@@ -1663,6 +1663,7 @@ public class MessageObject {
             boolean forceCalc = false;
             boolean needShare = false;
             boolean isMusic = false;
+            boolean secureVisualLayout = count > 4;
             hasSibling = false;
 
             hasCaption = false;
@@ -1699,12 +1700,18 @@ public class MessageObject {
                 if (messageObject.messageOwner != null && messageObject.messageOwner.invert_media) {
                     captionAbove = true;
                 }
-                TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, AndroidUtilities.getPhotoSize());
                 GroupedMessagePosition position = new GroupedMessagePosition();
                 position.last = (reversed ? a == 0 : a == count - 1);
-                if (photoSize != null && photoSize.w > 0 && photoSize.h > 0) {
-                    position.aspectRatio = photoSize.w / (float) photoSize.h;
-                } else if (messageObject.isForkSecureCarrier()
+                /*
+                 * Secure carriers are Telegram Documents on the wire. Their document thumbs
+                 * may still contain stale server-side dimensions (or no dimensions at all),
+                 * while the authenticated manifest already has the real dimensions. Prefer
+                 * those dimensions for the album geometry; otherwise a mixed group can receive
+                 * the normal document aspect ratios and produce large empty spans. Once the
+                 * plaintext presentation is ready, the local photoThumbs descriptor carries the
+                 * same values, so this keeps the pending and ready layouts identical.
+                 */
+                boolean secureVisualMedia = messageObject.isForkSecureCarrier()
                         && messageObject.forkSecureMediaWidth > 0
                         && messageObject.forkSecureMediaHeight > 0
                         && (messageObject.forkSecureMediaKind
@@ -1712,21 +1719,24 @@ public class MessageObject {
                                 || messageObject.forkSecureMediaMime != null
                                         && messageObject.forkSecureMediaMime
                                                 .startsWith("video/")
-                                || messageObject.forkSecureMediaKind
-                                        == FORK_SECURE_MEDIA_KIND_FILE
-                                        && messageObject.forkSecureMediaWidth > 0
-                                        && messageObject.forkSecureMediaHeight > 0
-                                        && (messageObject.forkSecureMediaMime == null
-                                                || messageObject.forkSecureMediaMime
-                                                        .startsWith("video/")
-                                                || messageObject.isVideo()))) {
+                                || messageObject.isVideo());
+                if (!secureVisualMedia) {
+                    secureVisualLayout = false;
+                }
+                if (secureVisualMedia) {
                     // Secure manifests authenticate dimensions before the plaintext cache is
                     // ready. Use them immediately so the upload/decrypt transition has the same
                     // album geometry as the normal Telegram media path.
                     position.aspectRatio = messageObject.forkSecureMediaWidth
                             / (float) messageObject.forkSecureMediaHeight;
                 } else {
-                    position.aspectRatio = 1.0f;
+                    TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(
+                            messageObject.photoThumbs, AndroidUtilities.getPhotoSize());
+                    if (photoSize != null && photoSize.w > 0 && photoSize.h > 0) {
+                        position.aspectRatio = photoSize.w / (float) photoSize.h;
+                    } else {
+                        position.aspectRatio = 1.0f;
+                    }
                 }
 
                 if (position.aspectRatio > 1.2f) {
@@ -1980,7 +1990,11 @@ public class MessageObject {
                 }
 
                 MessageGroupedLayoutAttempt optimal = null;
-                float optimalDiff = 0.0f;
+                // The upstream first-fit fallback produces a 2+4+3 layout for portrait-heavy
+                // secure albums. Their opaque Telegram documents have no server thumbnail, so
+                // that transient choice differs from the stable layout after reopening the chat.
+                // Evaluate all candidates for secure visual albums and keep the best geometry.
+                float optimalDiff = secureVisualLayout ? Float.MAX_VALUE : 0.0f;
                 float maxHeight = maxSizeWidth / 3 * 4;
                 for (int a = 0; a < attempts.size(); a++) {
                     MessageGroupedLayoutAttempt attempt = attempts.get(a);
