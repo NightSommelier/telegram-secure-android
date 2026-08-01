@@ -16,6 +16,9 @@ import java.util.Arrays;
  * added without changing the Telegram carrier or confusing media with control messages.</p>
  */
 public final class SecureContentCodec {
+    private static final String CAPTION_ABOVE_MARKER = "\u0001ForkSecureCaptionAbove\u0001";
+    private static final String ALBUM_MARKER_PREFIX = "\u0002ForkSecureAlbum:";
+    private static final String ALBUM_MARKER_SUFFIX = "\u0002";
     private static final byte[] MAGIC = new byte[] {'F', 'S', 'C', '1'};
     private static final int HEADER_BYTES = MAGIC.length + 1 + 4;
     private static final int MAX_CONTENT_BYTES = 16 * 1024;
@@ -32,6 +35,83 @@ public final class SecureContentCodec {
     public static final int STICKER_FORMAT_WEBM = 3;
 
     private SecureContentCodec() {}
+
+    /** Encodes caption placement inside the authenticated manifest, never in Telegram plaintext. */
+    public static String encodeCaption(String caption, boolean above) {
+        return encodeCaption(caption, above, null);
+    }
+
+    /** Encodes caption placement and an optional encrypted-only album identifier. */
+    public static String encodeCaption(String caption, boolean above, String albumId) {
+        String value = caption == null ? "" : caption;
+        String album = albumId == null || albumId.isEmpty()
+                ? "" : ALBUM_MARKER_PREFIX + albumId + ALBUM_MARKER_SUFFIX;
+        return (above ? CAPTION_ABOVE_MARKER : "") + album + value;
+    }
+
+    public static boolean isCaptionAbove(String caption) {
+        return caption != null && caption.startsWith(CAPTION_ABOVE_MARKER);
+    }
+
+    public static String displayCaption(String caption) {
+        if (caption == null) return "";
+        String value = isCaptionAbove(caption)
+                ? caption.substring(CAPTION_ABOVE_MARKER.length()) : caption;
+        int markerEnd = albumMarkerEnd(value);
+        return markerEnd < 0 ? value : value.substring(markerEnd);
+    }
+
+    /**
+     * Rebuilds only the authenticated caption metadata while preserving the encrypted media
+     * identity and ciphertext digest.  The album marker is intentionally carried forward so an
+     * edited item remains in the same secure album.
+     */
+    public static Attachment withCaption(
+            Attachment attachment, String caption, boolean above) {
+        if (attachment == null) {
+            throw new IllegalArgumentException("secure attachment is missing");
+        }
+        String albumId = albumId(attachment.caption);
+        return new Attachment(
+                attachment.mediaId,
+                attachment.key,
+                attachment.nonce,
+                attachment.ciphertextSha256,
+                attachment.plaintextSize,
+                attachment.ciphertextSize,
+                attachment.fileName,
+                attachment.mimeType,
+                encodeCaption(caption, above, albumId.isEmpty() ? null : albumId),
+                attachment.width,
+                attachment.height,
+                attachment.photo);
+    }
+
+    /** Returns the authenticated album identifier, or an empty string for a standalone item. */
+    public static String albumId(String caption) {
+        if (caption == null) return "";
+        String value = isCaptionAbove(caption)
+                ? caption.substring(CAPTION_ABOVE_MARKER.length()) : caption;
+        if (!value.startsWith(ALBUM_MARKER_PREFIX)) return "";
+        int end = value.indexOf(ALBUM_MARKER_SUFFIX, ALBUM_MARKER_PREFIX.length());
+        if (end < 0 || end == ALBUM_MARKER_PREFIX.length()
+                || end - ALBUM_MARKER_PREFIX.length() > 64) {
+            throw new IllegalArgumentException("invalid secure album marker");
+        }
+        String id = value.substring(ALBUM_MARKER_PREFIX.length(), end);
+        if (!id.matches("[0-9a-fA-F]{32}")) {
+            throw new IllegalArgumentException("invalid secure album identifier");
+        }
+        return id.toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static int albumMarkerEnd(String value) {
+        if (!value.startsWith(ALBUM_MARKER_PREFIX)) return -1;
+        int end = value.indexOf(ALBUM_MARKER_SUFFIX, ALBUM_MARKER_PREFIX.length());
+        if (end < 0 || end - ALBUM_MARKER_PREFIX.length() != 32) return -1;
+        String id = value.substring(ALBUM_MARKER_PREFIX.length(), end);
+        return id.matches("[0-9a-fA-F]{32}") ? end + ALBUM_MARKER_SUFFIX.length() : -1;
+    }
 
     public static byte[] encodeText(String text) {
         if (text == null || text.isEmpty()) {

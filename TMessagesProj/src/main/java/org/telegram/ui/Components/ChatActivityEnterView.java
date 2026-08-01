@@ -147,6 +147,10 @@ import org.telegram.messenger.SharedPrefsHelper;
 import org.telegram.messenger.UserConfig;
 import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureChatEngine;
+import org.telegram.secureoverlay.SecureContentCodec;
+import org.telegram.secureoverlay.SecureSavedMessageCrypto;
+import org.telegram.secureoverlay.SecureSavedMessagesKeyStore;
+import org.telegram.secureoverlay.SecureSavedMessagesSettings;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
@@ -7633,6 +7637,74 @@ public class ChatActivityEnterView extends FrameLayout implements
             return;
         }
         ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(currentAccount).getEntities(message, supportsSendingNewEntities());
+        if (editingMessageObject != null && editingMessageObject.isForkSecureCarrier()) {
+            try {
+                if (editingMessageObject.forkSecureMediaKind
+                        != MessageObject.FORK_SECURE_MEDIA_KIND_NONE) {
+                    String carrier = editingMessageObject.messageOwner.message;
+                    SecureCarrierCodec.Decoded outer = SecureCarrierCodec.decode(carrier);
+                    SecureContentCodec.Attachment attachment;
+                    if (parentFragment != null
+                            && parentFragment.isSavedMessagesSecureModeEnabled()) {
+                        SecureSavedMessagesKeyStore.KeyMaterial key;
+                        try {
+                            key = new SecureSavedMessagesKeyStore(parentFragment.getContext())
+                                    .getOrCreate(currentAccount);
+                        } catch (Exception error) {
+                            throw new IllegalStateException(
+                                    "Saved Messages key unavailable", error);
+                        }
+                        attachment = SecureContentCodec.decode(
+                                SecureSavedMessageCrypto.decryptRecord(outer.payload, key))
+                                .attachment;
+                        attachment = new SecureContentCodec.Attachment(
+                                attachment.mediaId, attachment.key, attachment.nonce,
+                                attachment.ciphertextSha256, attachment.plaintextSize,
+                                attachment.ciphertextSize, attachment.fileName,
+                                attachment.mimeType,
+                                SecureContentCodec.encodeCaption(
+                                        message[0].toString(),
+                                        editingMessageObject.messageOwner.invert_media),
+                                attachment.width,
+                                attachment.height, attachment.photo);
+                        message[0] = SecureCarrierCodec.encode(
+                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                                SecureSavedMessageCrypto.encryptRecord(
+                                        SecureContentCodec.encodeAttachment(attachment), key));
+                    } else {
+                        SecureChatEngine secureChat = getSecureChatEngine();
+                        attachment = secureChat.getOutgoingAttachment(carrier);
+                        attachment = new SecureContentCodec.Attachment(
+                                attachment.mediaId, attachment.key, attachment.nonce,
+                                attachment.ciphertextSha256, attachment.plaintextSize,
+                                attachment.ciphertextSize, attachment.fileName,
+                                attachment.mimeType,
+                                SecureContentCodec.encodeCaption(
+                                        message[0].toString(),
+                                        editingMessageObject.messageOwner.invert_media),
+                                attachment.width,
+                                attachment.height, attachment.photo);
+                        message[0] = secureChat.encryptAttachmentForTransport(
+                                attachment, 1024, 4096).attachmentCarrier;
+                    }
+                } else {
+                    SecureChatEngine secureChat = getSecureChatEngine();
+                    if (!secureChat.isPaired() || message[0].length() > 2800) {
+                        return;
+                    }
+                    message[0] = secureChat.encryptText(message[0].toString());
+                }
+                entities = null;
+            } catch (RuntimeException error) {
+                FileLog.e(error);
+                if (parentFragment != null) {
+                    BulletinFactory.of(parentFragment)
+                            .createErrorBulletin(getString(R.string.ForkSecureEditUnsupported))
+                            .show();
+                }
+                return;
+            }
+        }
         if (!TextUtils.equals(message[0], editingMessageObject.messageText) || entities != null && !entities.isEmpty() || !editingMessageObject.messageOwner.entities.isEmpty() || editingMessageObject.messageOwner.media instanceof TLRPC.TL_messageMediaWebPage) {
             editingMessageObject.editingMessage = message[0];
             editingMessageObject.editingMessageEntities = entities;
@@ -7721,8 +7793,25 @@ public class ChatActivityEnterView extends FrameLayout implements
         if (!hasOnlyEmoji) {
             text = AndroidUtilities.getTrimmedString(text);
         }
+        if (parentFragment instanceof ChatActivity
+                && ((ChatActivity) parentFragment).isSavedMessagesSecureModeEnabled()
+                && text.length() != 0) {
+            try {
+                SecureSavedMessagesKeyStore.KeyMaterial key =
+                        new SecureSavedMessagesKeyStore(getContext())
+                                .getOrCreate(currentAccount);
+                text = SecureSavedMessageCrypto.encryptTextCarrier(text.toString(), key);
+                notify = false;
+            } catch (Exception error) {
+                FileLog.e(error);
+                return false;
+            }
+        }
         // This overlay is intentionally separate from Telegram's native Secret Chats.
-        if (DialogObject.isUserDialog(dialog_id) && text.length() != 0) {
+        if (DialogObject.isUserDialog(dialog_id)
+                && text.length() != 0
+                && !(parentFragment instanceof ChatActivity
+                && ((ChatActivity) parentFragment).isSavedMessagesSecureModeEnabled())) {
             try {
                 SecureChatEngine secureChat = getSecureChatEngine();
                 String entered = text.toString();
@@ -7749,6 +7838,13 @@ public class ChatActivityEnterView extends FrameLayout implements
                         return false;
                     }
                     text = secureChat.createPairingAcknowledgement();
+                    notify = false;
+                    notifySecureModeChanged();
+                } else if ("/secure-ready".equals(entered)) {
+                    if (!secureChat.isPaired()) {
+                        return false;
+                    }
+                    text = secureChat.createSessionReadyAcknowledgement();
                     notify = false;
                     notifySecureModeChanged();
                 } else if ("/secure-start".equals(entered)) {

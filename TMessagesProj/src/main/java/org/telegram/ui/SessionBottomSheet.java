@@ -110,8 +110,12 @@ public class SessionBottomSheet extends BottomSheet {
 
         ItemView applicationItemView = new ItemView(context, false);
         stringBuilder = new StringBuilder();
-        stringBuilder.append(session.app_name);
-        stringBuilder.append(" ").append(session.app_version);
+        if (session.app_version.startsWith("Telegram Android Fork-Secure")) {
+            stringBuilder.append(session.app_version);
+        } else {
+            stringBuilder.append(session.app_name);
+            stringBuilder.append(" ").append(session.app_version);
+        }
         applicationItemView.valueText.setText(stringBuilder);
         Drawable drawable = ContextCompat.getDrawable(context, R.drawable.menu_devices).mutate();
         drawable.setColorFilter(new PorterDuffColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon), PorterDuff.Mode.SRC_IN));

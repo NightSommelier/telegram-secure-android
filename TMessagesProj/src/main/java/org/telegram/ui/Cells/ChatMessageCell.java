@@ -10390,7 +10390,25 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         }
 
                         final String filter = currentMessageObject.isLivePhoto() ? ImageLoader.AUTOPLAY_FILTER_NONLOOP : ImageLoader.AUTOPLAY_FILTER;
-                        if (currentMessageObject.videoEditedInfo != null && currentMessageObject.videoEditedInfo.canAutoPlaySourceVideo() && document != null) {
+                        boolean secureVideo = messageObject.forkSecureMediaKind
+                                == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                                && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
+                                && messageObject.forkSecureMediaMime != null
+                                && messageObject.forkSecureMediaMime.startsWith("video/");
+                        if (secureVideo) {
+                            photoImage.setImage(
+                                    ImageLocation.getForVideoPath(
+                                            messageObject.forkSecureMediaPath),
+                                    filter,
+                                    null,
+                                    null,
+                                    null,
+                                    messageObject.getDocument() == null
+                                            ? 0 : messageObject.getDocument().size,
+                                    null,
+                                    messageObject,
+                                    0);
+                        } else if (currentMessageObject.videoEditedInfo != null && currentMessageObject.videoEditedInfo.canAutoPlaySourceVideo() && document != null) {
                             photoImage.setImage(ImageLocation.getForPath(currentMessageObject.videoEditedInfo.originalPath), filter, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForDocument(currentPhotoObjectThumb, document), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, 0);
                             photoImage.setMediaStartEndTime(currentMessageObject.videoEditedInfo.startTime / 1000, currentMessageObject.videoEditedInfo.endTime / 1000);
                         } else if (messageObject.cachedQuality != null) {
@@ -10404,6 +10422,23 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                             }
                             photoImage.setImage(ImageLocation.getForDocument(document), filter, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForDocument(currentPhotoObjectThumb, document), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, messageObject.getDocument().size, null, messageObject, 0);
                         }
+                    } else if (messageObject.forkSecureMediaKind
+                            == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                            && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
+                            && messageObject.forkSecureMediaMime != null
+                            && messageObject.forkSecureMediaMime.startsWith("video/")) {
+                        photoImage.setImage(
+                                ImageLocation.getForVideoPath(
+                                        messageObject.forkSecureMediaPath),
+                                null,
+                                null,
+                                null,
+                                null,
+                                messageObject.getDocument() == null
+                                        ? 0 : messageObject.getDocument().size,
+                                null,
+                                messageObject,
+                                0);
                     } else if (messageObject.type == MessageObject.TYPE_STORY || messageObject.type == MessageObject.TYPE_STORY_MENTION) {
                         TL_stories.StoryItem storyItem = messageObject.messageOwner.media.storyItem;
                         if (storyItem != null) {

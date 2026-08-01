@@ -34,7 +34,7 @@ running the password KDF where possible.
 | Format version | 2 | `1` |
 | KDF ID | 1 | `2` = PBKDF2-HMAC-SHA-256 |
 | AEAD ID | 1 | `1` = AES-256-GCM |
-| Flags | 2 | `0` |
+| Flags | 2 | `0` = password protected, `1` = explicitly unprotected |
 | KDF parameter 1 | 4 | iterations = `600000` |
 | KDF parameter 2 | 4 | `0` |
 | KDF parallelism | 1 | `1` |
@@ -49,9 +49,13 @@ running the password KDF where possible.
 
 `AAD` is every byte from `Magic` through `Nonce`, inclusive.
 PBKDF2-HMAC-SHA-256 derives exactly 32 bytes from the UTF-8 password bytes and
-the stored salt. Password normalization is not performed; the UI requires
-identical entry twice, at least 12 characters, and the codec accepts at most
-512 UTF-8 bytes. KDF ID 2 uses the available-platform fallback work factor from
+the stored salt. Password normalization is not performed; when a password is
+used, the UI requires identical entry twice and at least 5 characters, while
+the codec accepts at most 512 UTF-8 bytes. An empty password is accepted only
+when authenticated flag `1` is present; it derives from a public,
+domain-separated constant and therefore provides integrity but no
+confidentiality. The UI must show an explicit warning before creating or
+importing such a file. KDF ID 2 uses the available-platform fallback work factor from
 the [OWASP Password Storage Cheat
 Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
 Argon2id remains the preferred future KDF ID after Android dependency,
@@ -157,9 +161,12 @@ and password buffers are not persisted or logged.
 
 The identity-only `FSBK` archive cannot restore access to historical protected
 messages or attachments. A separate, opt-in automatic archive revision must
-therefore cover the identity plus the minimum ratchet/session records and
-message/media content-key records required by the local encrypted stores. It
-must not upload plaintext messages, decrypted media, passwords, Telegram
+therefore cover the identity plus the local display records and authenticated
+media manifests/content keys required by the local encrypted stores. It must
+not restore a live ratchet/session snapshot: rolling send state backwards can
+reuse message keys. Recovered contacts remain paused until new pairing and
+verification. A provider must receive only the authenticated archive
+ciphertext, never plaintext messages, decrypted media, passwords, Telegram
 credentials, or raw Keystore wrapping keys.
 
 Before implementation, define and test snapshot consistency, incremental

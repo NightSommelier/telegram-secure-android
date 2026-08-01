@@ -87,6 +87,7 @@ import org.telegram.messenger.Utilities;
 import org.telegram.messenger.utils.DrawableUtils;
 import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureChatEngine;
+import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
@@ -1326,6 +1327,10 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         // Translation can rebuild messageText from the transport carrier. Resolve the local
         // secure preview afterwards so the dialogs list never regresses to TGS1 or a placeholder.
         applyForkSecureDialogPreview();
+        // Dialogs are built without ChatActivity's media-preparation pass. Restore the
+        // authenticated local media index here so a secure video can provide its real frame
+        // instead of only the generic document/play marker.
+        applyForkSecureDialogMediaPreview();
         CharSequence msgText = message != null ? message.messageText : null;
         if (msgText instanceof Spannable) {
             Spannable sp = new SpannableStringBuilder(msgText);
@@ -3029,6 +3034,53 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 // Keeping caption populated makes Telegram prepend its paperclip file marker.
                 message.caption = null;
             }
+        }
+    }
+
+    private void applyForkSecureDialogMediaPreview() {
+        if (message == null
+                || !DialogObject.isUserDialog(currentDialogId)
+                || currentDialogId == UserConfig.getInstance(currentAccount).getClientUserId()) {
+            return;
+        }
+        if (groupMessages != null) {
+            for (MessageObject candidate : groupMessages) {
+                applyForkSecureDialogMediaPreview(candidate);
+            }
+        }
+        applyForkSecureDialogMediaPreview(message);
+    }
+
+    private void applyForkSecureDialogMediaPreview(MessageObject candidate) {
+        if (candidate == null
+                || !candidate.isForkSecureCarrier()
+                || candidate.messageOwner == null) {
+            return;
+        }
+        // A ChatActivity/media-list pass may already have restored the entry in the process-local
+        // cache. Avoid a Keystore read on every dialogs-list relayout in that case.
+        if (candidate.forkSecureMediaKind != MessageObject.FORK_SECURE_MEDIA_KIND_NONE) {
+            if (candidate.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                    && candidate.forkSecureMediaMime != null
+                    && candidate.forkSecureMediaMime.startsWith("video/")) {
+                candidate.applyNewText(getString(R.string.ForkSecureEncryptedVideo));
+            }
+            return;
+        }
+        try {
+            SecureMediaIndex.Entry entry = new SecureMediaIndex(
+                    ApplicationLoader.applicationContext, currentAccount, currentDialogId)
+                    .find(candidate.getId(), candidate.messageOwner.message);
+            if (entry != null) {
+                candidate.applyForkSecureMediaIndex(entry);
+                if (entry.kind == SecureMediaIndex.KIND_VIDEO) {
+                    candidate.applyNewText(getString(R.string.ForkSecureEncryptedVideo));
+                }
+            }
+        } catch (RuntimeException error) {
+            // The dialogs list is a presentation surface. A missing/corrupt local index must not
+            // turn a marked carrier into plaintext or prevent the list from rendering.
+            FileLog.e(error);
         }
     }
 
@@ -5768,6 +5820,41 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
     }
 
     private void setThumb(int index, MessageObject message) {
+        if (message.isForkSecureCarrier()
+                && !TextUtils.isEmpty(message.forkSecureMediaPath)
+                && new java.io.File(message.forkSecureMediaPath).isFile()
+                && (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                        || message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                        && message.forkSecureMediaMime != null
+                        && message.forkSecureMediaMime.startsWith("video/"))) {
+            if (thumbsCount < 3) {
+                boolean video = message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_FILE;
+                hasVideoThumb = hasVideoThumb || video;
+                thumbsCount++;
+                drawPlay[index] = video && !message.hasMediaSpoilers();
+                drawSpoiler[index] = message.hasMediaSpoilers();
+                long fileSize = new java.io.File(message.forkSecureMediaPath).length();
+                ImageLocation location = video
+                        // Dialog rows need a stable still frame. Full chat/video surfaces keep
+                        // getForVideoPath() for playback; vthumb asks ImageLoader for frame 0.
+                        ? ImageLocation.getForPath(
+                                "vthumb://0:" + message.forkSecureMediaPath)
+                        : ImageLocation.getForPath(message.forkSecureMediaPath);
+                thumbImage[index].setImage(
+                        location,
+                        "20_20",
+                        null,
+                        null,
+                        Math.min(Integer.MAX_VALUE, fileSize),
+                        null,
+                        message,
+                        0);
+                thumbImage[index].setRoundRadius(dp(2));
+                needEmoji = false;
+            }
+            return;
+        }
         ArrayList<TLRPC.PhotoSize> photoThumbs = message.photoThumbs;
         TLObject photoThumbsObject = message.photoThumbsObject;
         if (message.isStoryMedia()) {

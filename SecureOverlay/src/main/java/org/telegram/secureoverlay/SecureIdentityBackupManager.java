@@ -40,16 +40,19 @@ public final class SecureIdentityBackupManager {
         public final long restoredGeneration;
         public final long exportedAtUnixSeconds;
         public final String fingerprint;
+        public final boolean replacesExistingState;
 
         PreparedImport(
                 SecureIdentityBackupCodec.Payload payload,
-                SecureRecoveryGenerationStore.Record recovery) {
+                SecureRecoveryGenerationStore.Record recovery,
+                boolean replacesExistingState) {
             archiveId = payload.archiveId;
             ownerUserId = payload.ownerUserId;
             archivedGeneration = payload.generation;
             restoredGeneration = recovery.generation;
             exportedAtUnixSeconds = payload.exportedAtUnixSeconds;
             fingerprint = fingerprint(payload.serializedIdentity);
+            this.replacesExistingState = replacesExistingState;
         }
     }
 
@@ -127,11 +130,8 @@ public final class SecureIdentityBackupManager {
             resumeInterruptedImport(appContext);
             ensureNoPreparedImport(appContext);
             SecureChatState chatState = new SecureChatState(appContext);
-            if (chatState.hasAnySecureConversationState()
-                    || KeystoreSignalProtocolStore.hasRemoteProtocolState(appContext)) {
-                throw new IllegalStateException(
-                        "identity backup import requires no existing secure chats");
-            }
+            boolean replacesExistingState =
+                    hasExistingSecureState(appContext, chatState);
             SecureIdentityBackupCodec.Payload payload =
                     SecureIdentityBackupCodec.decrypt(archive, password);
             if (payload.ownerUserId != expectedOwnerUserId) {
@@ -160,7 +160,8 @@ public final class SecureIdentityBackupManager {
             } finally {
                 Arrays.fill(stage, (byte) 0);
             }
-            return new PreparedImport(payload, restoredRecovery);
+            return new PreparedImport(
+                    payload, restoredRecovery, replacesExistingState);
         }
     }
 
@@ -171,7 +172,13 @@ public final class SecureIdentityBackupManager {
         Context appContext = context.getApplicationContext();
         synchronized (LOCK) {
             ImportStage stage = readStage(appContext, PREPARED);
-            return stage == null ? null : new PreparedImport(stage.payload, stage.recovery);
+            return stage == null
+                    ? null
+                    : new PreparedImport(
+                            stage.payload,
+                            stage.recovery,
+                            hasExistingSecureState(
+                                    appContext, new SecureChatState(appContext)));
         }
     }
 
@@ -200,6 +207,8 @@ public final class SecureIdentityBackupManager {
         Context appContext = context.getApplicationContext();
         synchronized (LOCK) {
             ImportStage stage = requireStage(appContext, PREPARED);
+            boolean replacedExistingState = hasExistingSecureState(
+                    appContext, new SecureChatState(appContext));
             Map<String, byte[]> transaction = new LinkedHashMap<>();
             transaction.put(MARKER, marker(COMMITTING));
             KeystoreSignalProtocolStore.replaceIdentityForRecovery(
@@ -208,7 +217,8 @@ public final class SecureIdentityBackupManager {
                     stage.payload.registrationId,
                     transaction);
             completeCommittingImport(appContext, stage);
-            return new PreparedImport(stage.payload, stage.recovery);
+            return new PreparedImport(
+                    stage.payload, stage.recovery, replacedExistingState);
         }
     }
 
@@ -250,6 +260,12 @@ public final class SecureIdentityBackupManager {
         if (readMarker(context) != 0) {
             throw new IllegalStateException("an identity backup import is already staged");
         }
+    }
+
+    private static boolean hasExistingSecureState(
+            Context context, SecureChatState chatState) {
+        return chatState.hasAnySecureConversationState()
+                || KeystoreSignalProtocolStore.hasRemoteProtocolState(context);
     }
 
     private static ImportStage requireStage(Context context, byte expectedPhase) {

@@ -6438,25 +6438,34 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                         File file = new File(voicePath);
 
                         if (file.exists()) {
-                            TLRPC.TL_document document = new TLRPC.TL_document();
-                            document.file_reference = new byte[0];
-                            document.dc_id = Integer.MIN_VALUE;
-                            document.id = SharedConfig.getLastLocalId();
-                            document.user_id = accountInstance.getUserConfig().getClientUserId();
-                            document.mime_type = "audio/ogg";
-                            document.date = accountInstance.getConnectionsManager().getCurrentTime();
-                            document.size = (int) file.length();
-                            TLRPC.TL_documentAttributeAudio attributeAudio = new TLRPC.TL_documentAttributeAudio();
-                            attributeAudio.voice = true;
-                            attributeAudio.waveform = MediaController.getWaveform(file.getAbsolutePath());
-                            if (attributeAudio.waveform != null) {
-                                attributeAudio.flags |= 4;
-                            }
-                            document.attributes.add(attributeAudio);
-
-                            final CharSequence[] cs = new CharSequence[] { sendingText };
-                            final ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(currentAccount).getEntities(cs, false);
-                            accountInstance.getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of(document, null, file.getAbsolutePath(), did, replyToMsg, replyToMsg, cs[0] == null ? null : cs[0].toString(), entities, null, null, notify, scheduleDate, scheduleRepeatPeriod, 0, null, null, false));
+                            // External Share used to call sendMessage() directly here, bypassing
+                            // Fork-Secure's attachment gate. Route voice notes through the same
+                            // document pipeline as every other shared URI/path.
+                            ArrayList<String> voicePaths = new ArrayList<>();
+                            ArrayList<String> voiceOriginalPaths = new ArrayList<>();
+                            voicePaths.add(file.getAbsolutePath());
+                            voiceOriginalPaths.add(file.getAbsolutePath());
+                            SendMessagesHelper.prepareSendingDocuments(
+                                    accountInstance,
+                                    voicePaths,
+                                    voiceOriginalPaths,
+                                    null,
+                                    sendingText,
+                                    "audio/ogg",
+                                    did,
+                                    replyToMsg,
+                                    replyToMsg,
+                                    null,
+                                    null,
+                                    null,
+                                    notify,
+                                    scheduleDate,
+                                    null,
+                                    null,
+                                    0,
+                                    0,
+                                    false,
+                                    0);
                             if (sendingText != null) {
                                 sendingText = null;
                             }

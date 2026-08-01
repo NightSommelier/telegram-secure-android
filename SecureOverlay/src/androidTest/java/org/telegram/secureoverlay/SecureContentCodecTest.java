@@ -62,6 +62,48 @@ public final class SecureContentCodecTest {
     }
 
     @Test
+    public void encryptedCaptionCarriesAlbumIdWithoutChangingDisplayedCaption() {
+        String albumId = "00112233445566778899aabbccddeeff";
+        String encoded = SecureContentCodec.encodeCaption("опис", true, albumId);
+
+        assertTrue(SecureContentCodec.isCaptionAbove(encoded));
+        assertEquals(albumId, SecureContentCodec.albumId(encoded));
+        assertEquals("опис", SecureContentCodec.displayCaption(encoded));
+        assertEquals("опис", SecureContentCodec.displayCaption("опис"));
+        assertEquals("", SecureContentCodec.albumId("опис"));
+    }
+
+    @Test
+    public void editedCaptionPreservesAttachmentIdentityAndAlbum() {
+        String albumId = "00112233445566778899aabbccddeeff";
+        SecureContentCodec.Attachment original = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "photo.jpg",
+                "image/jpeg",
+                SecureContentCodec.encodeCaption("старий опис", false, albumId),
+                1920,
+                1080,
+                true);
+
+        SecureContentCodec.Attachment edited = SecureContentCodec.withCaption(
+                original, "новий опис", true);
+
+        assertArrayEquals(original.mediaId, edited.mediaId);
+        assertArrayEquals(original.key, edited.key);
+        assertArrayEquals(original.nonce, edited.nonce);
+        assertArrayEquals(original.ciphertextSha256, edited.ciphertextSha256);
+        assertEquals(original.ciphertextSize, edited.ciphertextSize);
+        assertEquals("новий опис", SecureContentCodec.displayCaption(edited.caption));
+        assertEquals(albumId, SecureContentCodec.albumId(edited.caption));
+        assertTrue(SecureContentCodec.isCaptionAbove(edited.caption));
+    }
+
+    @Test
     public void unsafeAttachmentNameIsRejected() {
         SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
                 new byte[16],

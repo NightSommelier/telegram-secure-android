@@ -158,6 +158,10 @@ public final class SecureMediaCryptoTest {
         SecureMediaCrypto.decryptAttachmentFile(
                 encrypted, decrypted, decoded.attachment);
 
+        // The real name is authenticated inside the encrypted manifest; the transport filename
+        // remains the caller-provided opaque name and never needs to expose source.jpg.
+        assertEquals("holiday.jpg", decoded.attachment.fileName);
+        assertEquals("opaque.bin", encrypted.getName());
         assertEquals(plaintext.length + SecureMediaCrypto.GCM_TAG_BYTES,
                 encrypted.length());
         assertArrayEquals(plaintext, readFile(decrypted));

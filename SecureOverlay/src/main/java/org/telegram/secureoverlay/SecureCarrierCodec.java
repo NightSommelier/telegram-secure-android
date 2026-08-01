@@ -12,6 +12,8 @@ public final class SecureCarrierCodec {
     public static final int TYPE_WHISPER = 2;
     /** A public, signed one-time pre-key bundle used only to establish a chat. */
     public static final int TYPE_PREKEY_BUNDLE = 3;
+    /** Authenticated self-encrypted Saved Messages record. */
+    public static final int TYPE_SAVED_MESSAGE = 4;
     public static final int MAX_PAYLOAD_BYTES = 64 * 1024;
 
     private SecureCarrierCodec() {}
@@ -55,7 +57,8 @@ public final class SecureCarrierCodec {
     }
 
     private static boolean isKnownType(int type) {
-        return type == TYPE_PREKEY || type == TYPE_WHISPER || type == TYPE_PREKEY_BUNDLE;
+        return type == TYPE_PREKEY || type == TYPE_WHISPER || type == TYPE_PREKEY_BUNDLE
+                || type == TYPE_SAVED_MESSAGE;
     }
 
     public static final class Decoded {

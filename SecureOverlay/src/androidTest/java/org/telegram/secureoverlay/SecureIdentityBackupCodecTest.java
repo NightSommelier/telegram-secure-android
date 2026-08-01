@@ -2,6 +2,8 @@ package org.telegram.secureoverlay;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import java.nio.charset.StandardCharsets;
@@ -30,6 +32,7 @@ public final class SecureIdentityBackupCodecTest {
         byte[] first = SecureIdentityBackupCodec.encrypt(payload, password, salt, nonce);
         byte[] second = SecureIdentityBackupCodec.encrypt(payload, password, salt, nonce);
         assertArrayEquals(first, second);
+        assertTrue(SecureIdentityBackupCodec.requiresPassword(first));
 
         SecureIdentityBackupCodec.Payload decoded =
                 SecureIdentityBackupCodec.decrypt(first, password);
@@ -40,6 +43,37 @@ public final class SecureIdentityBackupCodecTest {
         assertEquals(payload.registrationId, decoded.registrationId);
         assertArrayEquals(payload.serializedIdentity, decoded.serializedIdentity);
         Arrays.fill(password, '\0');
+    }
+
+    @Test
+    public void emptyPasswordUsesExplicitAuthenticatedContainerFlag() {
+        SecureIdentityBackupCodec.Payload payload = new SecureIdentityBackupCodec.Payload(
+                UUID.randomUUID(),
+                123456790L,
+                8,
+                1_700_000_003L,
+                8193,
+                IdentityKeyPair.generate().serialize());
+        char[] noPassword = new char[0];
+        byte[] archive = SecureIdentityBackupCodec.encrypt(
+                payload,
+                noPassword,
+                sequence(16, 4),
+                sequence(12, 40));
+
+        assertFalse(SecureIdentityBackupCodec.requiresPassword(archive));
+        SecureIdentityBackupCodec.Payload decoded =
+                SecureIdentityBackupCodec.decrypt(archive, noPassword);
+        assertArrayEquals(payload.serializedIdentity, decoded.serializedIdentity);
+
+        try {
+            SecureIdentityBackupCodec.decrypt(
+                    archive, "unexpected-password".toCharArray());
+            throw new AssertionError(
+                    "unprotected archive accepted a non-empty password");
+        } catch (SecurityException expected) {
+            // The container mode is explicit and authenticated.
+        }
     }
 
     @Test

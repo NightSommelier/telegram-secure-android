@@ -248,8 +248,12 @@ public class SessionCell extends FrameLayout {
             detailExTextView.setText(spannableStringBuilder);
 
             stringBuilder = new StringBuilder();
-            stringBuilder.append(session.app_name);
-            stringBuilder.append(" ").append(session.app_version);
+            if (session.app_version.startsWith("Telegram Android Fork-Secure")) {
+                stringBuilder.append(session.app_version);
+            } else {
+                stringBuilder.append(session.app_name);
+                stringBuilder.append(" ").append(session.app_version);
+            }
 
             detailTextView.setText(stringBuilder);
         } else if (object instanceof TLRPC.TL_webAuthorization) {

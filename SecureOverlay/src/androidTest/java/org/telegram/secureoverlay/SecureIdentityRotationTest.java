@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import android.content.Context;
 import androidx.test.core.app.ApplicationProvider;
@@ -353,6 +354,82 @@ public final class SecureIdentityRotationTest {
         SecureContentCodec.Decoded content = SecureContentCodec.decode(plaintext);
         assertEquals(SecureContentCodec.TYPE_PHOTO, content.type);
         assertEquals("caption", content.attachment.caption);
+    }
+
+    @Test
+    public void mediaWaitsForTwoWayPairingConfirmationThenFitsCaption()
+            throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        SecureChatEngine.resetOwnIdentity(context);
+        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        RemotePeer remotePeer = remotePeer();
+        SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
+        engine.receivePairingOffer(remotePeer.offer, 401);
+        SecureContentCodec.Attachment attachment =
+                new SecureContentCodec.Attachment(
+                        new byte[16],
+                        new byte[32],
+                        new byte[12],
+                        new byte[32],
+                        100,
+                        100 + SecureMediaCrypto.GCM_TAG_BYTES,
+                        "private.jpg",
+                        "image/jpeg",
+                        "",
+                        800,
+                        600,
+                        true);
+
+        try {
+            engine.encryptAttachmentForTransport(attachment, 1024, 4096);
+            fail("one-way PQ pre-key session must not emit an oversized caption");
+        } catch (SecureChatEngine.SecureChatException expected) {
+            assertTrue(expected.getCause() instanceof IllegalArgumentException);
+        }
+
+        String firstConfirmation = engine.createPairingAcknowledgement();
+        assertEquals(
+                "\u0000fork-secure-control:pairing-ack:v1",
+                new String(decryptFromEngine(remotePeer, firstConfirmation),
+                        StandardCharsets.UTF_8));
+        String ready = encryptFromRemote(
+                remotePeer, "\u0000fork-secure-control:pairing-ready:v1");
+        assertTrue(SecureChatEngine.isPairingReadyDisplay(
+                engine.decryptText(ready)));
+
+        SecureChatEngine.AttachmentTransport transport =
+                engine.encryptAttachmentForTransport(attachment, 1024, 4096);
+        assertTrue(transport.attachmentCarrier.length() <= 1024);
+        SecureContentCodec.Decoded content = SecureContentCodec.decode(
+                decryptFromEngine(remotePeer, transport.attachmentCarrier));
+        assertEquals(SecureContentCodec.TYPE_PHOTO, content.type);
+        assertEquals("private.jpg", content.attachment.fileName);
+    }
+
+    private static byte[] decryptFromEngine(
+            RemotePeer remotePeer, String carrier) throws Exception {
+        SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
+        int messageType = decoded.type == SecureCarrierCodec.TYPE_PREKEY
+                ? LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
+                : LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
+        return remotePeer.sessions.decrypt(
+                new SignalProtocolAddress("local-account-0", 1),
+                new LibsignalSessionAdapter.EncryptedMessage(
+                        messageType, decoded.payload));
+    }
+
+    private static String encryptFromRemote(
+            RemotePeer remotePeer, String plaintext) throws Exception {
+        LibsignalSessionAdapter.EncryptedMessage encrypted =
+                remotePeer.sessions.encrypt(
+                        new SignalProtocolAddress("local-account-0", 1),
+                        plaintext.getBytes(StandardCharsets.UTF_8));
+        int carrierType =
+                encrypted.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
+                        ? SecureCarrierCodec.TYPE_PREKEY
+                        : SecureCarrierCodec.TYPE_WHISPER;
+        return SecureCarrierCodec.encode(
+                carrierType, encrypted.serialized);
     }
 
     private static RemotePeer remotePeer() {

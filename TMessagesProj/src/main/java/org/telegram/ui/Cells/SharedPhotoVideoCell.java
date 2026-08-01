@@ -14,8 +14,12 @@ import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.RectF;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.text.TextUtils;
 import android.util.TypedValue;
@@ -43,6 +47,8 @@ import org.telegram.ui.Components.BackupImageView;
 import org.telegram.ui.Components.CheckBox2;
 import org.telegram.ui.Components.LayoutHelper;
 import org.telegram.ui.PhotoViewer;
+
+import java.io.File;
 
 public class SharedPhotoVideoCell extends FrameLayout {
 
@@ -81,6 +87,8 @@ public class SharedPhotoVideoCell extends FrameLayout {
         private CheckBox2 checkBox;
         private FrameLayout container;
         private AnimatorSet animator;
+        private final Paint forkSecureBadgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private Drawable forkSecureLockDrawable;
 
         private MessageObject currentMessageObject;
 
@@ -186,6 +194,33 @@ public class SharedPhotoVideoCell extends FrameLayout {
             if (!TextUtils.isEmpty(restrictionReason)) {
                 videoInfoContainer.setVisibility(INVISIBLE);
                 imageView.setImageResource(R.drawable.photo_placeholder_in);
+            } else if (messageObject.forkSecureVerified
+                    && (messageObject.forkSecureMediaKind
+                            == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                            || messageObject.forkSecureMediaMime != null
+                            && messageObject.forkSecureMediaMime.startsWith("video/"))
+                    && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
+                    && new File(messageObject.forkSecureMediaPath).isFile()) {
+                boolean secureVideo = messageObject.forkSecureMediaMime != null
+                        && messageObject.forkSecureMediaMime.startsWith("video/");
+                videoInfoContainer.setVisibility(secureVideo ? VISIBLE : INVISIBLE);
+                if (secureVideo) {
+                    videoTextView.setText(AndroidUtilities.formatShortDuration(
+                            (int) messageObject.getDuration()));
+                }
+                imageView.getImageReceiver().setImage(
+                        secureVideo
+                                ? ImageLocation.getForPath(
+                                        "vthumb://0:" + messageObject.forkSecureMediaPath)
+                                : ImageLocation.getForPath(messageObject.forkSecureMediaPath),
+                        "100_100",
+                        null,
+                        null,
+                        null,
+                        0,
+                        null,
+                        messageObject,
+                        0);
             } else if (messageObject.isVideo()) {
                 videoInfoContainer.setVisibility(VISIBLE);
                 videoTextView.setText(AndroidUtilities.formatShortDuration((int) messageObject.getDuration()));
@@ -244,6 +279,40 @@ public class SharedPhotoVideoCell extends FrameLayout {
             if (checkBox.isChecked() || !imageView.getImageReceiver().hasBitmapImage() || imageView.getImageReceiver().getCurrentAlpha() != 1.0f || PhotoViewer.isShowingImage(currentMessageObject)) {
                 canvas.drawRect(0, 0, getMeasuredWidth(), getMeasuredHeight(), backgroundPaint);
             }
+        }
+
+        @Override
+        protected void dispatchDraw(Canvas canvas) {
+            super.dispatchDraw(canvas);
+            if (currentMessageObject == null
+                    || !currentMessageObject.forkSecureVerified
+                    || !(currentMessageObject.forkSecureMediaKind
+                            == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                            || currentMessageObject.forkSecureMediaKind
+                                    == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                            && currentMessageObject.forkSecureMediaMime != null
+                            && currentMessageObject.forkSecureMediaMime.startsWith("video/"))) {
+                return;
+            }
+            float centerX = AndroidUtilities.dp(14);
+            float centerY = AndroidUtilities.dp(14);
+            forkSecureBadgePaint.setColor(0x99000000);
+            canvas.drawCircle(
+                    centerX, centerY, AndroidUtilities.dp(9), forkSecureBadgePaint);
+            if (forkSecureLockDrawable == null) {
+                forkSecureLockDrawable = getContext().getResources()
+                        .getDrawable(R.drawable.msg_mini_lock3).mutate();
+                forkSecureLockDrawable.setColorFilter(
+                        new PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN));
+            }
+            int halfWidth = AndroidUtilities.dp(5);
+            int halfHeight = AndroidUtilities.dp(6);
+            forkSecureLockDrawable.setBounds(
+                    (int) centerX - halfWidth,
+                    (int) centerY - halfHeight,
+                    (int) centerX + halfWidth,
+                    (int) centerY + halfHeight);
+            forkSecureLockDrawable.draw(canvas);
         }
 
         @Override

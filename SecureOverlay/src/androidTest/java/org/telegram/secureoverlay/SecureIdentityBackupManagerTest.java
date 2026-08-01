@@ -98,13 +98,59 @@ public final class SecureIdentityBackupManagerTest {
                     SecureIdentityBackupManager.getIdentityInfo(context).fingerprint);
 
             long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
-            new SecureChatState(context).markWaiting(0, peer);
-            expectFailure(() -> SecureIdentityBackupManager.prepareImport(
-                    context, OWNER, testedArchive, password));
+            SecureChatState state = new SecureChatState(context);
+            state.markWaiting(0, peer);
+            SecureIdentityBackupManager.prepareImport(
+                    context, OWNER, testedArchive, password);
+            assertTrue(state.isWaiting(0, peer));
+            SecureIdentityBackupManager.cancelPreparedImport(context);
             assertNull(SecureIdentityBackupManager.getPreparedImport(context));
             assertEquals(
                     current,
                     SecureIdentityBackupManager.getIdentityInfo(context).fingerprint);
+            assertTrue(state.isWaiting(0, peer));
+        } finally {
+            Arrays.fill(password, '\0');
+            if (archive != null) {
+                Arrays.fill(archive, (byte) 0);
+            }
+            cancelPrepared(context);
+            SecureChatEngine.resetOwnIdentity(context);
+        }
+    }
+
+    @Test
+    public void confirmedImportReplacesTemporaryActiveState() {
+        Context context = ApplicationProvider.getApplicationContext();
+        char[] password = "test-only-backup-password".toCharArray();
+        byte[] archive = null;
+        try {
+            SecureChatEngine.resetOwnIdentity(context);
+            SecureIdentityBackupManager.IdentityInfo archived =
+                    SecureIdentityBackupManager.getIdentityInfo(context);
+            archive = SecureIdentityBackupManager.exportArchive(
+                    context, OWNER, password);
+            String replacement = SecureChatEngine.resetOwnIdentity(context);
+            assertNotEquals(archived.fingerprint, replacement);
+
+            long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+            SecureChatState state = new SecureChatState(context);
+            state.markPaired(0, peer);
+
+            SecureIdentityBackupManager.PreparedImport prepared =
+                    SecureIdentityBackupManager.prepareImport(
+                            context, OWNER, archive, password);
+            assertEquals(archived.fingerprint, prepared.fingerprint);
+            assertTrue(state.isPaired(0, peer));
+
+            SecureIdentityBackupManager.commitPreparedImport(context);
+            assertEquals(
+                    archived.fingerprint,
+                    SecureIdentityBackupManager.getIdentityInfo(context).fingerprint);
+            assertFalse(new SecureChatState(context)
+                    .hasAnySecureConversationState());
+            assertFalse(KeystoreSignalProtocolStore
+                    .hasRemoteProtocolState(context));
         } finally {
             Arrays.fill(password, '\0');
             if (archive != null) {

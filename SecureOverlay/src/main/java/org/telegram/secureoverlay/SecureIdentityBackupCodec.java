@@ -36,6 +36,7 @@ public final class SecureIdentityBackupCodec {
     private static final int FORMAT_VERSION = 1;
     private static final int KDF_PBKDF2_HMAC_SHA256 = 2;
     private static final int AEAD_AES_256_GCM = 1;
+    private static final int FLAG_NO_PASSWORD = 1;
     private static final int PBKDF2_ITERATIONS = 600_000;
     private static final int SALT_BYTES = 16;
     private static final int NONCE_BYTES = 12;
@@ -46,6 +47,9 @@ public final class SecureIdentityBackupCodec {
     private static final int MAX_PASSWORD_BYTES = 512;
     private static final int MAX_IDENTITY_BYTES = 512;
     private static final int MAX_REGISTRATION_ID = 16_380;
+    private static final byte[] NO_PASSWORD_KDF_INPUT =
+            "Fork-Secure unprotected identity backup v1"
+                    .getBytes(StandardCharsets.US_ASCII);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private SecureIdentityBackupCodec() {
@@ -104,10 +108,15 @@ public final class SecureIdentityBackupCodec {
             throw new IllegalArgumentException("invalid identity backup encryption input");
         }
         byte[] plaintext = encodePlaintext(payload);
-        byte[] passwordBytes = encodePassword(password);
+        boolean noPassword = password != null && password.length == 0;
+        byte[] passwordBytes = encodePassword(password, noPassword);
         byte[] key = null;
         try {
-            byte[] header = encodeHeader(plaintext.length, salt, nonce);
+            byte[] header = encodeHeader(
+                    plaintext.length,
+                    salt,
+                    nonce,
+                    noPassword ? FLAG_NO_PASSWORD : 0);
             key = pbkdf2HmacSha256(passwordBytes, salt, PBKDF2_ITERATIONS);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(
@@ -134,7 +143,7 @@ public final class SecureIdentityBackupCodec {
 
     public static Payload decrypt(byte[] archive, char[] password) {
         ParsedContainer parsed = parseContainer(archive);
-        byte[] passwordBytes = encodePassword(password);
+        byte[] passwordBytes = encodePassword(password, parsed.noPassword);
         byte[] key = null;
         byte[] plaintext = null;
         try {
@@ -164,6 +173,11 @@ public final class SecureIdentityBackupCodec {
                 Arrays.fill(plaintext, (byte) 0);
             }
         }
+    }
+
+    /** Returns whether the authenticated container requires user password input. */
+    public static boolean requiresPassword(byte[] archive) {
+        return !parseContainer(archive).noPassword;
     }
 
     static byte[] encodePlaintext(Payload payload) {
@@ -312,7 +326,7 @@ public final class SecureIdentityBackupCodec {
                     || version != FORMAT_VERSION
                     || kdf != KDF_PBKDF2_HMAC_SHA256
                     || aead != AEAD_AES_256_GCM
-                    || flags != 0
+                    || (flags != 0 && flags != FLAG_NO_PASSWORD)
                     || kdfParameter1 != PBKDF2_ITERATIONS
                     || kdfParameter2 != 0
                     || parallelism != 1
@@ -340,7 +354,12 @@ public final class SecureIdentityBackupCodec {
                 throw new IllegalArgumentException("identity backup has trailing bytes");
             }
             return new ParsedContainer(
-                    plaintextLength, salt, nonce, header, ciphertext);
+                    plaintextLength,
+                    salt,
+                    nonce,
+                    header,
+                    ciphertext,
+                    flags == FLAG_NO_PASSWORD);
         } catch (java.io.EOFException error) {
             throw new IllegalArgumentException("identity backup is truncated", error);
         } catch (java.io.IOException impossible) {
@@ -348,7 +367,8 @@ public final class SecureIdentityBackupCodec {
         }
     }
 
-    private static byte[] encodeHeader(int plaintextLength, byte[] salt, byte[] nonce) {
+    private static byte[] encodeHeader(
+            int plaintextLength, byte[] salt, byte[] nonce, int flags) {
         try {
             ByteArrayOutputStream bytes =
                     new ByteArrayOutputStream(FIXED_HEADER_BYTES + salt.length + nonce.length);
@@ -357,7 +377,7 @@ public final class SecureIdentityBackupCodec {
             output.writeShort(FORMAT_VERSION);
             output.writeByte(KDF_PBKDF2_HMAC_SHA256);
             output.writeByte(AEAD_AES_256_GCM);
-            output.writeShort(0);
+            output.writeShort(flags);
             output.writeInt(PBKDF2_ITERATIONS);
             output.writeInt(0);
             output.writeByte(1);
@@ -374,8 +394,18 @@ public final class SecureIdentityBackupCodec {
         }
     }
 
-    private static byte[] encodePassword(char[] password) {
-        if (password == null || password.length == 0) {
+    private static byte[] encodePassword(char[] password, boolean noPassword) {
+        if (password == null) {
+            throw new IllegalArgumentException("identity backup password is required");
+        }
+        if (noPassword) {
+            if (password.length != 0) {
+                throw new SecurityException(
+                        "unprotected identity backup requires an empty password");
+            }
+            return NO_PASSWORD_KDF_INPUT.clone();
+        }
+        if (password.length == 0) {
             throw new IllegalArgumentException("identity backup password is required");
         }
         try {
@@ -451,18 +481,21 @@ public final class SecureIdentityBackupCodec {
         final byte[] nonce;
         final byte[] header;
         final byte[] ciphertext;
+        final boolean noPassword;
 
         ParsedContainer(
                 int plaintextLength,
                 byte[] salt,
                 byte[] nonce,
                 byte[] header,
-                byte[] ciphertext) {
+                byte[] ciphertext,
+                boolean noPassword) {
             this.plaintextLength = plaintextLength;
             this.salt = salt;
             this.nonce = nonce;
             this.header = header;
             this.ciphertext = ciphertext;
+            this.noPassword = noPassword;
         }
     }
 }

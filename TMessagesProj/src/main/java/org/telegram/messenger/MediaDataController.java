@@ -55,6 +55,8 @@ import org.telegram.SQLite.SQLitePreparedStatement;
 import org.telegram.messenger.ringtone.RingtoneDataStore;
 import org.telegram.messenger.ringtone.RingtoneUploader;
 import org.telegram.messenger.utils.EphemeralMessagesHelper;
+import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.RequestDelegate;
@@ -4153,6 +4155,54 @@ public class MediaDataController extends BaseController {
     public final static int MEDIA_POLL = 8;
     public final static int MEDIA_TYPES_COUNT = 9;
 
+    /**
+     * Reclassifies an authenticated Fork-Secure carrier in Telegram's device-local media table.
+     * The serialized object remains the opaque Telegram message; only its local media category
+     * changes.
+     */
+    public void indexForkSecureMedia(TLRPC.Message message, int type) {
+        if (message == null || message.id == 0
+                || type < MEDIA_PHOTOVIDEO || type >= MEDIA_TYPES_COUNT) {
+            throw new IllegalArgumentException("invalid Fork-Secure media index request");
+        }
+        long dialogId = MessageObject.getDialogId(message);
+        NativeByteBuffer data;
+        try {
+            data = new NativeByteBuffer(message.getObjectSize());
+            message.serializeToStream(data);
+        } catch (Exception e) {
+            FileLog.e(e);
+            return;
+        }
+        int messageId = message.id;
+        int date = message.date;
+        getMessagesStorage().getStorageQueue().postRunnable(() -> {
+            SQLitePreparedStatement state = null;
+            try {
+                getMessagesStorage().getDatabase().executeFast(String.format(
+                        Locale.US,
+                        "DELETE FROM media_v4 WHERE mid = %d AND uid = %d",
+                        messageId,
+                        dialogId)).stepThis().dispose();
+                state = getMessagesStorage().getDatabase().executeFast(
+                        "REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
+                state.bindInteger(1, messageId);
+                state.bindLong(2, dialogId);
+                state.bindInteger(3, date);
+                state.bindInteger(4, type);
+                state.bindByteBuffer(5, data);
+                state.step();
+            } catch (Exception e) {
+                FileLog.e(e);
+            } finally {
+                if (state != null) {
+                    state.dispose();
+                }
+                data.reuse();
+            }
+        });
+    }
+
 
     public void loadMedia(long dialogId, int count, int max_id, int min_id, int type, long topicId, int fromCache, int classGuid, int requestIndex, ReactionsLayoutInBubble.VisibleReaction tag, String query) {
         boolean isChannel = DialogObject.isChatDialog(dialogId) && ChatObject.isChannel(-dialogId, currentAccount);
@@ -4264,7 +4314,9 @@ public class MediaDataController extends BaseController {
                             putMediaCountDatabase(dialogId, topicId, a, counts[a]);
                         }
                     }
-                    AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.mediaCountsDidLoad, dialogId, topicId, counts));
+                    int[] displayedCounts =
+                            adjustForkSecureMediaCounts(dialogId, topicId, counts);
+                    AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.mediaCountsDidLoad, dialogId, topicId, displayedCounts));
                 } else {
                     boolean missing = false;
                     TLRPC.TL_messages_getSearchCounters req = new TLRPC.TL_messages_getSearchCounters();
@@ -4347,18 +4399,54 @@ public class MediaDataController extends BaseController {
                                     putMediaCountDatabase(dialogId, topicId, type, counts[type]);
                                 }
                             }
-                            AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.mediaCountsDidLoad, dialogId, topicId, counts));
+                            int[] displayedCounts =
+                                    adjustForkSecureMediaCounts(dialogId, topicId, counts);
+                            AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.mediaCountsDidLoad, dialogId, topicId, displayedCounts));
                         });
                         getConnectionsManager().bindRequestToGuid(reqId, classGuid);
                     }
                     if (!missing || getConnectionsManager().getConnectionState() != ConnectionsManager.ConnectionStateConnected) {
-                        AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.mediaCountsDidLoad, dialogId, topicId, countsFinal));
+                        int[] displayedCounts =
+                                adjustForkSecureMediaCounts(dialogId, topicId, countsFinal);
+                        AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.mediaCountsDidLoad, dialogId, topicId, displayedCounts));
                     }
                 }
             } catch (Exception e) {
                 FileLog.e(e);
             }
         });
+    }
+
+    private int[] adjustForkSecureMediaCounts(
+            long dialogId, long topicId, int[] source) {
+        int[] result = source.clone();
+        if (topicId != 0 || !DialogObject.isUserDialog(dialogId)) {
+            return result;
+        }
+        try {
+            SecureMediaIndex index = new SecureMediaIndex(
+                    ApplicationLoader.applicationContext,
+                    currentAccount,
+                    dialogId);
+            int securePhotos = index.count(SecureMediaIndex.KIND_PHOTO);
+            int secureVideos = index.count(SecureMediaIndex.KIND_VIDEO);
+            if (securePhotos == 0 && secureVideos == 0) {
+                return result;
+            }
+            result[MEDIA_PHOTOVIDEO] =
+                    Math.max(0, result[MEDIA_PHOTOVIDEO]) + securePhotos + secureVideos;
+            result[MEDIA_PHOTOS_ONLY] =
+                    Math.max(0, result[MEDIA_PHOTOS_ONLY]) + securePhotos;
+            result[MEDIA_VIDEOS_ONLY] =
+                    Math.max(0, result[MEDIA_VIDEOS_ONLY]) + secureVideos;
+            if (result[MEDIA_FILE] >= 0) {
+                result[MEDIA_FILE] =
+                        Math.max(0, result[MEDIA_FILE] - securePhotos - secureVideos);
+            }
+        } catch (RuntimeException e) {
+            FileLog.e(e);
+        }
+        return result;
     }
 
     public void getMediaCount(long dialogId, long topicId, int type, int classGuid, boolean fromCache) {
@@ -4467,6 +4555,21 @@ public class MediaDataController extends BaseController {
         return -1;
     }
 
+    private static int mediaTypeForSecureEntry(SecureMediaIndex.Entry entry) {
+        if (entry.kind == SecureMediaIndex.KIND_PHOTO
+                || entry.kind == SecureMediaIndex.KIND_VIDEO
+                || entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO) {
+            return MEDIA_PHOTOVIDEO;
+        } else if (entry.kind == SecureMediaIndex.KIND_VOICE) {
+            return MEDIA_AUDIO;
+        } else if (entry.kind == SecureMediaIndex.KIND_MUSIC) {
+            return MEDIA_MUSIC;
+        } else if (entry.kind == SecureMediaIndex.KIND_GIF) {
+            return MEDIA_GIF;
+        }
+        return MEDIA_FILE;
+    }
+
     public static boolean canAddMessageToMedia(TLRPC.Message message) {
         if (message instanceof TLRPC.TL_message_secret && (MessageObject.getMedia(message) instanceof TLRPC.TL_messageMediaPhoto || MessageObject.isVideoMessage(message) || MessageObject.isGifMessage(message)) && MessageObject.getMedia(message).ttl_seconds != 0 && MessageObject.getMedia(message).ttl_seconds <= 60) {
             return false;
@@ -4504,9 +4607,35 @@ public class MediaDataController extends BaseController {
                     usersDict.put(u.id, u);
                 }
                 ArrayList<MessageObject> objects = new ArrayList<>();
+                SecureMediaIndex secureMediaIndex =
+                        DialogObject.isUserDialog(dialogId)
+                                ? new SecureMediaIndex(
+                                        ApplicationLoader.applicationContext,
+                                        currentAccount,
+                                        dialogId)
+                                : null;
                 for (int a = 0; a < res.messages.size(); a++) {
                     TLRPC.Message message = res.messages.get(a);
+                    SecureMediaIndex.Entry secureEntry = null;
+                    if (secureMediaIndex != null
+                            && SecureCarrierCodec.isMarked(message.message)) {
+                        secureEntry = secureMediaIndex.find(
+                                message.id, message.message);
+                                if (secureEntry != null
+                                        && mediaTypeForSecureEntry(secureEntry) != type
+                                        && !(type == MEDIA_PHOTOS_ONLY
+                                                && secureEntry.kind
+                                                        == SecureMediaIndex.KIND_PHOTO)
+                                        && !(type == MEDIA_VIDEOS_ONLY
+                                                && secureEntry.kind
+                                                        == SecureMediaIndex.KIND_VIDEO)) {
+                            continue;
+                        }
+                    }
                     MessageObject messageObject = new MessageObject(currentAccount, message, usersDict, true, false);
+                    if (secureEntry != null) {
+                        messageObject.applyForkSecureMediaIndex(secureEntry);
+                    }
                     messageObject.createStrippedThumb();
                     objects.add(messageObject);
                 }
@@ -4897,9 +5026,35 @@ public class MediaDataController extends BaseController {
                 } else {
                     state2 = getMessagesStorage().getDatabase().executeFast("REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
                 }
+                SecureMediaIndex secureMediaIndex =
+                        topicId == 0 && DialogObject.isUserDialog(uid)
+                                ? new SecureMediaIndex(
+                                        ApplicationLoader.applicationContext,
+                                        currentAccount,
+                                        uid)
+                                : null;
 
                 for (TLRPC.Message message : messages) {
                     if (canAddMessageToMedia(message)) {
+                        int storedType = type;
+                        if (secureMediaIndex != null
+                                && SecureCarrierCodec.isMarked(message.message)) {
+                            SecureMediaIndex.Entry secureEntry =
+                                    secureMediaIndex.find(
+                                            message.id, message.message);
+                            if (secureEntry != null) {
+                                storedType =
+                                        mediaTypeForSecureEntry(secureEntry);
+                                getMessagesStorage().getDatabase().executeFast(
+                                        String.format(
+                                                Locale.US,
+                                                "DELETE FROM media_v4 WHERE mid = %d AND uid = %d",
+                                                message.id,
+                                                uid))
+                                        .stepThis()
+                                        .dispose();
+                            }
+                        }
                         state2.requery();
                         MessageObject.normalizeFlags(message);
                         NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
@@ -4911,7 +5066,7 @@ public class MediaDataController extends BaseController {
                             state2.bindLong(pointer++, topicId);
                         }
                         state2.bindInteger(pointer++, message.date);
-                        state2.bindInteger(pointer++, type);
+                        state2.bindInteger(pointer++, storedType);
                         state2.bindByteBuffer(pointer++, data);
                         state2.step();
                         data.reuse();

@@ -189,8 +189,13 @@ import org.telegram.messenger.VideoEditedInfo;
 import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.secureoverlay.SecureContentCodec;
+import org.telegram.secureoverlay.SecureContentSettings;
 import org.telegram.secureoverlay.SecureMediaCache;
 import org.telegram.secureoverlay.SecureMediaCrypto;
+import org.telegram.secureoverlay.SecureMediaIndex;
+import org.telegram.secureoverlay.SecureSavedMessagesSettings;
+import org.telegram.secureoverlay.SecureSavedMessageCrypto;
+import org.telegram.secureoverlay.SecureSavedMessagesKeyStore;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.messenger.camera.CameraView;
 import org.telegram.messenger.support.LongSparseIntArray;
@@ -441,6 +446,8 @@ public class ChatActivity extends BaseFragment implements
     private ActionBarMenuItem.Item timeItem2;
     private ActionBarMenuItem secureModeItem;
     private SecureChatEngine secureChatEngine;
+    private SecureSavedMessagesKeyStore.KeyMaterial savedMessagesKeyMaterial;
+    private int forkSecureReadyAckScheduledMessageId;
     private boolean forkSecureSuppressedWebPageSearch;
     private final HashSet<Integer> forkSecureDeferredMessages = new HashSet<>();
     private final HashSet<String> forkSecureMediaPreparing = new HashSet<>();
@@ -3702,7 +3709,11 @@ public class ChatActivity extends BaseFragment implements
                         }
                     }
                 } else if (id == secure_chat_toggle) {
-                    toggleSecureMode();
+                    if (isSavedMessagesSecureUiEligible()) {
+                        toggleSavedMessagesMode();
+                    } else {
+                        toggleSecureMode();
+                    }
                 } else if (id == view_as_topics) {
                     if (getUserConfig().getClientUserId() == dialog_id) {
                         getMessagesController().setSavedViewAs(true);
@@ -4240,6 +4251,10 @@ public class ChatActivity extends BaseFragment implements
                 return true;
             });
             updateSecureModeUi();
+        } else if (isSavedMessagesSecureUiEligible()) {
+            secureModeItem = menu.addItem(
+                    secure_chat_toggle, R.drawable.outline_shield_plain_24);
+            updateSavedMessagesModeUi();
         }
 
         if (chatMode == MODE_QUICK_REPLIES && !QuickRepliesController.isSpecial(quickReplyShortcut)) {
@@ -8656,7 +8671,10 @@ public class ChatActivity extends BaseFragment implements
 
         flagSecure = new FlagSecureReason(getParentActivity().getWindow(), () ->
             currentEncryptedChat != null ||
-            isPeerNoForwards()
+            isPeerNoForwards() ||
+            SecureContentSettings.isScreenProtectionEnabled(
+                    ApplicationLoader.applicationContext)
+                    && isForkSecureContentProtected()
         );
 
         if (oldMessage != null) {
@@ -15122,6 +15140,8 @@ public class ChatActivity extends BaseFragment implements
                 } else if (!TextUtils.isEmpty(restrictionReason)) {
                     replyObjectText = restrictionReason;
                     sourceText = restrictionReason;
+                } else if (getForkSecureReplyLabel(messageObjectToReply) != null) {
+                    replyObjectText = getForkSecureReplyLabel(messageObjectToReply);
                 } else if (MessageObject.isTopicActionMessage(messageObjectToReply)) {
                     ForumUtilities.applyTopicToMessage(messageObjectToReply);
                     if (messageObjectToReply.messageTextForReply != null) {
@@ -15484,7 +15504,25 @@ public class ChatActivity extends BaseFragment implements
             if (photoSize == thumbPhotoSize) {
                 thumbPhotoSize = null;
             }
-            if (photoSize == null || photoSize instanceof TLRPC.TL_photoSizeEmpty || photoSize.location instanceof TLRPC.TL_fileLocationUnavailable || thumbMediaMessageObject.isAnyKindOfSticker() || thumbMediaMessageObject.isSecretMedia() || thumbMediaMessageObject.isWebpageDocument() || forwardingPreviewView != null) {
+            boolean secureReplyPhoto = isForkSecureReadyPhoto(
+                    thumbMediaMessageObject);
+            if (secureReplyPhoto && forwardingPreviewView == null) {
+                replyImageLocation = null;
+                replyImageThumbLocation = null;
+                replyImageLocationObject = null;
+                replyImageView.setRoundRadius(AndroidUtilities.dp(2));
+                replyImageView.setImage(
+                        ImageLocation.getForPath(
+                                thumbMediaMessageObject.forkSecureMediaPath),
+                        "50_50",
+                        null,
+                        null,
+                        0,
+                        thumbMediaMessageObject);
+                replyImageView.setVisibility(View.VISIBLE);
+                layoutParams1.leftMargin = layoutParams2.leftMargin =
+                        layoutParams3.leftMargin = AndroidUtilities.dp(96);
+            } else if (photoSize == null || photoSize instanceof TLRPC.TL_photoSizeEmpty || photoSize.location instanceof TLRPC.TL_fileLocationUnavailable || thumbMediaMessageObject.isAnyKindOfSticker() || thumbMediaMessageObject.isSecretMedia() || thumbMediaMessageObject.isWebpageDocument() || forwardingPreviewView != null) {
                 replyImageView.setImageBitmap(null);
                 replyImageLocation = null;
                 replyImageLocationObject = null;
@@ -18954,6 +18992,9 @@ public class ChatActivity extends BaseFragment implements
         if (messageObject == null) {
             return -1;
         }
+        if (messageObject.forkSecureService) {
+            return 1;
+        }
         if (currentEncryptedChat == null) {
             if (messageObject.isEditing()) {
                 return -1;
@@ -19858,6 +19899,7 @@ public class ChatActivity extends BaseFragment implements
             for (MediaController.PhotoEntry entry : entries) {
                 SendMessagesHelper.SendingMediaInfo info = new SendMessagesHelper.SendingMediaInfo();
                 if (!entry.isVideo && entry.imagePath != null) {
+                    info.imagePath = entry.imagePath;
                     info.path = entry.imagePath;
                 } else if (entry.path != null) {
                     info.path = entry.path;
@@ -20552,6 +20594,10 @@ public class ChatActivity extends BaseFragment implements
         if (!DialogObject.isUserDialog(dialog_id) || candidates == null || candidates.isEmpty()) {
             return;
         }
+        if (isForkSecureSavedMessagesChat()) {
+            applySavedMessagesSecureTextOverlay(candidates);
+            return;
+        }
         final SecureChatEngine secureChat;
         try {
             secureChat = getSecureChatEngine();
@@ -20560,6 +20606,7 @@ public class ChatActivity extends BaseFragment implements
             return;
         }
         boolean shouldSendPairingAcknowledgement = false;
+        int pairingAcknowledgementMessageId = 0;
         for (int i = 0; i < candidates.size(); i++) {
             MessageObject message = candidates.get(i);
             if (message == null || message.messageOwner == null) {
@@ -20569,6 +20616,7 @@ public class ChatActivity extends BaseFragment implements
             String carrier = message.messageOwner.message;
             try {
                 message.forkSecureVerified = false;
+                message.forkSecureService = false;
                 SecureCarrierCodec.Decoded decoded;
                 try {
                     decoded = SecureCarrierCodec.decode(carrier);
@@ -20622,11 +20670,15 @@ public class ChatActivity extends BaseFragment implements
                                     R.string.ForkSecurePairingIgnored));
                         }
                     }
+                    applyForkSecureServiceStyle(message, true);
                 } else if (message.isOutOwner()) {
                     String localText = secureChat.getOutgoingText(carrier);
                     if (localText != null) {
                         message.applyNewText(formatForkSecureDisplayText(localText));
                         message.forkSecureVerified = true;
+                        applyForkSecureServiceStyle(
+                                message,
+                                SecureChatEngine.isPairingStatusDisplay(localText));
                         if (SecureChatEngine.isStaticStickerDisplay(localText)) {
                             applySecureStickerMedia(message, secureChat, carrier);
                         } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
@@ -20645,6 +20697,15 @@ public class ChatActivity extends BaseFragment implements
                     String localText = secureChat.decryptText(carrier);
                     message.applyNewText(formatForkSecureDisplayText(localText));
                     message.forkSecureVerified = true;
+                    applyForkSecureServiceStyle(
+                            message,
+                            SecureChatEngine.isPairingStatusDisplay(localText));
+                    if (secureChat.shouldAcknowledgeSessionReady(
+                            localText, message.getId())) {
+                        pairingAcknowledgementMessageId = Math.max(
+                                pairingAcknowledgementMessageId,
+                                message.getId());
+                    }
                     if (SecureChatEngine.isStaticStickerDisplay(localText)) {
                         applySecureStickerMedia(message, secureChat, carrier);
                     } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
@@ -20672,6 +20733,82 @@ public class ChatActivity extends BaseFragment implements
         if (shouldSendPairingAcknowledgement && chatActivityEnterView != null) {
             sendForkSecurePairingAcknowledgement();
         }
+        if (pairingAcknowledgementMessageId > 0
+                && chatActivityEnterView != null) {
+            sendForkSecureSessionReadyAcknowledgement(
+                    pairingAcknowledgementMessageId);
+        }
+    }
+
+    private void applySavedMessagesSecureTextOverlay(ArrayList<MessageObject> candidates) {
+        SecureSavedMessagesKeyStore.KeyMaterial key = getSavedMessagesKeyMaterial();
+        if (key == null) return;
+        for (MessageObject message : candidates) {
+            applySavedMessagesSecureTextOverlay(message, key);
+        }
+    }
+
+    private void applySavedMessagesSecureTextOverlay(
+            MessageObject message, SecureSavedMessagesKeyStore.KeyMaterial key) {
+        if (key == null || message == null || message.messageOwner == null
+                || !SecureCarrierCodec.isMarked(message.messageOwner.message)
+                || message.forkSecureVerified
+                && !TextUtils.equals(message.messageText, message.messageOwner.message)) {
+            return;
+        }
+        try {
+            SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(
+                    message.messageOwner.message);
+            if (decoded == null || decoded.type != SecureCarrierCodec.TYPE_SAVED_MESSAGE) {
+                return;
+            }
+            byte[] plaintext;
+            try {
+                plaintext = SecureSavedMessageCrypto.decryptRecord(decoded.payload, key);
+            } catch (RuntimeException mediaRecordFailure) {
+                message.applyNewText(SecureSavedMessageCrypto.decryptText(decoded.payload, key));
+                message.forkSecureVerified = true;
+                applyForkSecureServiceStyle(message, false);
+                return;
+            }
+            SecureContentCodec.Decoded content = SecureContentCodec.decode(plaintext);
+            message.forkSecureVerified = true;
+            applyForkSecureServiceStyle(message, false);
+            if (content.staticSticker != null) {
+                message.applyNewText(getString(R.string.ForkSecureEncryptedSticker));
+                applySavedSecureStickerMedia(message, content.staticSticker,
+                        message.messageOwner.message);
+            } else if (content.attachment != null) {
+                message.applyNewText(getString(content.attachment.photo
+                        ? R.string.ForkSecureEncryptedPhoto : R.string.ForkSecureEncryptedFile));
+                applySavedSecureAttachmentMedia(message, content.attachment,
+                        message.messageOwner.message, content.attachment.photo);
+            } else {
+                message.applyNewText(content.text);
+            }
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+        }
+    }
+
+    private SecureSavedMessagesKeyStore.KeyMaterial getSavedMessagesKeyMaterial() {
+        if (savedMessagesKeyMaterial != null) {
+            return savedMessagesKeyMaterial;
+        }
+        try {
+            savedMessagesKeyMaterial = new SecureSavedMessagesKeyStore(getContext())
+                    .getOrCreate(currentAccount);
+            return savedMessagesKeyMaterial;
+        } catch (Exception error) {
+            FileLog.e(error);
+            return null;
+        }
+    }
+
+    public boolean isSavedMessagesSecureModeEnabled() {
+        return isSavedMessagesSecureUiEligible()
+                && SecureSavedMessagesSettings.isSecureByDefault(getContext(), currentAccount);
     }
 
     /**
@@ -20695,7 +20832,9 @@ public class ChatActivity extends BaseFragment implements
                 && reply.messageOwner != null
                 && applySecureMessageDisplayOnly(reply, secureChat, cacheOnly);
         if (resolvedReply && reply.messageText != null) {
-            parentMessage.forkSecureReplyText = reply.messageText;
+            CharSequence secureReplyLabel = getForkSecureReplyLabel(reply);
+            parentMessage.forkSecureReplyText = secureReplyLabel != null
+                    ? secureReplyLabel : reply.messageText;
         }
 
         // Some Telegram updates carry only quote_text and no nested reply MessageObject. Never
@@ -20749,6 +20888,7 @@ public class ChatActivity extends BaseFragment implements
         }
         try {
             message.forkSecureVerified = false;
+            message.forkSecureService = false;
             SecureCarrierCodec.Decoded decoded;
             try {
                 decoded = SecureCarrierCodec.decode(carrier);
@@ -20765,6 +20905,7 @@ public class ChatActivity extends BaseFragment implements
                 message.applyNewText(getString(message.isOutOwner()
                         ? R.string.ForkSecurePairingOfferSent
                         : R.string.ForkSecurePairingOfferReceived));
+                applyForkSecureServiceStyle(message, true);
             } else if (message.isOutOwner()) {
                 String localText = secureChat.getOutgoingText(carrier);
                 if (localText == null) {
@@ -20772,6 +20913,9 @@ public class ChatActivity extends BaseFragment implements
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
                     message.forkSecureVerified = true;
+                    applyForkSecureServiceStyle(
+                            message,
+                            SecureChatEngine.isPairingStatusDisplay(localText));
                     if (SecureChatEngine.isStaticStickerDisplay(localText)) {
                         applySecureStickerMedia(message, secureChat, carrier);
                     } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
@@ -20793,6 +20937,9 @@ public class ChatActivity extends BaseFragment implements
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
                     message.forkSecureVerified = true;
+                    applyForkSecureServiceStyle(
+                            message,
+                            SecureChatEngine.isPairingStatusDisplay(localText));
                     if (SecureChatEngine.isStaticStickerDisplay(localText)) {
                         applySecureStickerMedia(message, secureChat, carrier);
                     } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
@@ -20839,12 +20986,26 @@ public class ChatActivity extends BaseFragment implements
                         == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
                 || message.forkSecureMediaKind
                         == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+            // A secure media carrier must never leak its temporary status text into the media
+            // caption. Only an authenticated, ready plaintext may contribute a user caption.
+            String caption = message.forkSecureMediaCaption;
+            if (caption != null
+                    && (caption.startsWith("TGS1:")
+                            || caption.startsWith("FSC1:")
+                            || caption.startsWith("ForkSecure"))) {
+                caption = null;
+            }
             message.caption = TextUtils.isEmpty(message.forkSecureMediaPath)
-                    ? message.messageText
-                    : TextUtils.isEmpty(message.forkSecureMediaCaption)
-                            ? null : message.forkSecureMediaCaption;
+                    || TextUtils.isEmpty(caption) ? null : caption;
+            message.messageText = "";
+            message.messageTextShort = null;
+            message.messageTextForReply = null;
+            message.resetLayout();
         } else {
-            message.caption = message.messageText;
+            // During the short decrypt/manifest window the transport is already known to be a
+            // secure document, but its authenticated media kind is not available yet. Never
+            // copy the temporary status into the ordinary Telegram caption field.
+            message.caption = null;
         }
     }
 
@@ -20853,6 +21014,21 @@ public class ChatActivity extends BaseFragment implements
             SecureChatEngine secureChat,
             String carrier,
             boolean photo) {
+        applySecureAttachmentMedia(message, secureChat, carrier, photo, null);
+    }
+
+    private void applySavedSecureAttachmentMedia(
+            MessageObject message, SecureContentCodec.Attachment manifest, String carrier,
+            boolean photo) {
+        applySecureAttachmentMedia(message, null, carrier, photo, manifest);
+    }
+
+    private void applySecureAttachmentMedia(
+            MessageObject message,
+            SecureChatEngine secureChat,
+            String carrier,
+            boolean photo,
+            SecureContentCodec.Attachment savedManifest) {
         if (message.getDocument() == null || TextUtils.isEmpty(carrier)) {
             return;
         }
@@ -20862,7 +21038,13 @@ public class ChatActivity extends BaseFragment implements
         message.markForkSecureMediaPending(
                 mediaKind, 0, 0, null, null, null);
         normalizeSecureTransportDocument(message.getDocument());
-        if (message.restoreReadyForkSecureMedia()) {
+        // Older process-local UI cache entries may contain only the generic file presentation.
+        // Require authenticated manifest metadata before accepting the fast path; otherwise the
+        // carrier is decoded again and the original filename/MIME are restored consistently.
+        if (message.restoreReadyForkSecureMedia()
+                && !TextUtils.isEmpty(message.forkSecureMediaName)
+                && !TextUtils.isEmpty(message.forkSecureMediaMime)
+                && message.forkSecureAlbumId != null) {
             applyPreparedSecureAttachmentPresentation(message);
             return;
         }
@@ -20889,12 +21071,18 @@ public class ChatActivity extends BaseFragment implements
             RuntimeException failure = null;
             boolean ciphertextRejected = false;
             try {
-                SecureChatEngine backgroundEngine =
-                        new SecureChatEngine(applicationContext, account, peer);
-                manifest = outgoing
-                        ? backgroundEngine.getOutgoingAttachment(carrier)
-                        : backgroundEngine.decryptAttachmentManifest(carrier);
+                if (savedManifest != null) {
+                    manifest = savedManifest;
+                } else {
+                    SecureChatEngine backgroundEngine =
+                            new SecureChatEngine(applicationContext, account, peer);
+                    manifest = outgoing
+                            ? backgroundEngine.getOutgoingAttachment(carrier)
+                            : backgroundEngine.decryptAttachmentManifest(carrier);
+                }
                 if (manifest != null) {
+                    message.forkSecureAlbumId = SecureContentCodec.albumId(manifest.caption);
+                    manifest = normalizeSecureAttachmentCaption(message, manifest);
                     destination = new File(
                             new File(
                                     applicationContext.getCacheDir(),
@@ -20955,7 +21143,7 @@ public class ChatActivity extends BaseFragment implements
                     if (destination.isFile()
                             && destination.length() == manifest.plaintextSize) {
                         SecureMediaCache.touchAndPrune(
-                                destination, 32, 256L * 1024L * 1024L);
+                                destination, 32, 768L * 1024L * 1024L);
                     }
                 }
             } catch (RuntimeException error) {
@@ -21004,6 +21192,10 @@ public class ChatActivity extends BaseFragment implements
                             readyManifest.mimeType,
                             readyManifest.caption);
                     syncSecureMediaCaption(current);
+                    // The authenticated manifest already contains the real dimensions/type.
+                    // Recalculate the album now, while ciphertext is still downloading, so the
+                    // grid does not temporarily collapse into generic document rows.
+                    applySecureAlbumGrouping(current);
                     updateSecureStickerRow(current);
                     if (!downloadAlreadyAttempted) {
                         forkSecureMediaDownloadAttempted.add(prepareKey);
@@ -21029,6 +21221,36 @@ public class ChatActivity extends BaseFragment implements
 
     private void applySecureStickerMedia(
             MessageObject message, SecureChatEngine secureChat, String carrier) {
+        applySecureStickerMedia(message, secureChat, carrier, null);
+    }
+
+    private static SecureContentCodec.Attachment normalizeSecureAttachmentCaption(
+            MessageObject message, SecureContentCodec.Attachment manifest) {
+        boolean above = SecureContentCodec.isCaptionAbove(manifest.caption);
+        // Legacy secure manifests do not carry the placement marker. Preserve Telegram's
+        // authenticated invert_media flag for those messages instead of resetting it to below.
+        if (above && message != null && message.messageOwner != null) {
+            message.messageOwner.invert_media = above;
+        }
+        String displayCaption = SecureContentCodec.displayCaption(manifest.caption);
+        if (TextUtils.equals(displayCaption, manifest.caption)) {
+            return manifest;
+        }
+        return new SecureContentCodec.Attachment(
+                manifest.mediaId, manifest.key, manifest.nonce, manifest.ciphertextSha256,
+                manifest.plaintextSize, manifest.ciphertextSize, manifest.fileName,
+                manifest.mimeType, displayCaption,
+                manifest.width, manifest.height, manifest.photo);
+    }
+
+    private void applySavedSecureStickerMedia(
+            MessageObject message, SecureContentCodec.StaticSticker manifest, String carrier) {
+        applySecureStickerMedia(message, null, carrier, manifest);
+    }
+
+    private void applySecureStickerMedia(
+            MessageObject message, SecureChatEngine secureChat, String carrier,
+            SecureContentCodec.StaticSticker savedManifest) {
         if (message.getDocument() == null || TextUtils.isEmpty(carrier)) {
             return;
         }
@@ -21062,11 +21284,15 @@ public class ChatActivity extends BaseFragment implements
             RuntimeException failure = null;
             boolean ciphertextRejected = false;
             try {
-                SecureChatEngine backgroundEngine =
-                        new SecureChatEngine(applicationContext, account, peer);
-                manifest = outgoing
-                        ? backgroundEngine.getOutgoingStaticSticker(carrier)
-                        : backgroundEngine.decryptStaticStickerManifest(carrier);
+                if (savedManifest != null) {
+                    manifest = savedManifest;
+                } else {
+                    SecureChatEngine backgroundEngine =
+                            new SecureChatEngine(applicationContext, account, peer);
+                    manifest = outgoing
+                            ? backgroundEngine.getOutgoingStaticSticker(carrier)
+                            : backgroundEngine.decryptStaticStickerManifest(carrier);
+                }
                 if (manifest != null) {
                     destination = new File(
                             new File(applicationContext.getCacheDir(),
@@ -21201,6 +21427,12 @@ public class ChatActivity extends BaseFragment implements
         }
         message.forkSecureVerified = true;
         syncSecureMediaCaption(message);
+        if (message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                || message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_FILE) {
+            indexPreparedSecureMedia(message);
+        }
         return true;
     }
 
@@ -21271,7 +21503,49 @@ public class ChatActivity extends BaseFragment implements
                 manifest.caption);
         message.forkSecureCipherPath =
                 ciphertext == null ? null : ciphertext.getAbsolutePath();
+        indexPreparedSecureMedia(message);
         applyPreparedSecureAttachmentPresentation(message);
+    }
+
+    private void indexPreparedSecureMedia(MessageObject message) {
+        if (message == null
+                || message.messageOwner == null
+                || TextUtils.isEmpty(message.messageOwner.message)
+                || TextUtils.isEmpty(message.forkSecureMediaPath)
+                || !(message.forkSecureMediaKind
+                                == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                        || message.forkSecureMediaKind
+                                == MessageObject.FORK_SECURE_MEDIA_KIND_FILE)) {
+            return;
+        }
+        boolean secureVideo = message.forkSecureMediaMime != null
+                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/");
+        int indexKind = message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                ? SecureMediaIndex.KIND_PHOTO
+                : secureVideo ? SecureMediaIndex.KIND_VIDEO : SecureMediaIndex.KIND_FILE;
+        SecureMediaIndex secureMediaIndex =
+                new SecureMediaIndex(
+                        ApplicationLoader.applicationContext,
+                        currentAccount,
+                        dialog_id);
+        secureMediaIndex.put(new SecureMediaIndex.Entry(
+                message.getId(),
+                message.messageOwner.date,
+                message.messageOwner.message,
+                indexKind,
+                message.forkSecureMediaPath,
+                message.forkSecureMediaName,
+                message.forkSecureMediaMime,
+                message.forkSecureMediaCaption,
+                message.forkSecureMediaWidth,
+                message.forkSecureMediaHeight));
+        getMediaDataController().indexForkSecureMedia(
+                message.messageOwner,
+                indexKind == SecureMediaIndex.KIND_PHOTO
+                        || indexKind == SecureMediaIndex.KIND_VIDEO
+                        ? MediaDataController.MEDIA_PHOTOVIDEO
+                        : MediaDataController.MEDIA_FILE);
     }
 
     private void applyPreparedSecureAttachmentPresentation(MessageObject message) {
@@ -21286,9 +21560,44 @@ public class ChatActivity extends BaseFragment implements
                 ? "application/octet-stream" : message.forkSecureMediaMime;
         TLRPC.TL_documentAttributeFilename fileName =
                 new TLRPC.TL_documentAttributeFilename();
-        fileName.file_name = TextUtils.isEmpty(message.forkSecureMediaName)
-                ? "file" : message.forkSecureMediaName;
+        // Keep the authenticated source name in MessageObject for explicit save/open actions,
+        // but never expose it in the ordinary chat cell. The transport and local preview both
+        // use an opaque display name.
+        fileName.file_name = "file";
         document.attributes.add(fileName);
+        if (!TextUtils.isEmpty(message.forkSecureMediaMime)
+                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/")) {
+            TLRPC.TL_documentAttributeVideo video =
+                    new TLRPC.TL_documentAttributeVideo();
+            video.w = message.forkSecureMediaWidth > 0 ? message.forkSecureMediaWidth : 1;
+            video.h = message.forkSecureMediaHeight > 0 ? message.forkSecureMediaHeight : 1;
+            video.duration = 0;
+            video.round_message = false;
+            video.supports_streaming = true;
+            if (message.forkSecureMediaWidth <= 0
+                    || message.forkSecureMediaHeight <= 0
+                    || video.duration <= 0) {
+                SendMessagesHelper.fillVideoAttribute(
+                        message.forkSecureMediaPath, video, null);
+                if (video.w > 0 && video.h > 0) {
+                    message.forkSecureMediaWidth = video.w;
+                    message.forkSecureMediaHeight = video.h;
+                }
+            }
+            document.attributes.add(video);
+            // The encrypted transport has no Telegram thumbnail. Keep an authenticated local
+            // aspect-ratio descriptor so mixed photo/video albums use the native layout.
+            TLRPC.TL_photoSize localVideo = new TLRPC.TL_photoSize();
+            localVideo.type = "x";
+            localVideo.w = message.forkSecureMediaWidth;
+            localVideo.h = message.forkSecureMediaHeight;
+            localVideo.size = (int) Math.min(
+                    Integer.MAX_VALUE, new File(message.forkSecureMediaPath).length());
+            localVideo.location = new TLRPC.TL_fileLocationUnavailable();
+            message.photoThumbs = new ArrayList<>();
+            message.photoThumbs.add(localVideo);
+            message.photoThumbsObject = document;
+        }
         message.attachPathExists = true;
         // applyNewText() regenerates the upstream layout and calls MessageObject.setType(), which
         // classifies the opaque Telegram transport as a generic Document. Run it before applying
@@ -21316,8 +21625,58 @@ public class ChatActivity extends BaseFragment implements
             message.photoThumbsObject = document;
             message.type = MessageObject.TYPE_PHOTO;
         }
+        applySecureAlbumGrouping(message);
+        // The group was initially laid out while the encrypted transport was still a generic
+        // document. Recalculate it after authenticated photo/video metadata is restored so a
+        // protected album uses the same stacked layout as a normal Telegram album.
+        long groupId = message.getGroupId();
+        if (groupId != 0) {
+            MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(groupId);
+            if (groupedMessages != null) {
+                groupedMessages.calculate();
+                if (chatAdapter != null) {
+                    chatAdapter.notifyDataSetChanged(true);
+                }
+            }
+        }
         message.forkSecureVerified = true;
         syncSecureMediaCaption(message);
+    }
+
+    private void applySecureAlbumGrouping(MessageObject message) {
+        if (message == null || TextUtils.isEmpty(message.forkSecureAlbumId)
+                || message.messageOwner == null) {
+            return;
+        }
+        long groupId = secureAlbumGroupId(message.forkSecureAlbumId);
+        if (groupId == 0) {
+            return;
+        }
+        message.messageOwner.grouped_id = groupId;
+        message.messageOwner.flags |= 131072;
+        MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(groupId);
+        if (groupedMessages == null) {
+            groupedMessages = new MessageObject.GroupedMessages();
+            groupedMessages.groupId = groupId;
+            groupedMessages.reversed = reversed;
+            groupedMessagesMap.put(groupId, groupedMessages);
+        }
+        if (!groupedMessages.messages.contains(message)) {
+            groupedMessages.messages.add(message);
+        }
+        groupedMessages.calculate();
+        if (chatAdapter != null) {
+            chatAdapter.notifyDataSetChanged(true);
+        }
+    }
+
+    private static long secureAlbumGroupId(String albumId) {
+        long value = 0xcbf29ce484222325L;
+        for (int i = 0; i < albumId.length(); i++) {
+            value ^= albumId.charAt(i);
+            value *= 0x100000001b3L;
+        }
+        return value == 0 ? 1 : value;
     }
 
     private static String secureAttachmentExtension(String mimeType) {
@@ -21332,6 +21691,24 @@ public class ChatActivity extends BaseFragment implements
         }
         if ("image/gif".equals(mimeType)) {
             return ".gif";
+        }
+        if ("video/mp4".equals(mimeType)) {
+            return ".mp4";
+        }
+        if ("video/webm".equals(mimeType)) {
+            return ".webm";
+        }
+        if ("video/quicktime".equals(mimeType)) {
+            return ".mov";
+        }
+        if ("audio/mpeg".equals(mimeType)) {
+            return ".mp3";
+        }
+        if ("audio/ogg".equals(mimeType) || "audio/opus".equals(mimeType)) {
+            return ".ogg";
+        }
+        if ("audio/mp4".equals(mimeType)) {
+            return ".m4a";
         }
         if ("application/pdf".equals(mimeType)) {
             return ".pdf";
@@ -21385,6 +21762,15 @@ public class ChatActivity extends BaseFragment implements
         if (!containsSecureDisplay) {
             return;
         }
+        if (isForkSecureSavedMessagesChat()) {
+            SecureSavedMessagesKeyStore.KeyMaterial key = getSavedMessagesKeyMaterial();
+            if (key != null) {
+                for (MessageObject message : candidates) {
+                    applySavedMessagesSecureTextOverlay(message, key);
+                }
+            }
+            return;
+        }
         final SecureChatEngine secureChat;
         try {
             secureChat = getSecureChatEngine();
@@ -21403,6 +21789,10 @@ public class ChatActivity extends BaseFragment implements
 
     private void applyCachedSecureTextOverlay(MessageObject message) {
         if (!DialogObject.isUserDialog(dialog_id) || !hasSecureDisplayCarrier(message)) {
+            return;
+        }
+        if (isForkSecureSavedMessagesChat()) {
+            applySavedMessagesSecureTextOverlay(message, getSavedMessagesKeyMaterial());
             return;
         }
         try {
@@ -21455,6 +21845,50 @@ public class ChatActivity extends BaseFragment implements
         }
     }
 
+    private boolean isForkSecureReadyPhoto(MessageObject message) {
+        return message != null
+                && message.forkSecureVerified
+                && message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                && !TextUtils.isEmpty(message.forkSecureMediaPath)
+                && new File(message.forkSecureMediaPath).isFile();
+    }
+
+    /**
+     * Returns the ordinary Telegram-style label for an authenticated secure attachment.
+     * The opaque carrier and its technical key must never be used as a reply preview.
+     */
+    private CharSequence getForkSecureReplyLabel(MessageObject message) {
+        if (message == null || !message.forkSecureVerified) {
+            return null;
+        }
+        if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+            return getString(R.string.AttachPhoto);
+        }
+        if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_STICKER) {
+            return getString(R.string.AttachSticker);
+        }
+        if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE) {
+            String mime = message.forkSecureMediaMime;
+            if (!TextUtils.isEmpty(mime) && mime.toLowerCase(Locale.ROOT).startsWith("video/")) {
+                return getString(R.string.AttachVideo);
+            }
+            return getString(R.string.AttachDocument);
+        }
+        return null;
+    }
+
+    private boolean isForkSecureVideo(MessageObject message) {
+        return message != null
+                && message.forkSecureVerified
+                && message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                && !TextUtils.isEmpty(message.forkSecureMediaPath)
+                && !TextUtils.isEmpty(message.forkSecureMediaMime)
+                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/")
+                && new File(message.forkSecureMediaPath).isFile();
+    }
+
     private void applySecureReplyOverlay(MessageObject parentMessage) {
         if (!DialogObject.isUserDialog(dialog_id)) {
             return;
@@ -21488,9 +21922,59 @@ public class ChatActivity extends BaseFragment implements
         });
     }
 
+    private void sendForkSecureSessionReadyAcknowledgement(
+            int pairingAcknowledgementMessageId) {
+        if (pairingAcknowledgementMessageId
+                <= forkSecureReadyAckScheduledMessageId) {
+            return;
+        }
+        forkSecureReadyAckScheduledMessageId =
+                pairingAcknowledgementMessageId;
+        AndroidUtilities.runOnUIThread(() -> {
+            if (forkSecureReadyAckScheduledMessageId
+                    != pairingAcknowledgementMessageId) {
+                return;
+            }
+            try {
+                SecureChatEngine secureChat = getSecureChatEngine();
+                if (chatActivityEnterView == null
+                        || !secureChat.isPaired()
+                        || !chatActivityEnterView.processSendingText(
+                                "/secure-ready", false, 0, 0, 0)) {
+                    forkSecureReadyAckScheduledMessageId = 0;
+                    return;
+                }
+                secureChat.recordSessionReadyAcknowledgement(
+                        pairingAcknowledgementMessageId);
+                forkSecureReadyAckScheduledMessageId = 0;
+            } catch (RuntimeException error) {
+                forkSecureReadyAckScheduledMessageId = 0;
+                FileLog.e(error);
+            }
+        });
+    }
+
+    /**
+     * Uses Telegram's action-row renderer locally while retaining the ordinary carrier message
+     * in Telegram storage and on the wire.
+     */
+    private void applyForkSecureServiceStyle(
+            MessageObject message, boolean serviceStyle) {
+        message.forkSecureService = serviceStyle;
+        message.forkSecureServiceText =
+                serviceStyle ? message.messageText : null;
+        if (serviceStyle) {
+            message.type = MessageObject.TYPE_DATE;
+            message.contentType = 1;
+        }
+    }
+
     private CharSequence formatForkSecureDisplayText(String plaintext) {
         if (SecureChatEngine.isPairingAcknowledgementDisplay(plaintext)) {
             return getString(R.string.ForkSecurePairingConfirmed);
+        }
+        if (SecureChatEngine.isPairingReadyDisplay(plaintext)) {
+            return getString(R.string.ForkSecurePairingReady);
         }
         if (SecureChatEngine.isPairingRejectionDisplay(plaintext)) {
             return getString(R.string.ForkSecurePairingRejected);
@@ -21517,6 +22001,54 @@ public class ChatActivity extends BaseFragment implements
                 && !UserObject.isService(currentUser.id)
                 && !isReport()
                 && !inPreviewMode;
+    }
+
+    private boolean isSavedMessagesSecureUiEligible() {
+        return isForkSecureSavedMessagesChat()
+                && currentEncryptedChat == null
+                && !inPreviewMode;
+    }
+
+    private boolean isForkSecureSavedMessagesChat() {
+        long selfId = getUserConfig().getClientUserId();
+        return (chatMode == MODE_SAVED && getSavedDialogId() == selfId)
+                || (chatMode == MODE_DEFAULT && dialog_id == selfId);
+    }
+
+    private void updateSavedMessagesModeUi() {
+        if (secureModeItem == null || getContext() == null) {
+            return;
+        }
+        boolean enabled = SecureSavedMessagesSettings.isSecureByDefault(
+                getContext(), currentAccount);
+        secureModeItem.setIcon(
+                enabled ? R.drawable.outline_header_lock_24 : R.drawable.outline_shield_plain_24,
+                true);
+        secureModeItem.setContentDescription(getString(
+                enabled ? R.string.ForkSecureSavedMessagesProtectionOn
+                        : R.string.ForkSecureSavedMessagesProtectionOff));
+    }
+
+    private void toggleSavedMessagesMode() {
+        if (!isSavedMessagesSecureUiEligible() || getContext() == null) {
+            return;
+        }
+        try {
+            boolean enabled = !SecureSavedMessagesSettings.isSecureByDefault(
+                    getContext(), currentAccount);
+            SecureSavedMessagesSettings.setSecureByDefault(
+                    getContext(), currentAccount, enabled);
+            updateSavedMessagesModeUi();
+            BulletinFactory.of(this).createSimpleBulletin(
+                    R.raw.chats_infotip,
+                    getString(enabled
+                            ? R.string.ForkSecureSavedMessagesProtectionOn
+                            : R.string.ForkSecureSavedMessagesProtectionOff)).show();
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            BulletinFactory.of(this).createErrorBulletin(
+                    getString(R.string.ForkSecureContentSettingFailed)).show();
+        }
     }
 
     private boolean isForkSecureContentProtected() {
@@ -21844,9 +22376,12 @@ public class ChatActivity extends BaseFragment implements
         if (!isSecureModeUiEligible() || getContext() == null) {
             return;
         }
-        final String fingerprint;
+        final String ownFingerprint;
+        final String contactFingerprint;
         try {
-            fingerprint = getSecureChatEngine().getOwnFingerprint();
+            SecureChatEngine secureChat = getSecureChatEngine();
+            ownFingerprint = secureChat.getOwnFingerprint();
+            contactFingerprint = secureChat.getTrustedFingerprint();
         } catch (RuntimeException error) {
             FileLog.e(error);
             BulletinFactory.of(this)
@@ -21858,13 +22393,14 @@ public class ChatActivity extends BaseFragment implements
         AlertDialog dialog = new AlertDialog.Builder(getContext(), getResourceProvider())
                 .setTitle(getString(R.string.ForkSecureOwnIdentityTitle))
                 .setMessage(formatString(
-                        R.string.ForkSecureOwnIdentityBody, fingerprint))
+                        R.string.ForkSecureOwnIdentityBody,
+                        ownFingerprint,
+                        contactFingerprint == null
+                                ? getString(R.string.ForkSecureFingerprintUnavailable)
+                                : contactFingerprint))
                 .setPositiveButton(getString(R.string.ForkSecureResetIdentity), (di, which) ->
                         confirmSecureIdentityReset())
                 .setNegativeButton(getString(R.string.Close), null)
-                .setNeutralButton(getString(R.string.ForkSecureBackupAndRestore),
-                        (di, which) -> presentFragment(
-                                new ForkSecureSettingsActivity()))
                 .create();
         showDialog(dialog);
     }
@@ -23824,6 +24360,16 @@ public class ChatActivity extends BaseFragment implements
                     } catch (Exception e) {
                         FileLog.e(e);
                     }
+                    // Telegram may omit grouped_id when the album transport is an opaque
+                    // encrypted document. Preserve the locally authenticated group for the
+                    // sender instead of falling back to separate photo bubbles after ACK.
+                    long localSecureGroupId = obj.getGroupId();
+                    if (localSecureGroupId != 0
+                            && newMsgObj.grouped_id == 0
+                            && obj.isForkSecureCarrier()) {
+                        newMsgObj.grouped_id = localSecureGroupId;
+                        newMsgObj.flags |= 131072;
+                    }
                     if (obj.getGroupId() != 0 && newMsgObj.grouped_id != 0) {
                         MessageObject.GroupedMessages oldGroup = groupedMessagesMap.get(obj.getGroupId());
                         if (oldGroup != null) {
@@ -23857,6 +24403,13 @@ public class ChatActivity extends BaseFragment implements
                 if (args.length >= 6) {
                     obj.applyMediaExistanceFlags((Integer) args[5]);
                 }
+                /*
+                 * The server acknowledgement replaces messageOwner and setType() classifies the
+                 * opaque encrypted transport as a generic document again. Reapply only the
+                 * authenticated local overlay before rebinding the row so a just-sent protected
+                 * photo does not remain a file until the chat is reopened.
+                 */
+                applyCachedSecureTextOverlay(obj);
                 addToPolls(obj, null);
                 ArrayList<MessageObject> messArr = new ArrayList<>();
                 messArr.add(obj);
@@ -31996,6 +32549,10 @@ public class ChatActivity extends BaseFragment implements
         createDeleteMessagesAlert(finalSelectedObject, finalSelectedGroup, false);
     }
 
+    public void showDeleteMessageAlertFromViewer(MessageObject messageObject) {
+        createDeleteMessagesAlert(messageObject, null);
+    }
+
     private void createDeleteMessagesAlert(final MessageObject finalSelectedObject, final MessageObject.GroupedMessages finalSelectedGroup, boolean hideDimAfter) {
         if (finalSelectedObject == null && (selectedMessagesIds[0].size() + selectedMessagesIds[1].size()) == 0) {
             return;
@@ -34453,12 +35010,6 @@ public class ChatActivity extends BaseFragment implements
 
     private void startEditingMessageObject(MessageObject messageObject, boolean asSuggestion) {
         if (messageObject == null || getParentActivity() == null) {
-            return;
-        }
-        if (messageObject.isForkSecureCarrier()) {
-            BulletinFactory.of(this)
-                    .createErrorBulletin(getString(R.string.ForkSecureEditUnsupported))
-                    .show();
             return;
         }
         if (selectionReactionsOverlay != null && selectionReactionsOverlay.isVisible()) {
@@ -42703,6 +43254,14 @@ public class ChatActivity extends BaseFragment implements
                     return;
                 }
                 if (message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                        && !TextUtils.isEmpty(message.forkSecureMediaMime)
+                        && message.forkSecureMediaMime.toLowerCase(Locale.ROOT)
+                                .startsWith("video/")) {
+                    openForkSecureVideoViewer(cell, message, verifiedFile);
+                    return;
+                }
+                if (message.forkSecureMediaKind
                         == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
                     openForkSecurePhotoViewer(cell, message, verifiedFile);
                     return;
@@ -42934,12 +43493,59 @@ public class ChatActivity extends BaseFragment implements
         private void openForkSecurePhotoViewer(
                 ChatMessageCell cell, MessageObject source, File verifiedFile) {
             try {
+                MessageObject.GroupedMessages secureGroup = getValidGroupedMessage(source);
+                {
+                    final ArrayList<MessageObject> albumMessages =
+                            collectForkSecureAlbumMessages(source, secureGroup);
+                    final int albumIndex = albumMessages.indexOf(source);
+                    if (albumMessages.size() > 1 && albumIndex >= 0) {
+                        final boolean[] captionAbove = new boolean[] {
+                                source.messageOwner != null && source.messageOwner.invert_media
+                        };
+                        PhotoViewer.PhotoViewerProvider secureAlbumProvider =
+                                new PhotoViewer.EmptyPhotoViewerProvider() {
+                            @Override
+                            public PhotoViewer.PlaceProviderObject getPlaceForPhoto(
+                                    MessageObject messageObject, TLRPC.FileLocation fileLocation,
+                                    int index, boolean needPreview, boolean closing) {
+                                MessageObject place = index >= 0 && index < albumMessages.size()
+                                        ? albumMessages.get(index) : source;
+                                return photoViewerProvider.getPlaceForPhoto(
+                                        place, fileLocation, index, needPreview, closing);
+                            }
+
+                            @Override
+                            public boolean canMoveCaptionAbove() {
+                                return true;
+                            }
+
+                            @Override
+                            public boolean isCaptionAbove() {
+                                return captionAbove[0];
+                            }
+
+                            @Override
+                            public void moveCaptionAbove(boolean above) {
+                                captionAbove[0] = above;
+                            }
+                        };
+                        PhotoViewer.getInstance().setParentActivity(
+                                ChatActivity.this, themeDelegate);
+                        if (PhotoViewer.getInstance().openForkSecurePhotos(
+                                albumMessages,
+                                albumIndex,
+                                ChatActivity.this,
+                                secureAlbumProvider)) {
+                            return;
+                        }
+                    }
+                }
                 TLRPC.TL_message localOwner = copy(source.messageOwner);
                 localOwner.media = source.messageOwner.media;
                 localOwner.attachPath = verifiedFile.getAbsolutePath();
                 localOwner.message = TextUtils.isEmpty(source.forkSecureMediaCaption)
                         ? "" : source.forkSecureMediaCaption;
-                localOwner.noforwards = true;
+                localOwner.noforwards = source.messageOwner.noforwards;
                 MessageObject localPhoto =
                         new MessageObject(currentAccount, localOwner, false, true);
                 localPhoto.type = MessageObject.TYPE_PHOTO;
@@ -42954,6 +43560,34 @@ public class ChatActivity extends BaseFragment implements
                 localPhoto.forkSecureMediaCaption = source.forkSecureMediaCaption;
                 localPhoto.mediaExists = true;
                 localPhoto.attachPathExists = true;
+                final boolean[] captionAbove = new boolean[] {
+                        source.messageOwner != null && source.messageOwner.invert_media
+                };
+                PhotoViewer.PhotoViewerProvider securePhotoProvider =
+                        new PhotoViewer.EmptyPhotoViewerProvider() {
+                    @Override
+                    public PhotoViewer.PlaceProviderObject getPlaceForPhoto(
+                            MessageObject messageObject, TLRPC.FileLocation fileLocation,
+                            int index, boolean needPreview, boolean closing) {
+                        return photoViewerProvider.getPlaceForPhoto(
+                                source, fileLocation, index, needPreview, closing);
+                    }
+
+                    @Override
+                    public boolean canMoveCaptionAbove() {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean isCaptionAbove() {
+                        return captionAbove[0];
+                    }
+
+                    @Override
+                    public void moveCaptionAbove(boolean above) {
+                        captionAbove[0] = above;
+                    }
+                };
                 PhotoViewer.getInstance().setParentActivity(
                         ChatActivity.this, themeDelegate);
                 if (!PhotoViewer.getInstance().openForkSecurePhoto(
@@ -42962,13 +43596,159 @@ public class ChatActivity extends BaseFragment implements
                         source.forkSecureMediaWidth,
                         source.forkSecureMediaHeight,
                         ChatActivity.this,
-                        photoViewerProvider)) {
+                        securePhotoProvider)) {
                     alertUserOpenError(source);
                 }
             } catch (RuntimeException error) {
                 FileLog.e(error);
                 alertUserOpenError(source);
             }
+        }
+
+        private void openForkSecureVideoViewer(
+                ChatMessageCell cell, MessageObject source, File verifiedFile) {
+            MessageObject.GroupedMessages secureGroup = getValidGroupedMessage(source);
+            {
+                final ArrayList<MessageObject> albumMessages =
+                        collectForkSecureAlbumMessages(source, secureGroup);
+                final int albumIndex = albumMessages.indexOf(source);
+                if (albumMessages.size() > 1 && albumIndex >= 0) {
+                    final boolean[] albumCaptionAbove = new boolean[] {
+                            source.messageOwner != null && source.messageOwner.invert_media
+                    };
+                    PhotoViewer.PhotoViewerProvider secureAlbumProvider =
+                            new PhotoViewer.EmptyPhotoViewerProvider() {
+                        @Override
+                        public PhotoViewer.PlaceProviderObject getPlaceForPhoto(
+                                MessageObject messageObject, TLRPC.FileLocation fileLocation,
+                                int index, boolean needPreview, boolean closing) {
+                            MessageObject place = index >= 0 && index < albumMessages.size()
+                                    ? albumMessages.get(index) : source;
+                            return photoViewerProvider.getPlaceForPhoto(
+                                    place, fileLocation, index, needPreview, closing);
+                        }
+
+                        @Override
+                        public boolean canMoveCaptionAbove() {
+                            return true;
+                        }
+
+                        @Override
+                        public boolean isCaptionAbove() {
+                            return albumCaptionAbove[0];
+                        }
+
+                        @Override
+                        public void moveCaptionAbove(boolean above) {
+                            albumCaptionAbove[0] = above;
+                        }
+                    };
+                    PhotoViewer.getInstance().setParentActivity(
+                            ChatActivity.this, themeDelegate);
+                    if (PhotoViewer.getInstance().openForkSecurePhotos(
+                            albumMessages,
+                            albumIndex,
+                            ChatActivity.this,
+                            secureAlbumProvider)) {
+                        return;
+                    }
+                }
+            }
+            final boolean[] captionAbove = new boolean[] {
+                    source.messageOwner != null && source.messageOwner.invert_media
+            };
+            PhotoViewer.PhotoViewerProvider secureVideoProvider =
+                    new PhotoViewer.EmptyPhotoViewerProvider() {
+                @Override
+                public PhotoViewer.PlaceProviderObject getPlaceForPhoto(
+                        MessageObject messageObject, TLRPC.FileLocation fileLocation,
+                        int index, boolean needPreview, boolean closing) {
+                    return photoViewerProvider.getPlaceForPhoto(
+                            source, fileLocation, index, needPreview, closing);
+                }
+
+                @Override
+                public boolean canMoveCaptionAbove() {
+                    return true;
+                }
+
+                @Override
+                public boolean isCaptionAbove() {
+                    return captionAbove[0];
+                }
+
+                @Override
+                public void moveCaptionAbove(boolean above) {
+                    captionAbove[0] = above;
+                }
+            };
+            try {
+                PhotoViewer.getInstance().setParentActivity(
+                        ChatActivity.this, themeDelegate);
+                if (!PhotoViewer.getInstance().openForkSecureVideo(
+                        source,
+                        verifiedFile,
+                        source.forkSecureMediaWidth,
+                        source.forkSecureMediaHeight,
+                        ChatActivity.this,
+                        secureVideoProvider)) {
+                    alertUserOpenError(source);
+                }
+            } catch (RuntimeException error) {
+                FileLog.e(error);
+                alertUserOpenError(source);
+            }
+        }
+
+        /**
+         * Builds the local secure-media sequence for PhotoViewer. Telegram deliberately splits
+         * large sends into groups of ten, while separate sends have no grouped_id at all. Include
+         * every already-authenticated visual attachment currently loaded for this dialog so the
+         * viewer behaves like Telegram's media browser in both cases.
+         */
+        private ArrayList<MessageObject> collectForkSecureAlbumMessages(
+                MessageObject source, MessageObject.GroupedMessages secureGroup) {
+            ArrayList<MessageObject> result = new ArrayList<>();
+            if (isForkSecureViewerMedia(source)) {
+                result.add(source);
+            }
+            if (secureGroup != null) {
+                for (MessageObject item : secureGroup.messages) {
+                    if (isForkSecureViewerMedia(item) && !result.contains(item)) {
+                        result.add(item);
+                    }
+                }
+            }
+            if (source == null || source.messageOwner == null) {
+                return result;
+            }
+            final long sourceDialogId = source.getDialogId();
+            for (MessageObject candidate : messages) {
+                if (candidate == null || candidate == source || candidate.messageOwner == null
+                        || !isForkSecureViewerMedia(candidate)
+                        || candidate.getDialogId() != sourceDialogId) {
+                    continue;
+                }
+                if (!result.contains(candidate)) {
+                    result.add(candidate);
+                }
+            }
+            Collections.sort(result, (left, right) -> {
+                int date = Integer.compare(left.messageOwner.date, right.messageOwner.date);
+                return date != 0 ? date : Integer.compare(left.getId(), right.getId());
+            });
+            return result;
+        }
+
+        private boolean isForkSecureViewerMedia(MessageObject message) {
+            if (message == null || !message.forkSecureVerified
+                    || TextUtils.isEmpty(message.forkSecureMediaPath)
+                    || !new File(message.forkSecureMediaPath).isFile()) {
+                return false;
+            }
+            return message.forkSecureMediaKind
+                    == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                    || isForkSecureVideo(message);
         }
 
         @Override

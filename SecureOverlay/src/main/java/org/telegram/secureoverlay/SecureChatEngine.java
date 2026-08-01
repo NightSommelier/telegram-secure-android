@@ -28,6 +28,10 @@ public final class SecureChatEngine {
             "\u0000fork-secure-control:pairing-ack:v1";
     private static final String PAIRING_ACK_DISPLAY =
             "\u0000fork-secure-display:pairing-ack:v1";
+    private static final String PAIRING_READY_PLAINTEXT =
+            "\u0000fork-secure-control:pairing-ready:v1";
+    private static final String PAIRING_READY_DISPLAY =
+            "\u0000fork-secure-display:pairing-ready:v1";
     private static final String PAIRING_REJECTED_PLAINTEXT =
             "\u0000fork-secure-control:pairing-rejected:v1";
     private static final String PAIRING_REJECTED_DISPLAY =
@@ -39,6 +43,7 @@ public final class SecureChatEngine {
     private static final String PHOTO_DISPLAY =
             "\u0000fork-secure-display:photo:v1";
     private static final Object DECRYPT_LOCK = new Object();
+    private static final Object ENCRYPT_LOCK = new Object();
 
     /**
      * The protocol-state key is intentionally unavailable while Android considers the device
@@ -72,6 +77,32 @@ public final class SecureChatEngine {
         STALE
     }
 
+    public static final class AttachmentTransport {
+        public final String attachmentCarrier;
+
+        AttachmentTransport(String attachmentCarrier) {
+            this.attachmentCarrier = attachmentCarrier;
+        }
+    }
+
+    /**
+     * A caption-edit carrier together with the ratchet checkpoint needed if Telegram rejects the
+     * edit before it is accepted.  Editing a secure caption creates a new Signal message, but the
+     * encrypted media bytes and manifest identity remain unchanged.
+     */
+    public static final class AttachmentEditTransport {
+        public final String attachmentCarrier;
+        private final byte[] previousSession;
+        private final byte[] nextSession;
+
+        AttachmentEditTransport(
+                String attachmentCarrier, byte[] previousSession, byte[] nextSession) {
+            this.attachmentCarrier = attachmentCarrier;
+            this.previousSession = Arrays.copyOf(previousSession, previousSession.length);
+            this.nextSession = Arrays.copyOf(nextSession, nextSession.length);
+        }
+    }
+
     private final int account;
     private final long peerUserId;
     private final KeystoreSignalProtocolStore store;
@@ -88,6 +119,7 @@ public final class SecureChatEngine {
         this.account = account;
         this.peerUserId = peerUserId;
         Context appContext = context.getApplicationContext();
+        SecureHistoryBackupManager.resumeInterruptedRestore(appContext);
         SecureIdentityBackupManager.resumeInterruptedImport(appContext);
         state = new SecureChatState(appContext);
         recoveryStore = new SecureRecoveryGenerationStore(appContext);
@@ -348,17 +380,126 @@ public final class SecureChatEngine {
     }
 
     public String encryptAttachmentManifest(SecureContentCodec.Attachment attachment) {
+        return encryptAttachmentForTransport(
+                attachment, Integer.MAX_VALUE, Integer.MAX_VALUE).attachmentCarrier;
+    }
+
+    /**
+     * Produces a caption-sized attachment carrier.
+     *
+     * <p>A PQ pre-key carrier cannot fit in a Telegram caption. Pairing therefore completes a
+     * two-way encrypted confirmation before media is ready. This method still keeps its length
+     * check inside a session rollback boundary so an old or incomplete session cannot be advanced
+     * by a carrier that Telegram will reject.</p>
+     */
+    public AttachmentTransport encryptAttachmentForTransport(
+            SecureContentCodec.Attachment attachment,
+            int maxCaptionCharacters,
+            int maxTextCharacters) {
         if (!isPaired()) {
             throw new SecureChatException("secure chat is not paired", null);
         }
+        if (maxCaptionCharacters <= 0 || maxTextCharacters <= 0) {
+            throw new IllegalArgumentException("secure carrier limits must be positive");
+        }
         byte[] content = SecureContentCodec.encodeAttachment(attachment);
         String display = attachment.photo ? PHOTO_DISPLAY : FILE_DISPLAY;
-        String carrier = encryptAndRemember(content, display);
-        try {
-            localContent.rememberOutgoing(carrier, content);
-            return carrier;
-        } catch (Exception e) {
-            throw new SecureChatException("cannot cache secure attachment manifest", e);
+        synchronized (ENCRYPT_LOCK) {
+            SessionRecord previousSession = null;
+            String firstCarrier = null;
+            try {
+                previousSession = new SessionRecord(
+                        store.loadSession(peerAddress).serialize());
+                firstCarrier = encryptAndRemember(content, display);
+                if (firstCarrier.length() > maxCaptionCharacters) {
+                    throw new IllegalArgumentException(
+                            "secure media session is awaiting its encrypted reply");
+                }
+                localContent.rememberOutgoing(firstCarrier, content);
+                return new AttachmentTransport(firstCarrier);
+            } catch (Exception error) {
+                try {
+                    if (previousSession != null) {
+                        store.storeSession(peerAddress, previousSession);
+                    }
+                    if (firstCarrier != null) {
+                        localText.forgetOutgoing(firstCarrier);
+                    }
+                } catch (Exception rollbackError) {
+                    error.addSuppressed(rollbackError);
+                }
+                throw new SecureChatException(
+                        "cannot create bounded secure attachment carrier", error);
+            }
+        }
+    }
+
+    /**
+     * Encrypts a replacement attachment manifest for a caption edit.  The media ciphertext is
+     * deliberately not regenerated: only the authenticated manifest caption/placement changes.
+     */
+    public AttachmentEditTransport encryptAttachmentForEdit(
+            SecureContentCodec.Attachment attachment,
+            int maxCaptionCharacters,
+            int maxTextCharacters) {
+        if (!isPaired()) {
+            throw new SecureChatException("secure chat is not paired", null);
+        }
+        if (maxCaptionCharacters <= 0 || maxTextCharacters <= 0) {
+            throw new IllegalArgumentException("secure carrier limits must be positive");
+        }
+        byte[] content = SecureContentCodec.encodeAttachment(attachment);
+        String display = attachment.photo ? PHOTO_DISPLAY : FILE_DISPLAY;
+        synchronized (ENCRYPT_LOCK) {
+            byte[] previousSession = null;
+            String carrier = null;
+            try {
+                previousSession = store.loadSession(peerAddress).serialize();
+                carrier = encryptAndRemember(content, display);
+                if (carrier.length() > maxCaptionCharacters) {
+                    throw new IllegalArgumentException(
+                            "secure media session is awaiting its encrypted reply");
+                }
+                localContent.rememberOutgoing(carrier, content);
+                byte[] nextSession = store.loadSession(peerAddress).serialize();
+                return new AttachmentEditTransport(carrier, previousSession, nextSession);
+            } catch (Exception error) {
+                try {
+                    if (previousSession != null) {
+                        store.storeSession(peerAddress, new SessionRecord(previousSession));
+                    }
+                    if (carrier != null) {
+                        localText.forgetOutgoing(carrier);
+                        localContent.forgetOutgoing(carrier);
+                    }
+                } catch (Exception rollbackError) {
+                    error.addSuppressed(rollbackError);
+                }
+                throw new SecureChatException(
+                        "cannot create secure attachment edit carrier", error);
+            }
+        }
+    }
+
+    /** Rolls back a caption-edit ratchet step only if no later secure send used it. */
+    public void rollbackAttachmentEdit(AttachmentEditTransport transport) {
+        if (transport == null) {
+            return;
+        }
+        synchronized (ENCRYPT_LOCK) {
+            try {
+                byte[] currentSession = store.loadSession(peerAddress).serialize();
+                if (!Arrays.equals(currentSession, transport.nextSession)) {
+                    return;
+                }
+                store.storeSession(
+                        peerAddress, new SessionRecord(transport.previousSession));
+                localText.forgetOutgoing(transport.attachmentCarrier);
+                localContent.forgetOutgoing(transport.attachmentCarrier);
+            } catch (Exception error) {
+                throw new SecureChatException(
+                        "cannot roll back secure attachment edit", error);
+            }
         }
     }
 
@@ -411,6 +552,29 @@ public final class SecureChatEngine {
     public String createPairingAcknowledgement() {
         if (!isPaired()) throw new SecureChatException("secure chat is not paired", null);
         return encryptAndRemember(PAIRING_ACK_PLAINTEXT, PAIRING_ACK_DISPLAY);
+    }
+
+    /**
+     * Answers the first encrypted pairing acknowledgement. This turns the initiator's next
+     * outbound message into a compact Signal message instead of another PQ pre-key message.
+     */
+    public String createSessionReadyAcknowledgement() {
+        if (!isPaired()) {
+            throw new SecureChatException("secure chat is not paired", null);
+        }
+        return encryptAndRemember(PAIRING_READY_PLAINTEXT, PAIRING_READY_DISPLAY);
+    }
+
+    public boolean shouldAcknowledgeSessionReady(
+            String plaintext, int messageId) {
+        return isPairingAcknowledgementDisplay(plaintext)
+                && state.shouldAcknowledgeSessionReady(
+                        account, peerUserId, messageId);
+    }
+
+    public void recordSessionReadyAcknowledgement(int messageId) {
+        state.recordSessionReadyAcknowledgement(
+                account, peerUserId, messageId);
     }
 
     /**
@@ -568,6 +732,8 @@ public final class SecureChatEngine {
                 }
                 if (PAIRING_ACK_PLAINTEXT.equals(result)) {
                     result = PAIRING_ACK_DISPLAY;
+                } else if (PAIRING_READY_PLAINTEXT.equals(result)) {
+                    result = PAIRING_READY_DISPLAY;
                 } else if (PAIRING_REJECTED_PLAINTEXT.equals(result)) {
                     result = PAIRING_REJECTED_DISPLAY;
                 }
@@ -627,6 +793,17 @@ public final class SecureChatEngine {
         return PAIRING_ACK_DISPLAY.equals(value);
     }
 
+    public static boolean isPairingReadyDisplay(String value) {
+        return PAIRING_READY_DISPLAY.equals(value);
+    }
+
+    /** True only for authenticated pairing lifecycle text rendered as a local service row. */
+    public static boolean isPairingStatusDisplay(String value) {
+        return isPairingAcknowledgementDisplay(value)
+                || isPairingReadyDisplay(value)
+                || isPairingRejectionDisplay(value);
+    }
+
     public static boolean isPairingRejectionDisplay(String value) {
         return PAIRING_REJECTED_DISPLAY.equals(value);
     }
@@ -649,13 +826,15 @@ public final class SecureChatEngine {
 
     private static boolean isControlDisplay(String value) {
         return isPairingAcknowledgementDisplay(value)
+                || isPairingReadyDisplay(value)
                 || isPairingRejectionDisplay(value)
                 || isStaticStickerDisplay(value)
                 || isAttachmentDisplay(value);
     }
 
     private static DialogPreview.Kind controlPreviewKind(String value) {
-        if (isPairingAcknowledgementDisplay(value)) {
+        if (isPairingAcknowledgementDisplay(value)
+                || isPairingReadyDisplay(value)) {
             return DialogPreview.Kind.PAIRING_ACK;
         }
         if (isPairingRejectionDisplay(value)) {

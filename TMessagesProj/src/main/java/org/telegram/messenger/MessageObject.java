@@ -55,6 +55,7 @@ import org.telegram.messenger.ringtone.RingtoneDataStore;
 import org.telegram.messenger.utils.tlutils.AmountUtils;
 import org.telegram.messenger.utils.tlutils.TlUtils;
 import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.SerializedData;
 import org.telegram.tgnet.TLObject;
@@ -202,6 +203,9 @@ public class MessageObject {
     public CharSequence messageTextForReply;
     /** In-memory UI proof set only after Fork-Secure verified or locally matched this carrier. */
     public boolean forkSecureVerified;
+    /** Local rendering hint; the underlying Telegram message remains an ordinary carrier. */
+    public boolean forkSecureService;
+    public CharSequence forkSecureServiceText;
     /** Local-only verified text for a nested Fork-Secure reply/quote preview. */
     public CharSequence forkSecureReplyText;
     /** Local-only authenticated plaintext media path; never serialized into Telegram storage. */
@@ -219,6 +223,8 @@ public class MessageObject {
     public String forkSecureMediaName;
     public String forkSecureMediaMime;
     public String forkSecureMediaCaption;
+    /** Local-only authenticated album identifier carried inside the encrypted manifest. */
+    public String forkSecureAlbumId;
     /** Hides opaque transport metadata while authenticated media is prepared in background. */
     public boolean forkSecureMediaPending;
     public CharSequence linkDescription;
@@ -328,6 +334,105 @@ public class MessageObject {
                 && new File(forkSecureMediaPath).isFile();
     }
 
+    /**
+     * Applies metadata previously authenticated by Fork-Secure to a media-list copy of the
+     * original opaque Telegram message.
+     */
+    public boolean applyForkSecureMediaIndex(SecureMediaIndex.Entry entry) {
+        if (entry == null || !isForkSecureCarrier() || entry.messageId != getId()) {
+            return false;
+        }
+        int mediaKind;
+        if (entry.kind == SecureMediaIndex.KIND_PHOTO) {
+            mediaKind = FORK_SECURE_MEDIA_KIND_PHOTO;
+        } else if (entry.kind == SecureMediaIndex.KIND_FILE
+                || entry.kind == SecureMediaIndex.KIND_VIDEO) {
+            mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
+        } else {
+            return false;
+        }
+        File plaintext = new File(entry.plaintextPath);
+        ForkSecureMediaUiState state = new ForkSecureMediaUiState(
+                plaintext.isFile() ? plaintext.getAbsolutePath() : null,
+                mediaKind,
+                entry.width,
+                entry.height,
+                entry.fileName,
+                entry.mimeType,
+                entry.caption,
+                !plaintext.isFile());
+        synchronized (forkSecureMediaUiCache) {
+            putForkSecureMediaUiState(messageOwner.message, state);
+        }
+        applyForkSecureMediaUiState(state);
+        forkSecureVerified = true;
+        caption = TextUtils.isEmpty(entry.caption) ? null : entry.caption;
+        messageText = "";
+        messageTextShort = null;
+        messageTextForReply = null;
+        resetLayout();
+        if (mediaKind == FORK_SECURE_MEDIA_KIND_PHOTO) {
+            type = TYPE_PHOTO;
+            TLRPC.TL_photoSize localPhoto = new TLRPC.TL_photoSize();
+            localPhoto.type = "x";
+            localPhoto.w = entry.width;
+            localPhoto.h = entry.height;
+            localPhoto.size = plaintext.isFile()
+                    ? (int) Math.min(Integer.MAX_VALUE, plaintext.length()) : 0;
+            localPhoto.location = new TLRPC.TL_fileLocationUnavailable();
+            photoThumbs = new ArrayList<>();
+            photoThumbs.add(localPhoto);
+            photoThumbsObject = getDocument();
+            mediaExists = plaintext.isFile();
+            attachPathExists = plaintext.isFile();
+        } else if (entry.kind == SecureMediaIndex.KIND_VIDEO && getDocument() != null) {
+            TLRPC.Document document = getDocument();
+            document.mime_type = TextUtils.isEmpty(entry.mimeType)
+                    ? "video/mp4" : entry.mimeType;
+            for (int i = document.attributes.size() - 1; i >= 0; i--) {
+                TLRPC.DocumentAttribute attribute = document.attributes.get(i);
+                if (attribute instanceof TLRPC.TL_documentAttributeSticker
+                        || attribute instanceof TLRPC.TL_documentAttributeImageSize
+                        || attribute instanceof TLRPC.TL_documentAttributeVideo
+                        || attribute instanceof TLRPC.TL_documentAttributeFilename) {
+                    document.attributes.remove(i);
+                }
+            }
+            TLRPC.TL_documentAttributeFilename fileName =
+                    new TLRPC.TL_documentAttributeFilename();
+            fileName.file_name = "file";
+            document.attributes.add(fileName);
+            TLRPC.TL_documentAttributeVideo video =
+                    new TLRPC.TL_documentAttributeVideo();
+            video.w = entry.width > 0 ? entry.width : 1;
+            video.h = entry.height > 0 ? entry.height : 1;
+            video.supports_streaming = true;
+            if (plaintext.isFile()) {
+                SendMessagesHelper.fillVideoAttribute(plaintext.getAbsolutePath(), video, null);
+                if (video.w > 0 && video.h > 0) {
+                    forkSecureMediaWidth = video.w;
+                    forkSecureMediaHeight = video.h;
+                }
+            }
+            document.attributes.add(video);
+            TLRPC.TL_photoSize localVideo = new TLRPC.TL_photoSize();
+            localVideo.type = "x";
+            localVideo.w = video.w;
+            localVideo.h = video.h;
+            localVideo.size = plaintext.isFile()
+                    ? (int) Math.min(Integer.MAX_VALUE, plaintext.length()) : 0;
+            localVideo.location = new TLRPC.TL_fileLocationUnavailable();
+            photoThumbs = new ArrayList<>();
+            photoThumbs.add(localVideo);
+            photoThumbsObject = document;
+            applyNewText(getString(R.string.ForkSecureEncryptedFile));
+            type = TYPE_VIDEO;
+            mediaExists = plaintext.isFile();
+            attachPathExists = plaintext.isFile();
+        }
+        return true;
+    }
+
     private void syncForkSecureMediaUiState() {
         if (!isForkSecureCarrier()) {
             return;
@@ -358,8 +463,13 @@ public class MessageObject {
         forkSecureMediaPending = state.pending;
         if (!TextUtils.isEmpty(state.path)) {
             attachPathExists = true;
-            if (state.kind == FORK_SECURE_MEDIA_KIND_STICKER) {
+            if (state.kind == FORK_SECURE_MEDIA_KIND_STICKER
+                    || state.kind == FORK_SECURE_MEDIA_KIND_PHOTO
+                    || state.kind == FORK_SECURE_MEDIA_KIND_FILE) {
                 messageText = "";
+                messageTextShort = null;
+                messageTextForReply = null;
+                resetLayout();
                 caption = null;
             }
         }
@@ -1517,6 +1627,7 @@ public class MessageObject {
             positions.clear();
             positionsArray.clear();
             captionMessage = null;
+            isDocuments = false;
 
             maxSizeWidth = 800;
             int firstSpanAdditionalSize = 200;
@@ -1553,7 +1664,20 @@ public class MessageObject {
                                     messageObject.messageOwner.from_id instanceof TLRPC.TL_peerUser && (messageObject.messageOwner.peer_id.channel_id != 0 || messageObject.messageOwner.peer_id.chat_id != 0 ||
                                             getMedia(messageObject.messageOwner) instanceof TLRPC.TL_messageMediaGame || getMedia(messageObject.messageOwner) instanceof TLRPC.TL_messageMediaInvoice)
                     );
-                    if (messageObject.isMusic() || messageObject.isDocument()) {
+                    boolean secureVideo = messageObject.forkSecureMediaKind
+                            == FORK_SECURE_MEDIA_KIND_FILE
+                            && messageObject.forkSecureMediaWidth > 0
+                            && messageObject.forkSecureMediaHeight > 0
+                            && (messageObject.forkSecureMediaMime == null
+                                    || messageObject.forkSecureMediaMime
+                                            .startsWith("video/"));
+                    boolean secureVisualMedia = messageObject.isForkSecureCarrier()
+                            && (messageObject.forkSecureMediaKind
+                                    == FORK_SECURE_MEDIA_KIND_PHOTO
+                                    || secureVideo
+                                    || messageObject.isVideo());
+                    if (!secureVisualMedia
+                            && (messageObject.isMusic() || messageObject.isDocument())) {
                         isDocuments = true;
                     }
                 }
@@ -1563,7 +1687,32 @@ public class MessageObject {
                 TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(messageObject.photoThumbs, AndroidUtilities.getPhotoSize());
                 GroupedMessagePosition position = new GroupedMessagePosition();
                 position.last = (reversed ? a == 0 : a == count - 1);
-                position.aspectRatio = photoSize == null ? 1.0f : photoSize.w / (float) photoSize.h;
+                if (photoSize != null && photoSize.w > 0 && photoSize.h > 0) {
+                    position.aspectRatio = photoSize.w / (float) photoSize.h;
+                } else if (messageObject.isForkSecureCarrier()
+                        && messageObject.forkSecureMediaWidth > 0
+                        && messageObject.forkSecureMediaHeight > 0
+                        && (messageObject.forkSecureMediaKind
+                                        == FORK_SECURE_MEDIA_KIND_PHOTO
+                                || messageObject.forkSecureMediaMime != null
+                                        && messageObject.forkSecureMediaMime
+                                                .startsWith("video/")
+                                || messageObject.forkSecureMediaKind
+                                        == FORK_SECURE_MEDIA_KIND_FILE
+                                        && messageObject.forkSecureMediaWidth > 0
+                                        && messageObject.forkSecureMediaHeight > 0
+                                        && (messageObject.forkSecureMediaMime == null
+                                                || messageObject.forkSecureMediaMime
+                                                        .startsWith("video/")
+                                                || messageObject.isVideo()))) {
+                    // Secure manifests authenticate dimensions before the plaintext cache is
+                    // ready. Use them immediately so the upload/decrypt transition has the same
+                    // album geometry as the normal Telegram media path.
+                    position.aspectRatio = messageObject.forkSecureMediaWidth
+                            / (float) messageObject.forkSecureMediaHeight;
+                } else {
+                    position.aspectRatio = 1.0f;
+                }
 
                 if (position.aspectRatio > 1.2f) {
                     proportions.append("w");
@@ -1923,6 +2072,27 @@ public class MessageObject {
                         }
                     }
                 }
+            }
+
+            // The secure overlay intentionally transports ciphertext as Telegram documents.
+            // Once every member has an authenticated local photo/video presentation, render the
+            // group with the native album layout even though the server-side media is opaque.
+            boolean secureVisualGroup = true;
+            boolean hasSecureMedia = false;
+            for (MessageObject messageObject : messages) {
+                if (!messageObject.isForkSecureCarrier()) {
+                    secureVisualGroup = false;
+                    break;
+                }
+                hasSecureMedia = true;
+                if (messageObject.forkSecureMediaKind != FORK_SECURE_MEDIA_KIND_PHOTO
+                        && !messageObject.isVideo()) {
+                    secureVisualGroup = false;
+                    break;
+                }
+            }
+            if (hasSecureMedia && secureVisualGroup) {
+                isDocuments = false;
             }
         }
 
@@ -11326,6 +11496,11 @@ public class MessageObject {
     }
 
     public boolean isDocument() {
+        // Fork-Secure photos use an opaque Telegram document as transport, but the authenticated
+        // local presentation must participate in photo albums rather than document groups.
+        if (forkSecureMediaKind == FORK_SECURE_MEDIA_KIND_PHOTO) {
+            return false;
+        }
         return getDocument() != null && !isVideo() && !isMusic() && !isVoice() && !isAnyKindOfSticker();
     }
 

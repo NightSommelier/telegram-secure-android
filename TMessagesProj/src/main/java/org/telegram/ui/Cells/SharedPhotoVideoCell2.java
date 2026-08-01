@@ -71,6 +71,7 @@ import org.telegram.ui.Stories.StoryWidgetsImageDecorator;
 import org.telegram.ui.Stories.recorder.DominantColors;
 import org.telegram.ui.Stories.recorder.StoryPrivacyBottomSheet;
 
+import java.io.File;
 import java.util.HashMap;
 
 public class SharedPhotoVideoCell2 extends FrameLayout {
@@ -278,6 +279,8 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
             oldParentColumnsCount == parentColumnsCount &&
             (privacyType == 100) == isStoryPinned &&
             privacyType == getPrivacyType(messageObject) &&
+            !currentMessageObject.isForkSecureCarrier() &&
+            !messageObject.isForkSecureCarrier() &&
             !fullSize
         ) {
             return;
@@ -350,6 +353,29 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
         Object parentObject = messageObject.parentStoriesList != null ? messageObject.storyItem : messageObject;
         if (!TextUtils.isEmpty(restrictionReason)) {
             showImageStub = true;
+        } else if (messageObject.forkSecureVerified
+                && (messageObject.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                        || messageObject.forkSecureMediaMime != null
+                        && messageObject.forkSecureMediaMime.startsWith("video/"))
+                && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
+                && new File(messageObject.forkSecureMediaPath).isFile()) {
+            boolean secureVideo = messageObject.forkSecureMediaMime != null
+                    && messageObject.forkSecureMediaMime.startsWith("video/");
+            showVideoLayout = secureVideo && !messageObject.isLivePhoto();
+            if (showVideoLayout && parentColumnsCount != 9) {
+                videoText = AndroidUtilities.formatShortDuration((int) messageObject.getDuration());
+            }
+            imageReceiver.setImage(
+                    secureVideo
+                            ? ImageLocation.getForPath(
+                                    "vthumb://0:" + messageObject.forkSecureMediaPath)
+                            : ImageLocation.getForPath(messageObject.forkSecureMediaPath),
+                    imageFilter,
+                    null,
+                    null,
+                    parentObject,
+                    0);
         } else if (messageObject.storyItem != null && messageObject.storyItem.media instanceof TLRPC.TL_messageMediaUnsupported) {
             messageObject.storyItem.dialogId = messageObject.getDialogId();
             Drawable icon = getContext().getResources().getDrawable(R.drawable.msg_emoji_recent).mutate();
@@ -574,11 +600,45 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
     }
 
     private final RectF bounds = new RectF();
+    private final Paint forkSecureBadgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Drawable forkSecureLockDrawable;
 
     @Override
     protected void onDraw(@NonNull Canvas canvas) {
         super.onDraw(canvas);
         drawImpl(canvas, false, 1f, 1f, 1f);
+        drawForkSecureBadge(canvas);
+    }
+
+    private void drawForkSecureBadge(Canvas canvas) {
+        if (currentMessageObject == null
+                || !currentMessageObject.forkSecureVerified
+                || !(currentMessageObject.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                        || currentMessageObject.forkSecureMediaKind
+                                == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                        && currentMessageObject.forkSecureMediaMime != null
+                        && currentMessageObject.forkSecureMediaMime.startsWith("video/"))) {
+            return;
+        }
+        float centerX = dp(16);
+        float centerY = dp(14);
+        forkSecureBadgePaint.setColor(0x99000000);
+        canvas.drawCircle(centerX, centerY, dp(9), forkSecureBadgePaint);
+        if (forkSecureLockDrawable == null) {
+            forkSecureLockDrawable = getContext().getResources()
+                    .getDrawable(R.drawable.msg_mini_lock3).mutate();
+            forkSecureLockDrawable.setColorFilter(
+                    new PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN));
+        }
+        int halfWidth = dp(5);
+        int halfHeight = dp(6);
+        forkSecureLockDrawable.setBounds(
+                (int) centerX - halfWidth,
+                (int) centerY - halfHeight,
+                (int) centerX + halfWidth,
+                (int) centerY + halfHeight);
+        forkSecureLockDrawable.draw(canvas);
     }
 
     private void drawImpl(Canvas canvas, boolean useFullSize, float sizeProgress, float receiverAlpha, float customsAlpha) {

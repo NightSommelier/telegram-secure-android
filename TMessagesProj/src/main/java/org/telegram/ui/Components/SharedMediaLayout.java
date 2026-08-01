@@ -7818,6 +7818,12 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 int i = index - sharedMediaData[selectedMode].startOffset;
                 if (i >= 0 && i < sharedMediaData[selectedMode].messages.size()) {
                     PhotoViewer.getInstance().setParentActivity(profileActivity);
+                    if (message.forkSecureVerified
+                            && !TextUtils.isEmpty(message.forkSecureMediaPath)
+                            && PhotoViewer.getInstance().openForkSecurePhotos(
+                                    sharedMediaData[selectedMode].messages, i, provider)) {
+                        return;
+                    }
                     PhotoViewer.getInstance().openPhoto(sharedMediaData[selectedMode].messages, i, dialog_id, mergeDialogId, topicId, provider);
                 }
             } else if (selectedMode == TAB_VOICE || selectedMode == TAB_AUDIO) {

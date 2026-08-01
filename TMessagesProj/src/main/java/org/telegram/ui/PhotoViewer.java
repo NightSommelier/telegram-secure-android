@@ -25,6 +25,8 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.ClipData;
+import android.content.ContentValues;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -63,7 +65,9 @@ import android.media.MediaFormat;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.SystemClock;
+import android.provider.MediaStore;
 import android.text.Layout;
 import android.text.Spannable;
 import android.text.SpannableString;
@@ -192,6 +196,7 @@ import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
 import org.telegram.messenger.WebFile;
+import org.telegram.secureoverlay.SecureMediaCache;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.messenger.camera.Size;
 import org.telegram.messenger.chromecast.ChromecastController;
@@ -328,13 +333,16 @@ import org.telegram.ui.Stories.recorder.StoryEntry;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -1138,6 +1146,14 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
     private int keyboardSize;
     private MessageObject forkSecureLocalViewerMessage;
+    /** Source messages represented by the process-local Fork-Secure picker entries. */
+    private ArrayList<MessageObject> forkSecureLocalViewerMessages;
+    /** Local authenticated locations consumed by the normal fullscreen thumbnail strip. */
+    private final ArrayList<ImageLocation> forkSecureViewerLocations = new ArrayList<>();
+    /** The picker entries currently represented by {@link #forkSecureViewerLocations}. */
+    private ArrayList<Object> forkSecureViewerPhotos;
+    /** Prevent duplicate thumbnail extraction while the viewer is being rebound. */
+    private final HashSet<String> forkSecureViewerThumbsInFlight = new HashSet<>();
 
     private float currentPanTranslationY;
 
@@ -3123,6 +3139,17 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             if (videoPlayerControlFrameLayout != null) {
                 videoPlayerControlFrameLayout.parentWidth = widthSize;
                 videoPlayerControlFrameLayout.parentHeight = heightSize;
+                MarginLayoutParams controlLayoutParams =
+                        (MarginLayoutParams) videoPlayerControlFrameLayout.getLayoutParams();
+                int controlBottomMargin = bottomLayoutHeight;
+                if (groupedPhotosHeight > 0
+                        && (AndroidUtilities.isTablet() || heightSize > widthSize)) {
+                    // The video seekbar is also bottom-aligned. Keep it above the media strip;
+                    // otherwise the elapsed time and progress line are drawn over thumbnails on
+                    // the first opening of a video in an album.
+                    controlBottomMargin += groupedPhotosHeight;
+                }
+                controlLayoutParams.bottomMargin = controlBottomMargin;
             }
 
             widthSize -= (getPaddingRight() + getPaddingLeft());
@@ -4614,31 +4641,33 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             return;
         }
         try {
-            File f = null;
+            File f = getForkSecureViewerFile();
             boolean isVideo = false;
 
-            if (currentMessageObject != null) {
-                isVideo = currentMessageObject.isVideo();
+            if (f == null) {
+                if (currentMessageObject != null) {
+                    isVideo = currentMessageObject.isVideo();
                         /*if (currentMessageObject.messageOwner.media instanceof TLRPC.TL_messageMediaWebPage) {
                             AndroidUtilities.openUrl(parentActivity, currentMessageObject.messageOwner.media.webpage.url);
                             return;
                         }*/
-                if (!TextUtils.isEmpty(currentMessageObject.messageOwner.attachPath)) {
-                    f = new File(currentMessageObject.messageOwner.attachPath);
-                    if (!f.exists()) {
-                        f = null;
+                    if (!TextUtils.isEmpty(currentMessageObject.messageOwner.attachPath)) {
+                        f = new File(currentMessageObject.messageOwner.attachPath);
+                        if (!f.exists()) {
+                            f = null;
+                        }
                     }
+                    if (f == null) {
+                        f = FileLoader.getInstance(currentAccount).getPathToMessage(currentMessageObject.messageOwner);
+                    }
+                } else if (currentFileLocationVideo != null) {
+                    f = FileLoader.getInstance(currentAccount).getPathToAttach(getFileLocation(currentFileLocationVideo), getFileLocationExt(currentFileLocationVideo), avatarsDialogId != 0 || isEvent);
+                    if (f == null || !f.exists()) {
+                        f = FileLoader.getInstance(currentAccount).getPathToAttach(getFileLocation(currentFileLocationVideo), getFileLocationExt(currentFileLocationVideo), false);
+                    }
+                } else if (pageBlocksAdapter != null) {
+                    f = pageBlocksAdapter.getFile(currentIndex);
                 }
-                if (f == null) {
-                    f = FileLoader.getInstance(currentAccount).getPathToMessage(currentMessageObject.messageOwner);
-                }
-            } else if (currentFileLocationVideo != null) {
-                f = FileLoader.getInstance(currentAccount).getPathToAttach(getFileLocation(currentFileLocationVideo), getFileLocationExt(currentFileLocationVideo), avatarsDialogId != 0 || isEvent);
-                if (f == null || !f.exists()) {
-                    f = FileLoader.getInstance(currentAccount).getPathToAttach(getFileLocation(currentFileLocationVideo), getFileLocationExt(currentFileLocationVideo), false);
-                }
-            } else if (pageBlocksAdapter != null) {
-                f = pageBlocksAdapter.getFile(currentIndex);
             }
             if (f != null && !f.exists()) {
                 f = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), f.getName());
@@ -4649,7 +4678,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 if (isVideo) {
                     intent.setType("video/mp4");
                 } else {
-                    if (currentMessageObject != null) {
+                    if (isForkSecurePhotoViewer()) {
+                        MessageObject secureMessage = getForkSecureViewerMessage();
+                        intent.setType(TextUtils.isEmpty(secureMessage.forkSecureMediaMime)
+                                ? "image/*" : secureMessage.forkSecureMediaMime);
+                    } else if (currentMessageObject != null) {
                         intent.setType(currentMessageObject.getMimeType());
                     } else {
                         intent.setType("image/jpeg");
@@ -4657,8 +4690,14 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 }
                 if (Build.VERSION.SDK_INT >= 24) {
                     try {
-                        intent.putExtra(Intent.EXTRA_STREAM, FileProvider.getUriForFile(parentActivity, ApplicationLoader.getApplicationId() + ".provider", f));
-                        intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        Uri shareUri = FileProvider.getUriForFile(
+                                parentActivity,
+                                ApplicationLoader.getApplicationId() + ".provider",
+                                f);
+                        intent.putExtra(Intent.EXTRA_STREAM, shareUri);
+                        intent.setClipData(ClipData.newRawUri(
+                                "Fork-Secure attachment", shareUri));
+                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     } catch (Exception ignore) {
                         intent.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(f));
                     }
@@ -4917,6 +4956,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                         return;
                     }
 
+                    File securePhoto = getForkSecureViewerFile();
+                    if (securePhoto != null) {
+                        saveForkSecurePhotoToGallery(securePhoto);
+                        return;
+                    }
+
                     ArrayList<MessageObject> msgs = new ArrayList<>(1);
                     MessageObject.GroupedMessages group = parentChatActivity != null ? parentChatActivity.getGroup(currentMessageObject.getGroupId()) : null;
                     if (group != null) {
@@ -5124,14 +5169,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                         }
                     }
                 } else if (id == gallery_menu_showinchat || id == gallery_menu_reply) {
-                    if (currentMessageObject == null) {
+                    MessageObject actionMessage = getViewerActionMessage();
+                    if (actionMessage == null) {
                         return;
                     }
                     Bundle args = new Bundle();
                     long dialogId = currentDialogId;
-                    if (currentMessageObject != null) {
-                        dialogId = currentMessageObject.getDialogId();
-                    }
+                    dialogId = actionMessage.getDialogId();
                     if (DialogObject.isEncryptedDialog(dialogId)) {
                         args.putInt("enc_id", DialogObject.getEncryptedChatId(dialogId));
                     } else if (DialogObject.isUserDialog(dialogId)) {
@@ -5144,9 +5188,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                         }
                         args.putLong("chat_id", -dialogId);
                     }
-                    args.putInt("message_id", currentMessageObject.getId());
+                    args.putInt("message_id", actionMessage.getId());
                     if (id == gallery_menu_reply) {
-                        args.putInt("reply_to", currentMessageObject.getId());
+                        args.putInt("reply_to", actionMessage.getId());
                     }
                     NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.closeChats);
                     if (parentActivity instanceof LaunchActivity) {
@@ -5322,6 +5366,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     closePhoto(true, false);
                 } else if (id == gallery_menu_delete) {
                     if (parentActivity == null || placeProvider == null) {
+                        return;
+                    }
+                    if (isForkSecurePhotoViewer() && parentChatActivity != null) {
+                        MessageObject actionMessage = getViewerActionMessage();
+                        parentChatActivity.showDeleteMessageAlertFromViewer(actionMessage);
+                        closePhoto(false, false);
                         return;
                     }
                     boolean isChannel = false;
@@ -5756,7 +5806,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
             @Override
             public boolean canOpenMenu() {
-                if (currentMessageObject != null || currentSecureDocument != null) {
+                if (currentMessageObject != null
+                        || currentSecureDocument != null
+                        || isForkSecurePhotoViewer()) {
                     return true;
                 } else if (currentFileLocationVideo != null) {
                     File f = FileLoader.getInstance(currentAccount).getPathToAttach(getFileLocation(currentFileLocationVideo), getFileLocationExt(currentFileLocationVideo), avatarsDialogId != 0 || isEvent);
@@ -5984,6 +6036,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
 
             @Override
+            public ArrayList<ImageLocation> getSecureImagesArrLocations() {
+                return forkSecureViewerLocations;
+            }
+
+            @Override
             public ArrayList<MessageObject> getImagesArr() {
                 return imagesArr;
             }
@@ -6000,13 +6057,19 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
             @Override
             public void setCurrentIndex(int index) {
-                currentIndex = -1;
                 if (currentThumb != null) {
                     currentThumb.release();
                     currentThumb = null;
                 }
                 dontAutoPlay = true;
-                setImageIndex(index);
+                if (!forkSecureViewerLocations.isEmpty()) {
+                    // Keep the previous center/side receivers so selecting a secure thumbnail
+                    // follows the same adjacent-image transition as the native media viewer.
+                    setImageIndex(index, false, true, true);
+                } else {
+                    currentIndex = -1;
+                    setImageIndex(index);
+                }
                 dontAutoPlay = false;
             }
 
@@ -13914,6 +13977,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         avatarsArr.clear();
         secureDocuments.clear();
         imagesArrLocals.clear();
+        forkSecureViewerLocations.clear();
         if (ads != null) {
             ads.stop();
             ads = null;
@@ -15069,7 +15133,23 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
             bottomLayout.setTag(null);
             if (countView != null) {
-                countView.updateShow(false, animated);
+                int secureViewerSize = forkSecureViewerLocations.size();
+                countView.updateShow(secureViewerSize > 1, animated);
+                if (secureViewerSize > 1) {
+                    countView.set(switchingToIndex + 1, secureViewerSize);
+                }
+            }
+            if (!forkSecureViewerLocations.isEmpty()) {
+                groupedPhotosListView.fillList();
+                MessageObject secureViewerMessage = forkSecureLocalViewerMessages != null
+                        && switchingToIndex >= 0
+                        && switchingToIndex < forkSecureLocalViewerMessages.size()
+                        ? forkSecureLocalViewerMessages.get(switchingToIndex) : null;
+                CharSequence secureSubtitle = secureViewerMessage != null
+                        && secureViewerMessage.messageOwner != null
+                        ? LocaleController.formatDateAudio(
+                                secureViewerMessage.messageOwner.date, false) : null;
+                actionBarContainer.setSubtitle(secureSubtitle, animated);
             }
             if (fromCamera) {
                 if (isVideo) {
@@ -15863,7 +15943,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         currentPlaceObject = placeProvider.getPlaceForPhoto(
                 currentMessageObject != null
-                        ? currentMessageObject : forkSecureLocalViewerMessage,
+                        ? currentMessageObject : getForkSecureViewerMessage(),
                 getFileLocation(currentFileLocation),
                 currentIndex,
                 false,
@@ -16405,18 +16485,29 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     return;
                 }
                 messageObject = imagesArr.get(index);
+                if (messageObject.forkSecureVerified
+                        && messageObject.forkSecureMediaKind
+                                == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                        && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+                    File securePhoto = new File(messageObject.forkSecureMediaPath);
+                    if (securePhoto.isFile()) {
+                        f1 = securePhoto;
+                        fileExist = true;
+                    }
+                }
                 canAutoPlay = shouldMessageObjectAutoPlayed(messageObject);
                 if (sharedMediaType == MediaDataController.MEDIA_FILE && !messageObject.canPreviewDocument()) {
                     photoProgressViews[a].setBackgroundState(PROGRESS_NONE, animated, true);
                     return;
                 }
-                if (!TextUtils.isEmpty(messageObject.messageOwner.attachPath)) {
+                if (!fileExist
+                        && !TextUtils.isEmpty(messageObject.messageOwner.attachPath)) {
                     f1 = new File(messageObject.messageOwner.attachPath);
                 }
-                if (MessageObject.getMedia(messageObject.messageOwner) instanceof TLRPC.TL_messageMediaWebPage && MessageObject.getMedia(messageObject.messageOwner).webpage != null && MessageObject.getMedia(messageObject.messageOwner).webpage.document == null) {
+                if (!fileExist && MessageObject.getMedia(messageObject.messageOwner) instanceof TLRPC.TL_messageMediaWebPage && MessageObject.getMedia(messageObject.messageOwner).webpage != null && MessageObject.getMedia(messageObject.messageOwner).webpage.document == null) {
                     TLObject fileLocation = getFileLocation(index, null);
                     f2Resolver = () -> FileLoader.getInstance(currentAccount).getPathToAttach(fileLocation, true);
-                } else {
+                } else if (!fileExist) {
                     TLRPC.Message finalMessage = messageObject.messageOwner;
                     f2Resolver = () -> FileLoader.getInstance(currentAccount).getPathToMessage(finalMessage);
                 }
@@ -16820,6 +16911,19 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 if (!TextUtils.isEmpty(restrictionReason)) {
                     imageReceiver.setImageBitmap(parentActivity.getResources().getDrawable(R.drawable.photoview_placeholder));
                     return;
+                } else if (messageObject.forkSecureVerified
+                        && messageObject.forkSecureMediaKind
+                                == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                        && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
+                        && new File(messageObject.forkSecureMediaPath).isFile()) {
+                    imageReceiver.setImage(
+                            ImageLocation.getForPath(messageObject.forkSecureMediaPath),
+                            null,
+                            null,
+                            null,
+                            messageObject,
+                            0);
+                    return;
                 } else if (messageObject.isVideo()) {
                     if (messageObject.photoThumbs != null && !messageObject.photoThumbs.isEmpty()) {
                         ImageReceiver.BitmapHolder placeHolder = null;
@@ -17026,7 +17130,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         currentPlaceObject = placeProvider == null ? null : placeProvider.getPlaceForPhoto(
                 currentMessageObject != null
-                        ? currentMessageObject : forkSecureLocalViewerMessage,
+                        ? currentMessageObject : getForkSecureViewerMessage(),
                 getFileLocation(currentFileLocation),
                 currentIndex,
                 false,
@@ -17085,9 +17189,15 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 width,
                 height,
                 file.length()).setOrientation(orientation);
+        // Secure media is opened through a process-local PhotoEntry rather than Telegram's
+        // transport document. Carry the already-authenticated caption into the viewer so the
+        // normal fullscreen caption area is shown without exposing the carrier text.
+        entry.caption = secureViewerCaption(messageObject);
         ArrayList<Object> photos = new ArrayList<>();
         photos.add(entry);
         forkSecureLocalViewerMessage = messageObject;
+        forkSecureLocalViewerMessages = new ArrayList<>();
+        forkSecureLocalViewerMessages.add(messageObject);
         try {
             boolean opened = openPhotoForSelect(
                     photos,
@@ -17098,12 +17208,453 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     chatActivity);
             if (!opened) {
                 forkSecureLocalViewerMessage = null;
+                forkSecureLocalViewerMessages = null;
+            } else {
+                setForkSecureViewerLocations(photos);
+                configureForkSecurePhotoActions();
             }
             return opened;
         } catch (RuntimeException error) {
             forkSecureLocalViewerMessage = null;
+            forkSecureLocalViewerMessages = null;
             throw error;
         }
+    }
+
+    /** Opens an authenticated local video through the normal in-app video player. */
+    public boolean openForkSecureVideo(
+            MessageObject messageObject,
+            File file,
+            int width,
+            int height,
+            ChatActivity chatActivity,
+            PhotoViewerProvider provider) {
+        if (messageObject == null || file == null || !file.isFile()) {
+            return false;
+        }
+        Pair<Integer, Integer> orientation = AndroidUtilities.getImageOrientation(file);
+        TLRPC.TL_documentAttributeVideo videoAttribute =
+                new TLRPC.TL_documentAttributeVideo();
+        SendMessagesHelper.fillVideoAttribute(file.getAbsolutePath(), videoAttribute, null);
+        MediaController.PhotoEntry entry = new MediaController.PhotoEntry(
+                0,
+                lastImageId--,
+                0,
+                file.getAbsolutePath(),
+                orientation.first,
+                (int) Math.max(0, Math.round(videoAttribute.duration)),
+                true,
+                videoAttribute.w > 0 ? videoAttribute.w : width,
+                videoAttribute.h > 0 ? videoAttribute.h : height,
+                file.length()).setOrientation(orientation);
+        entry.caption = secureViewerCaption(messageObject);
+        ArrayList<Object> photos = new ArrayList<>();
+        photos.add(entry);
+        forkSecureLocalViewerMessage = messageObject;
+        forkSecureLocalViewerMessages = new ArrayList<>();
+        forkSecureLocalViewerMessages.add(messageObject);
+        try {
+            boolean opened = openPhotoForSelect(
+                    photos,
+                    0,
+                    SELECT_TYPE_NO_SELECT,
+                    false,
+                    provider,
+                    chatActivity);
+            if (!opened) {
+                forkSecureLocalViewerMessage = null;
+                forkSecureLocalViewerMessages = null;
+            } else {
+                setForkSecureViewerLocations(photos);
+            }
+            return opened;
+        } catch (RuntimeException error) {
+            forkSecureLocalViewerMessage = null;
+            forkSecureLocalViewerMessages = null;
+            throw error;
+        }
+    }
+
+    /** Opens verified Fork-Secure visual media as a swipeable local PhotoViewer sequence. */
+    public boolean openForkSecurePhotos(
+            ArrayList<MessageObject> sourceMessages,
+            int index,
+            PhotoViewerProvider provider) {
+        return openForkSecurePhotos(sourceMessages, index, null, provider);
+    }
+
+    public boolean openForkSecurePhotos(
+            ArrayList<MessageObject> sourceMessages,
+            int index,
+            ChatActivity chatActivity,
+            PhotoViewerProvider provider) {
+        if (sourceMessages == null || sourceMessages.isEmpty()) {
+            return false;
+        }
+        ArrayList<MessageObject> viewerMessages = new ArrayList<>();
+        ArrayList<Object> photos = new ArrayList<>();
+        int viewerIndex = -1;
+        for (int i = 0; i < sourceMessages.size(); i++) {
+            MessageObject source = sourceMessages.get(i);
+            boolean secureVideo = source != null
+                    && source.forkSecureMediaKind
+                            == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                    && source.forkSecureMediaMime != null
+                    && source.forkSecureMediaMime.startsWith("video/");
+            if (source == null
+                    || source.forkSecureMediaKind
+                            != MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                            && !secureVideo
+                    || TextUtils.isEmpty(source.forkSecureMediaPath)) {
+                continue;
+            }
+            File file = new File(source.forkSecureMediaPath);
+            if (!file.isFile()) {
+                continue;
+            }
+            Pair<Integer, Integer> orientation = AndroidUtilities.getImageOrientation(file);
+            MediaController.PhotoEntry entry;
+            if (secureVideo) {
+                TLRPC.TL_documentAttributeVideo videoAttribute =
+                        new TLRPC.TL_documentAttributeVideo();
+                SendMessagesHelper.fillVideoAttribute(
+                        file.getAbsolutePath(), videoAttribute, null);
+                entry = new MediaController.PhotoEntry(
+                        0,
+                        lastImageId--,
+                        0,
+                        file.getAbsolutePath(),
+                        orientation.first,
+                        (int) Math.max(0, Math.round(videoAttribute.duration)),
+                        true,
+                        videoAttribute.w > 0
+                                ? videoAttribute.w : source.forkSecureMediaWidth,
+                        videoAttribute.h > 0
+                                ? videoAttribute.h : source.forkSecureMediaHeight,
+                        file.length()).setOrientation(orientation);
+            } else {
+                entry = new MediaController.PhotoEntry(
+                        0,
+                        lastImageId--,
+                        0,
+                        file.getAbsolutePath(),
+                        orientation.first,
+                        false,
+                        source.forkSecureMediaWidth,
+                        source.forkSecureMediaHeight,
+                        file.length()).setOrientation(orientation);
+            }
+            entry.caption = secureViewerCaption(source);
+            viewerMessages.add(source);
+            photos.add(entry);
+            if (i == index) {
+                viewerIndex = photos.size() - 1;
+            }
+        }
+        if (viewerMessages.isEmpty() || viewerIndex < 0) {
+            return false;
+        }
+        forkSecureLocalViewerMessages = viewerMessages;
+        forkSecureLocalViewerMessage = viewerMessages.get(viewerIndex);
+        try {
+            boolean opened = openPhotoForSelect(
+                    photos,
+                    viewerIndex,
+                    SELECT_TYPE_NO_SELECT,
+                    false,
+                    provider,
+                    chatActivity);
+            if (!opened) {
+                forkSecureLocalViewerMessage = null;
+                forkSecureLocalViewerMessages = null;
+            } else {
+                setForkSecureViewerLocations(photos);
+                configureForkSecurePhotoActions();
+            }
+            return opened;
+        } catch (RuntimeException error) {
+            forkSecureLocalViewerMessage = null;
+            forkSecureLocalViewerMessages = null;
+            throw error;
+        }
+    }
+
+    private void setForkSecureViewerLocations(ArrayList<Object> photos) {
+        forkSecureViewerPhotos = photos;
+        forkSecureViewerLocations.clear();
+        if (photos != null) {
+            for (Object object : photos) {
+                if (!(object instanceof MediaController.PhotoEntry)) {
+                    continue;
+                }
+                MediaController.PhotoEntry entry = (MediaController.PhotoEntry) object;
+                String thumbnailPath = entry.isVideo
+                        ? getForkSecureVideoThumbnailPath(entry.path, photos)
+                        : entry.path;
+                ImageLocation location = ImageLocation.getForPath(thumbnailPath);
+                if (location != null) {
+                    forkSecureViewerLocations.add(location);
+                }
+            }
+        }
+        if (groupedPhotosListView != null) {
+            groupedPhotosListView.clear();
+            groupedPhotosListView.fillList();
+            groupedPhotosListView.post(() -> groupedPhotosListView.fillList());
+        }
+        if (countView != null) {
+            int size = forkSecureViewerLocations.size();
+            countView.updateShow(size > 1, false);
+            if (size > 1) {
+                countView.set(Math.min(switchingToIndex + 1, size), size, false);
+            }
+            countView.post(() -> {
+                int currentSize = forkSecureViewerLocations.size();
+                countView.updateShow(currentSize > 1, false);
+                if (currentSize > 1) {
+                    countView.set(Math.min(switchingToIndex + 1, currentSize), currentSize, false);
+                }
+            });
+        }
+        if (actionBarContainer != null && forkSecureLocalViewerMessages != null
+                && switchingToIndex >= 0
+                && switchingToIndex < forkSecureLocalViewerMessages.size()) {
+            MessageObject secureViewerMessage = forkSecureLocalViewerMessages.get(switchingToIndex);
+            CharSequence secureSubtitle = secureViewerMessage.messageOwner != null
+                    ? LocaleController.formatDateAudio(
+                            secureViewerMessage.messageOwner.date, false) : null;
+            actionBarContainer.setSubtitle(secureSubtitle, false);
+        }
+    }
+
+    /**
+     * Returns a stable still frame for the secure viewer's thumbnail strip. The normal Telegram
+     * viewer can ask ImageLoader to decode a vthumb carrier, but that path is intentionally not
+     * available for local authenticated files. Extracting a small JPEG once also avoids starting
+     * an animation decoder for every thumbnail and keeps the strip responsive on older devices.
+     */
+    private String getForkSecureVideoThumbnailPath(String videoPath, ArrayList<Object> photos) {
+        if (TextUtils.isEmpty(videoPath)) {
+            return null;
+        }
+        String digest = Utilities.MD5(videoPath);
+        if (digest == null) {
+            return null;
+        }
+        File directory = new File(
+                FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), "fork-secure-thumbnails");
+        File thumbnail = new File(directory, digest + ".jpg");
+        if (thumbnail.isFile() && thumbnail.length() > 0) {
+            SecureMediaCache.touchAndPrune(thumbnail, 80, 32L * 1024L * 1024L);
+            return thumbnail.getAbsolutePath();
+        }
+        synchronized (forkSecureViewerThumbsInFlight) {
+            if (forkSecureViewerThumbsInFlight.add(videoPath)) {
+                Utilities.globalQueue.postRunnable(() -> {
+                    File temporary = new File(directory, digest + ".tmp");
+                    boolean generated = false;
+                    try {
+                        directory.mkdirs();
+                        Bitmap bitmap = SendMessagesHelper.createVideoThumbnail(
+                                videoPath, android.provider.MediaStore.Video.Thumbnails.MICRO_KIND);
+                        if (bitmap != null) {
+                            try (FileOutputStream output = new FileOutputStream(temporary)) {
+                                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, output);
+                            } finally {
+                                bitmap.recycle();
+                            }
+                            if (!temporary.renameTo(thumbnail)) {
+                                temporary.delete();
+                            }
+                            if (thumbnail.isFile()) {
+                                SecureMediaCache.touchAndPrune(
+                                        thumbnail, 80, 32L * 1024L * 1024L);
+                                generated = true;
+                            }
+                        }
+                    } catch (Throwable error) {
+                        temporary.delete();
+                        FileLog.e(error);
+                    } finally {
+                        synchronized (forkSecureViewerThumbsInFlight) {
+                            forkSecureViewerThumbsInFlight.remove(videoPath);
+                        }
+                    }
+                    if (generated) {
+                        AndroidUtilities.runOnUIThread(() -> {
+                            if (forkSecureViewerPhotos == photos && isVisible) {
+                                setForkSecureViewerLocations(photos);
+                            }
+                        });
+                    }
+                });
+            }
+        }
+        // Keep the item in the strip while extraction is in progress. It is replaced by the
+        // local JPEG above as soon as the background task completes.
+        return "vthumb://0:" + videoPath;
+    }
+
+    private boolean isForkSecurePhotoViewer() {
+        MessageObject message = getForkSecureViewerMessage();
+        return message != null
+                && message.forkSecureVerified
+                && message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO;
+    }
+
+    private static String secureViewerCaption(MessageObject message) {
+        if (message == null || TextUtils.isEmpty(message.forkSecureMediaCaption)) {
+            return null;
+        }
+        String caption = message.forkSecureMediaCaption;
+        // A carrier or FSC manifest is never a user caption. This also protects older cached
+        // MessageObjects that were created before the secure caption boundary was enforced.
+        if (caption.startsWith("TGS1:")
+                || caption.startsWith("FSC1:")
+                || caption.startsWith("ForkSecure")) {
+            return null;
+        }
+        return caption;
+    }
+
+    private MessageObject getForkSecureViewerMessage() {
+        if (forkSecureLocalViewerMessages != null
+                && currentIndex >= 0
+                && currentIndex < forkSecureLocalViewerMessages.size()) {
+            return forkSecureLocalViewerMessages.get(currentIndex);
+        }
+        return forkSecureLocalViewerMessage != null
+                ? forkSecureLocalViewerMessage : currentMessageObject;
+    }
+
+    private File getForkSecureViewerFile() {
+        MessageObject message = getForkSecureViewerMessage();
+        if (!isForkSecurePhotoViewer()
+                || TextUtils.isEmpty(message.forkSecureMediaPath)) {
+            return null;
+        }
+        File file = new File(message.forkSecureMediaPath);
+        return file.isFile() ? file : null;
+    }
+
+    private void saveForkSecurePhotoToGallery(File sourceFile) {
+        MessageObject message = getViewerActionMessage();
+        final String mime = TextUtils.isEmpty(message.forkSecureMediaMime)
+                ? "image/jpeg" : message.forkSecureMediaMime;
+        new Thread(() -> {
+            Uri savedUri = null;
+            boolean saved = false;
+            try {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Images.Media.DISPLAY_NAME,
+                            "Fork-Secure-" + System.currentTimeMillis() + ".jpg");
+                    values.put(MediaStore.Images.Media.MIME_TYPE, mime);
+                    values.put(MediaStore.Images.Media.RELATIVE_PATH,
+                            Environment.DIRECTORY_PICTURES + "/Telegram");
+                    values.put(MediaStore.Images.Media.IS_PENDING, 1);
+                    Uri collection = MediaStore.Images.Media.getContentUri(
+                            MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                    savedUri = ApplicationLoader.applicationContext.getContentResolver()
+                            .insert(collection, values);
+                    if (savedUri != null) {
+                        try (FileInputStream input = new FileInputStream(sourceFile);
+                             OutputStream output = ApplicationLoader.applicationContext
+                                     .getContentResolver().openOutputStream(savedUri)) {
+                            if (output == null) {
+                                throw new IllegalStateException("gallery output is unavailable");
+                            }
+                            byte[] buffer = new byte[32 * 1024];
+                            int read;
+                            while ((read = input.read(buffer)) != -1) {
+                                output.write(buffer, 0, read);
+                            }
+                        }
+                        ContentValues ready = new ContentValues();
+                        ready.put(MediaStore.Images.Media.IS_PENDING, 0);
+                        ApplicationLoader.applicationContext.getContentResolver()
+                                .update(savedUri, ready, null, null);
+                        saved = true;
+                    }
+                } else {
+                    File directory = new File(
+                            Environment.getExternalStoragePublicDirectory(
+                                    Environment.DIRECTORY_PICTURES), "Telegram");
+                    directory.mkdirs();
+                    File destination = new File(directory,
+                            "Fork-Secure-" + System.currentTimeMillis() + ".jpg");
+                    try (FileInputStream input = new FileInputStream(sourceFile);
+                         OutputStream output = new FileOutputStream(destination)) {
+                        byte[] buffer = new byte[32 * 1024];
+                        int read;
+                        while ((read = input.read(buffer)) != -1) {
+                            output.write(buffer, 0, read);
+                        }
+                    }
+                    AndroidUtilities.addMediaToGallery(destination);
+                    savedUri = Uri.fromFile(destination);
+                    saved = true;
+                }
+            } catch (Throwable error) {
+                FileLog.e(error);
+                if (savedUri != null && Build.VERSION.SDK_INT >= 29) {
+                    try {
+                        ApplicationLoader.applicationContext.getContentResolver()
+                                .delete(savedUri, null, null);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            if (saved) {
+                AndroidUtilities.runOnUIThread(() ->
+                        BulletinFactory.createSaveToGalleryBulletin(
+                                containerView, false, 0xf9222222, 0xffffffff).show());
+            }
+        }, "ForkSecureGallerySave").start();
+    }
+
+    private MessageObject getViewerActionMessage() {
+        return isForkSecurePhotoViewer()
+                ? getForkSecureViewerMessage() : currentMessageObject;
+    }
+
+    private void configureForkSecurePhotoActions() {
+        if (!isForkSecurePhotoViewer() || menuItem == null) {
+            return;
+        }
+        MessageObject message = getViewerActionMessage();
+        currentDialogId = message.getDialogId();
+        boolean noforwards = MessagesController.getInstance(currentAccount)
+                .isPeerNoForwards(currentDialogId)
+                || message.messageOwner != null && message.messageOwner.noforwards;
+        boolean canWrite = true;
+        if (currentDialogId < 0) {
+            TLRPC.Chat chat = MessagesController.getInstance(message.currentAccount)
+                    .getChat(-currentDialogId);
+            canWrite = ChatObject.canWriteToChat(chat);
+        }
+
+        allowShare = !noforwards;
+        menuItem.setVisibility(View.VISIBLE);
+        galleryButton.setVisibility(noforwards ? View.GONE : View.VISIBLE);
+        galleryGap.setVisibility(noforwards ? View.GONE : View.VISIBLE);
+        menuItem.setSubItemShown(gallery_menu_showall, currentDialogId != 0);
+        menuItem.setSubItemShown(gallery_menu_showinchat, currentDialogId != 0);
+        menuItem.setSubItemShown(gallery_menu_reply, currentDialogId != 0 && canWrite);
+        menuItem.setSubItemShown(gallery_menu_share, !noforwards);
+        menuItem.setSubItemShown(
+                gallery_menu_delete,
+                message.canDeleteMessage(
+                        parentChatActivity != null
+                                && parentChatActivity.isInScheduleMode(),
+                        null));
+        menuItem.setSubItemShown(gallery_menu_create_sticker, false);
+        menuItem.setSubItemShown(gallery_menu_openin, false);
+        menuItem.setSubItemShown(gallery_menu_savegif, false);
+        menuItem.setSubItemShown(gallery_menu_masks2, false);
+        menuItem.setSubItemShown(gallery_menu_cancel_loading, false);
+        menuItem.checkHideMenuItem();
     }
 
     public boolean openPhoto(final ArrayList<MessageObject> messages, final int index, long dialogId, long mergeDialogId, long topicId, final PhotoViewerProvider provider) {
@@ -17474,7 +18025,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
 
         MessageObject placeMessageObject = messageObject != null
-                ? messageObject : forkSecureLocalViewerMessage;
+                ? messageObject : getForkSecureViewerMessage();
         final PlaceProviderObject object = provider.getPlaceForPhoto(
                 placeMessageObject, fileLocation, index, true, false);
         WindowManager wm = (WindowManager) parentActivity.getSystemService(Context.WINDOW_SERVICE);
@@ -17495,7 +18046,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM |
                 WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS;
             MessageObject secureWindowMessage = messageObject != null
-                    ? messageObject : forkSecureLocalViewerMessage;
+                    ? messageObject : getForkSecureViewerMessage();
             if (chatActivity != null && chatActivity.getCurrentEncryptedChat() != null ||
                 avatarsDialogId != 0 && MessagesController.getInstance(currentAccount).isPeerNoForwards(avatarsDialogId) ||
                 secureWindowMessage != null && (MessagesController.getInstance(currentAccount).isPeerNoForwards(secureWindowMessage.getDialogId()) ||
@@ -18247,7 +18798,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         final Runnable[] start = new Runnable[1];
         final PlaceProviderObject object = placeProvider == null ? null : placeProvider.getPlaceForPhoto(
                 currentMessageObject != null
-                        ? currentMessageObject : forkSecureLocalViewerMessage,
+                        ? currentMessageObject : getForkSecureViewerMessage(),
                 getFileLocation(currentFileLocation),
                 currentIndex,
                 true,
@@ -18738,6 +19289,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         currentPageBlock = null;
         currentPathObject = null;
         forkSecureLocalViewerMessage = null;
+        forkSecureLocalViewerMessages = null;
+        forkSecureViewerPhotos = null;
+        forkSecureViewerLocations.clear();
         dialogPhotos = null;
         if (ads != null) {
             ads.stop();

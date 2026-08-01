@@ -9,6 +9,7 @@ import android.content.Context;
  * identity, trust, and ratchet state are intentionally outside this boundary.</p>
  */
 public final class SecureLocalMessageCache {
+    private final Context context;
     private final int account;
     private final long peerUserId;
     private final KeystoreEncryptedBlobStore blobs;
@@ -18,9 +19,10 @@ public final class SecureLocalMessageCache {
             throw new IllegalArgumentException(
                     "local secure cache requires an account and user peer");
         }
+        this.context = context.getApplicationContext();
         this.account = account;
         this.peerUserId = peerUserId;
-        blobs = new KeystoreEncryptedBlobStore(context.getApplicationContext());
+        blobs = new KeystoreEncryptedBlobStore(this.context);
     }
 
     /**
@@ -59,6 +61,8 @@ public final class SecureLocalMessageCache {
                 incomingText,
                 outgoingContent,
                 incomingContent);
+        new SecureMediaIndex(context, account, peerUserId)
+                .forget(carrier);
         SecureLocalTextStore.evictDisplayCopies(outgoingText, incomingText);
         return true;
     }
@@ -73,6 +77,8 @@ public final class SecureLocalMessageCache {
                 incomingText,
                 scopedPrefix(SecureLocalContentStore.OUTGOING_PREFIX),
                 scopedPrefix(SecureLocalContentStore.INCOMING_PREFIX));
+        new SecureMediaIndex(context, account, peerUserId)
+                .forgetPeer();
         SecureLocalTextStore.evictDisplayPrefixes(outgoingText, incomingText);
     }
 

@@ -40,6 +40,11 @@ final class SecureLocalContentStore {
         return load(INCOMING_PREFIX, carrier);
     }
 
+    void forgetOutgoing(String carrier)
+            throws KeystoreEncryptedBlobStore.StateStoreException {
+        blobs.delete(key(OUTGOING_PREFIX, account, peerUserId, carrier));
+    }
+
     private void remember(String prefix, String carrier, byte[] content)
             throws KeystoreEncryptedBlobStore.StateStoreException {
         requireEncryptedCarrier(carrier);

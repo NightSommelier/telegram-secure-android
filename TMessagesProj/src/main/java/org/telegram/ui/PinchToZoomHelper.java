@@ -249,7 +249,7 @@ public class PinchToZoomHelper {
         if (messageObject == null) {
             return;
         }
-        if (!messageObject.isPhoto()) {
+        if (!messageObject.isPhoto() && !isReadyForkSecurePhoto(messageObject)) {
             return;
         }
         int[] size = new int[1];
@@ -642,6 +642,14 @@ public class PinchToZoomHelper {
     }
 
     private ImageLocation getImageLocation(MessageObject message, int[] size) {
+        if (isReadyForkSecurePhoto(message)) {
+            if (size != null) {
+                size[0] = (int) Math.min(
+                        Integer.MAX_VALUE,
+                        new java.io.File(message.forkSecureMediaPath).length());
+            }
+            return ImageLocation.getForPath(message.forkSecureMediaPath);
+        }
         if (message.messageOwner instanceof TLRPC.TL_messageService) {
             if (message.messageOwner.action instanceof TLRPC.TL_messageActionUserUpdatedPhoto) {
                 return null;
@@ -692,6 +700,15 @@ public class PinchToZoomHelper {
             }
         }
         return null;
+    }
+
+    private static boolean isReadyForkSecurePhoto(MessageObject message) {
+        return message != null
+                && message.forkSecureMediaKind
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                && message.forkSecureMediaPath != null
+                && !message.forkSecureMediaPath.isEmpty()
+                && new java.io.File(message.forkSecureMediaPath).isFile();
     }
 
     public void setClipBoundsListener(ClipBoundsListener clipBoundsListener) {

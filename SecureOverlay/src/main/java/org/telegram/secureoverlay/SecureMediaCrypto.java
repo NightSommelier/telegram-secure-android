@@ -18,7 +18,8 @@ import javax.crypto.spec.SecretKeySpec;
 /** Per-file authenticated encryption used before media bytes enter Telegram transport. */
 public final class SecureMediaCrypto {
     public static final int MAX_STATIC_STICKER_BYTES = 1024 * 1024;
-    public static final int MAX_ATTACHMENT_BYTES = 64 * 1024 * 1024;
+    /** Streaming attachment ceiling for the local MVP (Telegram documents can be much larger). */
+    public static final int MAX_ATTACHMENT_BYTES = 512 * 1024 * 1024;
     public static final int GCM_TAG_BYTES = 16;
     private static final int KEY_BYTES = 32;
     private static final int NONCE_BYTES = 12;

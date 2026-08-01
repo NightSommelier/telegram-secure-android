@@ -6,6 +6,7 @@ import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -32,13 +33,19 @@ public final class KeystoreEncryptedBlobStore {
     private static final int NONCE_BYTES = 12;
     private static final int TAG_BITS = 128;
     private static final int FORMAT_VERSION = 1;
+    private static final String INSTALLATION_SENTINEL =
+            "telegram_secure_overlay_installation_v1";
     private static final Object keyHandleLock = new Object();
+    private static final Object installationLock = new Object();
     private static volatile SecretKey cachedKeyHandle;
+    private static volatile boolean installationChecked;
 
     private final SharedPreferences preferences;
 
     public KeystoreEncryptedBlobStore(Context context) {
-        preferences = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Context appContext = context.getApplicationContext();
+        preferences = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        ensureInstallationState(appContext, preferences);
     }
 
     public synchronized void put(String name, byte[] plaintext) throws StateStoreException {
@@ -95,6 +102,90 @@ public final class KeystoreEncryptedBlobStore {
         }
     }
 
+    /** Replaces every record under exact prefixes in one synchronous transaction. */
+    synchronized void replacePrefixes(
+            Map<String, byte[]> replacements, String... prefixes) throws StateStoreException {
+        if (prefixes == null || prefixes.length == 0) {
+            throw new IllegalArgumentException("secure state prefixes are required");
+        }
+        for (String prefix : prefixes) {
+            requireName(prefix);
+        }
+        if (replacements == null) {
+            throw new IllegalArgumentException("secure state replacements are required");
+        }
+        for (String name : replacements.keySet()) {
+            requireName(name);
+            if (!startsWithAny(name, prefixes)) {
+                throw new IllegalArgumentException(
+                        "replacement is outside secure state prefixes");
+            }
+        }
+        Map<String, String> encrypted = replacements.isEmpty()
+                ? new LinkedHashMap<>()
+                : encryptAll(replacements);
+        SharedPreferences.Editor editor = preferences.edit();
+        for (String name : preferences.getAll().keySet()) {
+            if (startsWithAny(name, prefixes)) {
+                editor.remove(name);
+            }
+        }
+        for (Map.Entry<String, String> entry : encrypted.entrySet()) {
+            editor.putString(entry.getKey(), entry.getValue());
+        }
+        if (!editor.commit()) {
+            throw new StateStoreException("failed to replace encrypted state prefixes");
+        }
+    }
+
+    /**
+     * Replaces slash-delimited roots and literal prefixes while atomically writing transaction
+     * records outside those selectors.
+     */
+    synchronized void replaceSelected(
+            Map<String, byte[]> replacements,
+            String[] roots,
+            String[] prefixes,
+            String... transactionNames) throws StateStoreException {
+        if (replacements == null || roots == null || prefixes == null
+                || transactionNames == null) {
+            throw new IllegalArgumentException("secure replacement selection is required");
+        }
+        for (String root : roots) {
+            requireName(root);
+        }
+        for (String prefix : prefixes) {
+            requireName(prefix);
+        }
+        for (String transactionName : transactionNames) {
+            requireName(transactionName);
+        }
+        for (String name : replacements.keySet()) {
+            requireName(name);
+            if (!matchesRoot(name, roots)
+                    && !startsWithAny(name, prefixes)
+                    && !contains(transactionNames, name)) {
+                throw new IllegalArgumentException(
+                        "replacement is outside secure state selection");
+            }
+        }
+        Map<String, String> encrypted = replacements.isEmpty()
+                ? new LinkedHashMap<>()
+                : encryptAll(replacements);
+        SharedPreferences.Editor editor = preferences.edit();
+        for (String name : preferences.getAll().keySet()) {
+            if (matchesRoot(name, roots) || startsWithAny(name, prefixes)) {
+                editor.remove(name);
+            }
+        }
+        for (Map.Entry<String, String> entry : encrypted.entrySet()) {
+            editor.putString(entry.getKey(), entry.getValue());
+        }
+        if (!editor.commit()) {
+            throw new StateStoreException("failed to replace selected encrypted state");
+        }
+    }
+
     public synchronized boolean hasNameStartingWith(String... prefixes) {
         if (prefixes == null || prefixes.length == 0) {
             throw new IllegalArgumentException("secure state prefixes are required");
@@ -110,6 +201,29 @@ public final class KeystoreEncryptedBlobStore {
             }
         }
         return false;
+    }
+
+    /**
+     * Decrypts a logical snapshot selected by exact prefixes.
+     *
+     * <p>Callers must use account-scoped prefixes and immediately place the result inside an
+     * authenticated recovery archive.</p>
+     */
+    synchronized Map<String, byte[]> snapshotPrefixes(String... prefixes)
+            throws StateStoreException {
+        if (prefixes == null || prefixes.length == 0) {
+            throw new IllegalArgumentException("secure snapshot prefixes are required");
+        }
+        for (String prefix : prefixes) {
+            requireName(prefix);
+        }
+        Map<String, byte[]> snapshot = new LinkedHashMap<>();
+        for (String name : preferences.getAll().keySet()) {
+            if (startsWithAny(name, prefixes)) {
+                snapshot.put(name, get(name));
+            }
+        }
+        return snapshot;
     }
 
     private static Map<String, String> encryptAll(
@@ -255,6 +369,33 @@ public final class KeystoreEncryptedBlobStore {
         }
     }
 
+    private static boolean startsWithAny(String name, String... prefixes) {
+        for (String prefix : prefixes) {
+            if (name.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean matchesRoot(String name, String... roots) {
+        for (String root : roots) {
+            if (name.equals(root) || name.startsWith(root + "/")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean contains(String[] values, String expected) {
+        for (String value : values) {
+            if (value.equals(expected)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static SecretKey getOrCreateKey() throws GeneralSecurityException, IOException {
         SecretKey cached = cachedKeyHandle;
         if (cached != null) {
@@ -287,6 +428,72 @@ public final class KeystoreEncryptedBlobStore {
             SecretKey generated = generator.generateKey();
             cachedKeyHandle = generated;
             return generated;
+        }
+    }
+
+    /**
+     * Drops ciphertext restored without its non-exportable Keystore key.
+     *
+     * <p>The sentinel lives in {@code noBackupFilesDir}. An application update from an older
+     * build has no sentinel but retains the Keystore key, so its valid state is preserved. A
+     * reinstall or OEM restore may return SharedPreferences without that key; retaining such
+     * ciphertext would permanently block both recovery import and new pairing.</p>
+     */
+    private static void ensureInstallationState(
+            Context context, SharedPreferences encryptedPreferences) {
+        if (installationChecked) {
+            return;
+        }
+        synchronized (installationLock) {
+            if (installationChecked) {
+                return;
+            }
+            File sentinel = new File(
+                    context.getNoBackupFilesDir(), INSTALLATION_SENTINEL);
+            boolean keyPresent = hasKeystoreKey();
+            boolean hasOrphanedState = !encryptedPreferences.getAll().isEmpty()
+                    || SecureChatState.hasStoredState(context);
+            if (hasOrphanedState && !keyPresent) {
+                if (!encryptedPreferences.edit().clear().commit()) {
+                    throw new IllegalStateException(
+                            "failed to clear orphaned secure encrypted state");
+                }
+                SecureChatState.clearForMissingKeystore(context);
+                cachedKeyHandle = null;
+            }
+            if (!sentinel.isFile()) {
+                try {
+                    File parent = sentinel.getParentFile();
+                    if (parent == null
+                            || (!parent.isDirectory() && !parent.mkdirs())
+                            || (!sentinel.createNewFile() && !sentinel.isFile())) {
+                        throw new IOException(
+                                "cannot create Fork-Secure installation sentinel");
+                    }
+                } catch (IOException error) {
+                    throw new IllegalStateException(
+                            "cannot establish Fork-Secure installation state", error);
+                }
+            }
+            installationChecked = true;
+        }
+    }
+
+    private static boolean hasKeystoreKey() {
+        try {
+            KeyStore keyStore = KeyStore.getInstance(KEYSTORE);
+            keyStore.load(null);
+            return keyStore.containsAlias(KEY_ALIAS);
+        } catch (GeneralSecurityException | IOException error) {
+            throw new IllegalStateException(
+                    "cannot inspect Fork-Secure Keystore state", error);
+        }
+    }
+
+    static void resetInstallationCheckForTests() {
+        synchronized (installationLock) {
+            installationChecked = false;
+            cachedKeyHandle = null;
         }
     }
 

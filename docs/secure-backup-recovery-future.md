@@ -27,23 +27,59 @@ identity and re-verify contacts. Restoring the same identity on two active
 installations risks identity cloning, so simultaneous restore/multi-device use
 is blocked until a separately reviewed device-management protocol exists.
 
+Automatic backup is a later delivery stage, after manual history
+export/import is stable on physical devices. Prepare for it by keeping archive
+creation independent of Android document pickers and cloud APIs:
+
+- the archive codec produces authenticated ciphertext only;
+- a future `RecoveryArchiveProvider` is responsible only for upload, download,
+  listing, retention and deletion of opaque archive bytes;
+- Google Drive, local files or another provider must not receive archive
+  passwords, plaintext cache records, raw Keystore keys or Telegram
+  credentials;
+- automatic runs require explicit opt-in, visible last-success/error state,
+  bounded retained generations and a tested local retry queue;
+- provider failure must not block messaging or mutate identity/session state.
+
+## Manual history archive implementation status
+
+The current private build contains a manual `FSRK` implementation candidate:
+
+- export includes the global identity, encrypted local text/content records and
+  the known peer roster for one Telegram account;
+- live libsignal sessions, peer trust and decrypted media files are excluded;
+- restore replaces selected secure-store roots in one transaction and records
+  a recovery marker so process restart can complete the paused-chat state;
+- every recovered peer is paused until pairing and verification are repeated;
+- wrong-account, tamper and non-empty-installation rejection leave existing
+  state unchanged in instrumentation tests;
+- settings present `FSRK` as the primary **full Fork-Secure backup**:
+  one archive restores identity plus local protected-message/content records.
+  The existing identity-only `FSBK` format remains an explicitly labelled
+  advanced option and is not required when an `FSRK` archive is available.
+
+This is not yet an automatic backup feature. Physical document-picker export,
+app reinstall, import, old-message rendering and encrypted attachment re-open
+still require a two-device acceptance run before the manual format is treated
+as stable.
+
 ## Current-state audit
 
-The app currently has three different recovery classes that must not be
-presented as one feature:
+The app stores three recovery classes. The full archive combines the first and
+third for usability while preserving their distinct security behavior:
 
-| State | Current storage | Identity-only restore result |
+| State | Current storage | Full `FSRK` restore result |
 | --- | --- | --- |
 | Local identity and registration | Keystore-encrypted blob records | Identity fingerprint can remain stable |
 | Peer trust, ratchet sessions and pairing state | Keystore records plus `telegram_secure_chat_state_v1` | Not restored; each peer requires a fresh recovery/re-pair flow |
-| Decrypted text and attachment manifests | Keystore-encrypted local display/content records | Not restored; old carriers cannot simply be decrypted again after ratchet state was consumed |
+| Protected text and attachment manifests | Keystore-encrypted local display/content records | Restored; attachment manifests include media keys, but ciphertext must still be available from Telegram |
 
-Decrypted media files are cache files and are also excluded from the
-identity-only archive. Therefore identity recovery preserves who the user is,
-but **does not preserve access to old message plaintext or attachments**. A
-future history archive would need separately reviewed encrypted display/content
-records, retention/deletion semantics and ciphertext availability guarantees.
-It must not serialize a live ratchet snapshot as a shortcut.
+Downloaded decrypted media files remain cache files and are excluded from both
+archive formats. The identity-only `FSBK` file preserves who the user is but
+does not preserve access to old message plaintext or attachments. The full
+`FSRK` archive preserves local protected-message/content records without
+serializing live ratchet state; recovered chats remain paused until new pairing
+and verification.
 
 The application manifest enables Android backup for Telegram's custom
 `BackupAgent`. That agent currently names only `saved_tokens` and

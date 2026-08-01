@@ -30,7 +30,7 @@ Fork-Secure cannot hide those properties while using Telegram transport.
 | Edits | Blocked fail-closed | Needs an authenticated edit control message |
 | Reactions | Native Telegram reactions are available without per-action warnings | Telegram sees the emoji, target message ID and actor; this limitation remains documented in the secure-chat status details |
 | Deletion | Telegram carrier and matching local text/content records are deleted | Authenticated remote delete controls are not implemented |
-| Identity reset | Supported with re-pairing | No recovery archive or safe multi-device protocol |
+| Identity reset and recovery | Reset, identity-only archive, and manual identity-plus-history archive prototype | History restore pauses every recovered chat; automatic backup and safe multi-device protocol remain pending |
 
 ## Closed P0 fallback paths
 
@@ -44,8 +44,9 @@ Fork-Secure cannot hide those properties while using Telegram transport.
    records; display memory and media files use bounded caches.
 
 Durable encrypted display/content records remain intentionally unbounded until
-history recovery exists. Evicting them now would permanently remove access to
-old message plaintext after the ratchet has advanced.
+the manual history archive passes physical reinstall testing and a retention
+policy exists. Evicting them earlier could permanently remove access to old
+message plaintext after the ratchet has advanced.
 
 ## Telegram feature matrix
 
@@ -106,13 +107,58 @@ References: [Telegram APIs](https://core.telegram.org/),
    fields, bot/inline actions and unsupported media while protected.
 3. Bind local cache records to Telegram message IDs and purge them on delete,
    logout, account removal, identity reset policy and bounded retention.
-4. Complete identity-continuity backup and reinstall/recovery tests. Keep
-   identity recovery distinct from old-message/history recovery.
+4. Complete physical reinstall/recovery tests for the identity-only and manual
+   identity-plus-history archives. Keep both formats distinct; history restore
+   must pause every recovered contact rather than restore live ratchets.
 5. Add native video, voice, round video, GIF and audio payloads one at a time.
 6. Add authenticated edit/delete/reaction/expiry protocols and their conflict
    tests.
 7. Audit notifications, widgets, clipboard, screenshots, share/export,
    accessibility, logs, crash reports and temporary files on both devices.
+
+## Deferred privacy and resilience backlog
+
+The following ideas are intentionally scheduled after the current recovery and
+media milestones. They are not part of the message protocol and must not delay
+the one-to-one secure-chat MVP.
+
+### Planned candidates
+
+1. Add a security and privacy checklist for Telegram 2FA, risky privacy
+   settings, USB debugging and device-integrity warnings. Every suggested
+   settings change must remain explicit and individually reviewable.
+2. Add proxy health checks and optional proxy rotation as a Telegram transport
+   feature. It must remain independent of `SecureOverlay`, preserve the user's
+   selected routing policy and never silently enable a direct fallback.
+3. Add a direct, non-reflective spoofed-link check at the URL-opening boundary,
+   including Telegram usernames, link parameters and Unicode/IDN cases.
+4. Evaluate encrypted local database storage after history recovery has a
+   stable lifecycle. SQLCipher/Keystore designs may be used as references, but
+   key loss, reinstall, migration, rollback and interrupted-write behavior need
+   Fork-Secure-specific tests.
+5. Design optional duress profiles and a false passcode only as a separately
+   reviewed safety feature. Actions need durable `pending/completed/failed`
+   state, safe retry behavior and authenticated activation bound to an approved
+   contact. Remote deletion or logout must never be presented as atomic unless
+   acknowledgements prove completion.
+
+Voice modification, disguised application variants and wrong-passcode camera
+capture remain research ideas only. They add significant performance, legal or
+maintenance risk and have no planned MVP milestone.
+
+### Integration groundwork
+
+- Keep secure protocol, Telegram transport, local-at-rest protection and
+  general privacy UI in separate packages with narrow adapter interfaces.
+- Keep the protected-chat outbound policy as the single fail-closed send
+  boundary; future privacy features may observe it but must not bypass it.
+- Keep recovery archives versioned and typed so a future storage provider can
+  upload only authenticated ciphertext. Provider credentials, scheduling and
+  retention do not belong in archive codecs.
+- Keep destructive safety actions outside ratchet/session transactions and
+  expose idempotent operations with persisted results.
+- Add every candidate through focused RED/GREEN tests and a feature flag before
+  exposing it in the private beta.
 
 ## MVP acceptance boundary
 

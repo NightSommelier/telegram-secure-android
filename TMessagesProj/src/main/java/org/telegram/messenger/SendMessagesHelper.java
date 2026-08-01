@@ -62,6 +62,9 @@ import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.secureoverlay.SecureMediaCache;
 import org.telegram.secureoverlay.SecureMediaCrypto;
+import org.telegram.secureoverlay.SecureSavedMessageCrypto;
+import org.telegram.secureoverlay.SecureSavedMessagesKeyStore;
+import org.telegram.secureoverlay.SecureSavedMessagesSettings;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.RequestDelegate;
@@ -132,6 +135,9 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public class SendMessagesHelper extends BaseController implements NotificationCenter.NotificationCenterDelegate {
+    /** Internal-only marker for the second pass that uploads ciphertext, never user input. */
+    private static final String FORK_SECURE_TRANSPORT_MIME =
+            "application/x-fork-secure-transport";
 
     public static final int MEDIA_TYPE_DICE = 11;
     public static final int MEDIA_TYPE_STORY = 12;
@@ -2093,11 +2099,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             long monoForumPeerId,
             MessageSuggestionParams suggestionParams,
             boolean invertMedia) {
+        final boolean savedMessages = peer == getAccountInstance().getUserConfig().getClientUserId()
+                && SecureSavedMessagesSettings.isSecureByDefault(
+                        ApplicationLoader.applicationContext, currentAccount);
         final SecureChatEngine secureChat;
         try {
-            secureChat = new SecureChatEngine(
+            secureChat = savedMessages ? null : new SecureChatEngine(
                     ApplicationLoader.applicationContext, currentAccount, peer);
-            if (!secureChat.isPaired()) {
+            if (!savedMessages && !secureChat.isPaired()) {
                 return false;
             }
         } catch (RuntimeException error) {
@@ -2183,7 +2192,22 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     throw new IllegalStateException(
                             "encrypted media staging path is not sendable");
                 }
-                String carrier = secureChat.encryptStickerManifest(manifest);
+                String carrier;
+                if (savedMessages) {
+                    SecureSavedMessagesKeyStore.KeyMaterial key;
+                    try {
+                        key = new SecureSavedMessagesKeyStore(
+                                ApplicationLoader.applicationContext).getOrCreate(currentAccount);
+                    } catch (Exception error) {
+                        throw new IllegalStateException("Saved Messages key unavailable", error);
+                    }
+                    carrier = SecureCarrierCodec.encode(
+                            SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                            SecureSavedMessageCrypto.encryptRecord(
+                                    SecureContentCodec.encodeSticker(manifest), key));
+                } else {
+                    carrier = secureChat.encryptStickerManifest(manifest);
+                }
 
                 ArrayList<String> paths = new ArrayList<>();
                 paths.add(encryptedFile.getAbsolutePath());
@@ -2226,10 +2250,25 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     private static void showForkSecureError(int stringId) {
-        AndroidUtilities.runOnUIThread(() -> Toast.makeText(
-                ApplicationLoader.applicationContext,
-                LocaleController.getString(stringId),
-                Toast.LENGTH_SHORT).show());
+        AndroidUtilities.runOnUIThread(() -> {
+            Context context = ApplicationLoader.applicationContext;
+            TextView message = new TextView(context);
+            message.setText(LocaleController.getString(stringId));
+            message.setTextColor(0xffffffff);
+            message.setTextSize(14);
+            message.setGravity(Gravity.CENTER);
+            message.setMaxWidth(AndroidUtilities.dp(320));
+            message.setPadding(
+                    AndroidUtilities.dp(16), AndroidUtilities.dp(10),
+                    AndroidUtilities.dp(16), AndroidUtilities.dp(10));
+            message.setBackgroundColor(0xdd303030);
+            Toast toast = new Toast(context);
+            toast.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0,
+                    AndroidUtilities.dp(72));
+            toast.setDuration(Toast.LENGTH_LONG);
+            toast.setView(message);
+            toast.show();
+        });
     }
 
     private boolean isForkSecureProtectedPeer(long peer) {
@@ -2275,10 +2314,35 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             long payStars,
             long monoForumPeerId,
             MessageSuggestionParams suggestionParams) {
-        if (!DialogObject.isUserDialog(dialogId)
-                || ("application/octet-stream".equals(mime)
+        final boolean savedMessages = isForkSecureSavedMessagesDialog(accountInstance, dialogId)
+                && SecureSavedMessagesSettings.isSecureByDefault(
+                        ApplicationLoader.applicationContext, accountInstance.getCurrentAccount());
+        if ((!DialogObject.isUserDialog(dialogId) && !savedMessages)
+                || (FORK_SECURE_TRANSPORT_MIME.equals(mime)
                         && SecureCarrierCodec.isMarked(caption))) {
             return false;
+        }
+        if (editingMessageObject != null
+                && editForkSecureAttachmentCaptionIfNeeded(
+                        accountInstance, editingMessageObject, caption, dialogId, savedMessages)) {
+            return true;
+        }
+        if (savedMessages) {
+            if (editingMessageObject != null) {
+                showForkSecureError(R.string.ForkSecureEditUnsupported);
+                return true;
+            }
+            ArrayList<ForkSecureAttachmentSource> sources = collectForkSecureDocumentSources(
+                    paths, originalPaths, uris, caption, mime);
+            if (sources.isEmpty()) {
+                showForkSecureError(R.string.ForkSecureAttachmentUnsupported);
+                return true;
+            }
+            prepareForkSecureAttachments(accountInstance, null, sources, dialogId, replyToMsg,
+                    replyToTopMsg, storyItem, quote, notify, scheduleDate, scheduleRepeatPeriod,
+                    quickReplyShortcut, quickReplyShortcutId, effectId, invertMedia, payStars,
+                    monoForumPeerId, suggestionParams);
+            return true;
         }
         final SecureChatEngine secureChat;
         try {
@@ -2364,6 +2428,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             MessageObject replyToTopMsg,
             TL_stories.StoryItem storyItem,
             ChatActivity.ReplyQuote quote,
+            boolean forceDocument,
             MessageObject editingMessageObject,
             boolean notify,
             int scheduleDate,
@@ -2375,8 +2440,55 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             long payStars,
             long monoForumPeerId,
             MessageSuggestionParams suggestionParams) {
-        if (!DialogObject.isUserDialog(dialogId)) {
+        final boolean savedMessages = isForkSecureSavedMessagesDialog(accountInstance, dialogId)
+                && SecureSavedMessagesSettings.isSecureByDefault(
+                        ApplicationLoader.applicationContext, accountInstance.getCurrentAccount());
+        if (!DialogObject.isUserDialog(dialogId) && !savedMessages) {
             return false;
+        }
+        if (editingMessageObject != null
+                && editForkSecureAttachmentCaptionIfNeeded(
+                        accountInstance,
+                        editingMessageObject,
+                        media.isEmpty() || media.get(0) == null
+                                ? null : media.get(0).caption,
+                        dialogId,
+                        savedMessages)) {
+            return true;
+        }
+        if (savedMessages) {
+            if (editingMessageObject != null) {
+                showForkSecureError(R.string.ForkSecureEditUnsupported);
+                return true;
+            }
+            ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
+            for (SendingMediaInfo info : media) {
+                if (info != null && info.ttl != 0) {
+                    showForkSecureError(R.string.ForkSecureEphemeralPhotoUnsupported);
+                    return true;
+                }
+                if (info == null || info.isLivePhoto || info.videoEditedInfo != null
+                        || info.searchImage != null || info.inlineResult != null) {
+                    showForkSecureError(R.string.ForkSecureAttachmentUnsupported);
+                    return true;
+                }
+                String sourcePath = !TextUtils.isEmpty(info.path) ? info.path : info.imagePath;
+                if (TextUtils.isEmpty(sourcePath) && info.uri == null) {
+                    showForkSecureError(R.string.ForkSecureAttachmentUnsupported);
+                    return true;
+                }
+                boolean securePhoto = !forceDocument
+                        && !info.isVideo
+                        && (!TextUtils.isEmpty(info.imagePath)
+                        || isForkSecureImagePath(sourcePath));
+                sources.add(new ForkSecureAttachmentSource(sourcePath, info.uri, info.caption,
+                        null, securePhoto));
+            }
+            prepareForkSecureAttachments(accountInstance, null, sources, dialogId, replyToMsg,
+                    replyToTopMsg, storyItem, quote, notify, scheduleDate, scheduleRepeatPeriod,
+                    quickReplyShortcut, quickReplyShortcutId, effectId, invertMedia, payStars,
+                    monoForumPeerId, suggestionParams);
+            return true;
         }
         final SecureChatEngine secureChat;
         try {
@@ -2409,7 +2521,6 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 return true;
             }
             if (info == null
-                    || info.isVideo
                     || info.isLivePhoto
                     || info.videoEditedInfo != null
                     || info.searchImage != null
@@ -2423,12 +2534,16 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 showForkSecureError(R.string.ForkSecureAttachmentUnsupported);
                 return true;
             }
+            boolean securePhoto = !forceDocument
+                    && !info.isVideo
+                    && (!TextUtils.isEmpty(info.imagePath)
+                    || isForkSecureImagePath(sourcePath));
             sources.add(new ForkSecureAttachmentSource(
                     sourcePath,
                     info.uri,
                     info.caption,
                     null,
-                    true));
+                    securePhoto));
         }
         prepareForkSecureAttachments(
                 accountInstance,
@@ -2452,6 +2567,129 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         return true;
     }
 
+    /**
+     * Edits the encrypted manifest caption without re-uploading the media bytes. Telegram stores
+     * the opaque document separately from the TGS1 message field, so changing only the encrypted
+     * carrier keeps the attachment identity, cache path, and album membership stable.
+     */
+    private static boolean editForkSecureAttachmentCaptionIfNeeded(
+            AccountInstance accountInstance,
+            MessageObject editingMessageObject,
+            String requestedCaption,
+            long dialogId,
+            boolean savedMessages) {
+        if (editingMessageObject == null
+                || editingMessageObject.messageOwner == null
+                || !SecureCarrierCodec.isMarked(editingMessageObject.messageOwner.message)) {
+            return false;
+        }
+        final String oldCarrier = editingMessageObject.messageOwner.message;
+        final String caption = requestedCaption != null
+                ? requestedCaption
+                : editingMessageObject.editingMessage == null
+                        ? "" : editingMessageObject.editingMessage.toString();
+        final boolean above = editingMessageObject.messageOwner.invert_media;
+        final int messageId = editingMessageObject.getId();
+        Utilities.globalQueue.postRunnable(() -> {
+            SecureChatEngine secureChat = null;
+            SecureChatEngine.AttachmentEditTransport editTransport = null;
+            try {
+                SecureContentCodec.Attachment original;
+                if (savedMessages) {
+                    SecureSavedMessagesKeyStore.KeyMaterial key =
+                            new SecureSavedMessagesKeyStore(
+                                    ApplicationLoader.applicationContext).getOrCreate(
+                                    accountInstance.getCurrentAccount());
+                    SecureCarrierCodec.Decoded carrier = SecureCarrierCodec.decode(oldCarrier);
+                    if (carrier == null
+                            || carrier.type != SecureCarrierCodec.TYPE_SAVED_MESSAGE) {
+                        throw new IllegalArgumentException(
+                                "secure Saved Messages carrier is not an attachment");
+                    }
+                    SecureContentCodec.Decoded content = SecureContentCodec.decode(
+                            SecureSavedMessageCrypto.decryptRecord(carrier.payload, key));
+                    if (content.attachment == null) {
+                        throw new IllegalArgumentException(
+                                "secure Saved Messages carrier is not an attachment");
+                    }
+                    original = content.attachment;
+                } else {
+                    if (!editingMessageObject.isOutOwner()) {
+                        throw new IllegalArgumentException(
+                                "only the author can edit a secure attachment caption");
+                    }
+                    secureChat = new SecureChatEngine(
+                            ApplicationLoader.applicationContext,
+                            accountInstance.getCurrentAccount(),
+                            dialogId);
+                    if (secureChat.getMode() != SecureChatEngine.Mode.PROTECTED) {
+                        throw new IllegalArgumentException(
+                                "secure attachment editing requires a paired chat");
+                    }
+                    original = secureChat.getOutgoingAttachment(oldCarrier);
+                }
+                SecureContentCodec.Attachment edited = SecureContentCodec.withCaption(
+                        original, caption, above);
+                if (TextUtils.equals(
+                                SecureContentCodec.displayCaption(original.caption), caption)
+                        && SecureContentCodec.isCaptionAbove(original.caption) == above) {
+                    return;
+                }
+
+                final String newCarrier;
+                if (savedMessages) {
+                    SecureSavedMessagesKeyStore.KeyMaterial key =
+                            new SecureSavedMessagesKeyStore(
+                                    ApplicationLoader.applicationContext).getOrCreate(
+                                    accountInstance.getCurrentAccount());
+                    newCarrier = SecureCarrierCodec.encode(
+                            SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                            SecureSavedMessageCrypto.encryptRecord(
+                                    SecureContentCodec.encodeAttachment(edited), key));
+                } else {
+                    editTransport = secureChat.encryptAttachmentForEdit(edited, 1024, 4096);
+                    newCarrier = editTransport.attachmentCarrier;
+                }
+                TLRPC.TL_messages_editMessage request =
+                        new TLRPC.TL_messages_editMessage();
+                request.peer = accountInstance.getMessagesController()
+                        .getInputPeer(dialogId);
+                request.id = messageId;
+                request.message = newCarrier;
+                request.flags |= 2048;
+                request.no_webpage = true;
+                SecureChatEngine finalSecureChat = secureChat;
+                SecureChatEngine.AttachmentEditTransport finalEditTransport = editTransport;
+                accountInstance.getConnectionsManager().sendRequest(request, (response, error) -> {
+                    if (error == null) {
+                        accountInstance.getMessagesController()
+                                .processUpdates((TLRPC.Updates) response, false);
+                    } else {
+                        if (finalSecureChat != null && finalEditTransport != null) {
+                            try {
+                                finalSecureChat.rollbackAttachmentEdit(finalEditTransport);
+                            } catch (RuntimeException rollbackError) {
+                                FileLog.e(rollbackError);
+                            }
+                        }
+                        showForkSecureError(R.string.ForkSecureEditFailed);
+                    }
+                });
+            } catch (Exception error) {
+                if (secureChat != null && editTransport != null) {
+                    try {
+                        secureChat.rollbackAttachmentEdit(editTransport);
+                    } catch (RuntimeException rollbackError) {
+                        error.addSuppressed(rollbackError);
+                    }
+                }
+                FileLog.e(error);
+                showForkSecureError(R.string.ForkSecureEditFailed);
+            }
+        });
+        return true;
+    }
+
     private static void prepareForkSecureAttachments(
             AccountInstance accountInstance,
             SecureChatEngine secureChat,
@@ -2470,8 +2708,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             boolean invertMedia,
             long payStars,
             long monoForumPeerId,
-            MessageSuggestionParams suggestionParams) {
+        MessageSuggestionParams suggestionParams) {
         Utilities.globalQueue.postRunnable(() -> {
+            ArrayList<String> encryptedPaths = new ArrayList<>();
+            ArrayList<String> opaqueOriginalPaths = new ArrayList<>();
+            ArrayList<String> carriers = new ArrayList<>();
+            String currentAlbumId = null;
             for (int i = 0; i < sources.size(); i++) {
                 ForkSecureResolvedSource resolved = null;
                 try {
@@ -2515,7 +2757,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                     encryptedFile,
                                     resolved.fileName,
                                     mimeType,
-                                    resolved.caption,
+                                    SecureContentCodec.encodeCaption(
+                                            resolved.caption,
+                                            invertMedia,
+                                            sources.size() > 1
+                                                    ? (currentAlbumId == null
+                                                            || i % 10 == 0
+                                                            ? (currentAlbumId = newForkSecureAlbumId())
+                                                            : currentAlbumId)
+                                                    : null),
                                     width,
                                     height,
                                     resolved.photo);
@@ -2525,52 +2775,35 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 "secure attachment metadata is too large");
                     }
                     SecureMediaCache.touchAndPrune(
-                            encryptedFile, 32, 256L * 1024L * 1024L);
+                            encryptedFile, 32, 768L * 1024L * 1024L);
                     if (AndroidUtilities.isInternalUri(Uri.fromFile(encryptedFile))) {
                         encryptedFile.delete();
                         throw new IllegalStateException(
                                 "encrypted attachment staging path is not sendable");
                     }
-                    String carrier = secureChat.encryptAttachmentManifest(manifest);
-                    if (carrier.length() > 1024) {
-                        encryptedFile.delete();
-                        throw new IllegalArgumentException(
-                                "secure attachment manifest exceeds Telegram caption limit");
+                    String carrier;
+                    if (secureChat == null) {
+                        SecureSavedMessagesKeyStore.KeyMaterial key;
+                        try {
+                            key = new SecureSavedMessagesKeyStore(
+                                    ApplicationLoader.applicationContext).getOrCreate(
+                                    accountInstance.getCurrentAccount());
+                        } catch (Exception error) {
+                            throw new IllegalStateException("Saved Messages key unavailable", error);
+                        }
+                        carrier = SecureCarrierCodec.encode(
+                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                                SecureSavedMessageCrypto.encryptRecord(
+                                        SecureContentCodec.encodeAttachment(manifest), key));
+                    } else {
+                        SecureChatEngine.AttachmentTransport transport =
+                                secureChat.encryptAttachmentForTransport(manifest, 1024, 4096);
+                        carrier = transport.attachmentCarrier;
                     }
-                    ArrayList<String> encryptedPaths = new ArrayList<>();
                     encryptedPaths.add(encryptedFile.getAbsolutePath());
-                    ArrayList<String> opaqueOriginalPaths = new ArrayList<>();
-                    opaqueOriginalPaths.add(
-                            encryptedFile.getAbsolutePath()
-                                    + '.'
-                                    + Long.toUnsignedString(
-                                            Utilities.random.nextLong()));
-                    final int sourceIndex = i;
-                    AndroidUtilities.runOnUIThread(() -> prepareSendingDocuments(
-                            accountInstance,
-                            encryptedPaths,
-                            opaqueOriginalPaths,
-                            null,
-                            carrier,
-                            null,
-                            "application/octet-stream",
-                            dialogId,
-                            replyToMsg,
-                            replyToTopMsg,
-                            storyItem,
-                            quote,
-                            null,
-                            notify,
-                            scheduleDate,
-                            scheduleRepeatPeriod,
-                            null,
-                            quickReplyShortcut,
-                            quickReplyShortcutId,
-                            sourceIndex == 0 ? effectId : 0,
-                            invertMedia,
-                            payStars,
-                            monoForumPeerId,
-                            suggestionParams));
+                    opaqueOriginalPaths.add(encryptedFile.getAbsolutePath() + '.'
+                            + Long.toUnsignedString(Utilities.random.nextLong()));
+                    carriers.add(carrier);
                 } catch (RuntimeException error) {
                     FileLog.e(error);
                     showForkSecureError(error instanceof IllegalArgumentException
@@ -2583,7 +2816,83 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     }
                 }
             }
+            if (!encryptedPaths.isEmpty()) {
+                AndroidUtilities.runOnUIThread(() -> prepareForkSecureDocumentBatch(
+                        accountInstance, encryptedPaths, opaqueOriginalPaths, carriers, dialogId,
+                        replyToMsg, replyToTopMsg, storyItem, quote, notify, scheduleDate,
+                        scheduleRepeatPeriod, quickReplyShortcut, quickReplyShortcutId, effectId,
+                        invertMedia, payStars, monoForumPeerId, suggestionParams));
+            }
         });
+    }
+
+    @UiThread
+    private static void prepareForkSecureDocumentBatch(
+            AccountInstance accountInstance, ArrayList<String> encryptedPaths,
+            ArrayList<String> opaqueOriginalPaths, ArrayList<String> carriers, long dialogId,
+            MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem,
+            ChatActivity.ReplyQuote quote, boolean notify, int scheduleDate,
+            int scheduleRepeatPeriod, String quickReplyShortcut, int quickReplyShortcutId,
+            long effectId, boolean invertMedia, long payStars, long monoForumPeerId,
+            MessageSuggestionParams suggestionParams) {
+        Utilities.globalQueue.postRunnable(() -> {
+            long[] groupId = new long[1];
+            int mediaCount = 0;
+            Integer[] docType = new Integer[1];
+            int error = 0;
+            for (int i = 0; i < encryptedPaths.size(); i++) {
+                if (encryptedPaths.size() > 1 && (mediaCount == 0 || mediaCount == 10)) {
+                    if (groupId[0] != 0) {
+                        finishGroup(accountInstance, groupId[0], scheduleDate);
+                    }
+                    groupId[0] = Utilities.random.nextLong();
+                    if (groupId[0] == 0) groupId[0] = 1;
+                    mediaCount = 0;
+                }
+                mediaCount++;
+                error = prepareSendingDocumentInternal(
+                        accountInstance, encryptedPaths.get(i), opaqueOriginalPaths.get(i), null,
+                        FORK_SECURE_TRANSPORT_MIME, dialogId, replyToMsg, replyToTopMsg,
+                        storyItem, quote, null, null, groupId,
+                        mediaCount == 10 || i == encryptedPaths.size() - 1, carriers.get(i),
+                        notify, scheduleDate, scheduleRepeatPeriod, docType, true,
+                        quickReplyShortcut, quickReplyShortcutId, i == 0 ? effectId : 0,
+                        invertMedia, payStars, monoForumPeerId, suggestionParams, null, -1);
+            }
+            if (groupId[0] != 0) {
+                finishGroup(accountInstance, groupId[0], scheduleDate);
+            }
+            handleError(error, accountInstance);
+        });
+    }
+
+    private static boolean isForkSecureSavedMessagesDialog(
+            AccountInstance accountInstance, long dialogId) {
+        return accountInstance != null
+                && dialogId == accountInstance.getUserConfig().getClientUserId();
+    }
+
+    private static ArrayList<ForkSecureAttachmentSource> collectForkSecureDocumentSources(
+            ArrayList<String> paths, ArrayList<String> originalPaths, ArrayList<Uri> uris,
+            String caption, String mime) {
+        ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
+        if (paths != null) {
+            for (int i = 0; i < paths.size(); i++) {
+                if (!TextUtils.isEmpty(paths.get(i))) {
+                    sources.add(new ForkSecureAttachmentSource(paths.get(i), null,
+                            i == 0 ? caption : "", mime, false));
+                }
+            }
+        }
+        if (uris != null) {
+            for (int i = 0; i < uris.size(); i++) {
+                if (uris.get(i) != null) {
+                    sources.add(new ForkSecureAttachmentSource(null, uris.get(i),
+                            sources.isEmpty() && i == 0 ? caption : "", mime, false));
+                }
+            }
+        }
+        return sources;
     }
 
     private static ForkSecureResolvedSource resolveForkSecureSource(
@@ -2701,6 +3010,25 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             safe.setLength(safe.length() - 1);
         }
         return safe.toString();
+    }
+
+    private static boolean isForkSecureImagePath(String path) {
+        if (TextUtils.isEmpty(path)) {
+            return false;
+        }
+        String extension = MimeTypeMap.getFileExtensionFromUrl(Uri.encode(path));
+        if (TextUtils.isEmpty(extension)) {
+            return false;
+        }
+        String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(
+                extension.toLowerCase(java.util.Locale.ROOT));
+        return !TextUtils.isEmpty(mime) && mime.startsWith("image/");
+    }
+
+    private static String newForkSecureAlbumId() {
+        byte[] value = new byte[16];
+        Utilities.random.nextBytes(value);
+        return Utilities.bytesToHex(value);
     }
 
     private static String safeForkSecureMime(
@@ -8395,6 +8723,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 } else {
                                     updateMediaPaths(msgObj, message, message.id, originalPath, false, message.params);
                                 }
+                                // Opaque encrypted documents may be acknowledged without a
+                                // server-side grouped_id. Preserve the locally assigned secure
+                                // album id before persisting the server message replacement.
+                                if (message.grouped_id == 0
+                                        && newMsgObj.grouped_id != 0
+                                        && msgObj.isForkSecureCarrier()) {
+                                    message.grouped_id = newMsgObj.grouped_id;
+                                    message.flags |= 131072;
+                                }
                                 existFlags = msgObj.getMediaExistanceFlags();
                                 newMsgObj.id = message.id;
                                 newMsgObj.quick_reply_shortcut_id = message.quick_reply_shortcut_id;
@@ -10036,7 +10373,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             document.id = 0;
             document.date = accountInstance.getConnectionsManager().getCurrentTime();
             TLRPC.TL_documentAttributeFilename fileName = new TLRPC.TL_documentAttributeFilename();
-            fileName.file_name = name;
+            fileName.file_name = FORK_SECURE_TRANSPORT_MIME.equals(mime)
+                    ? "file.bin" : name;
             document.file_reference = new byte[0];
             document.attributes.add(fileName);
             document.size = f.length();
@@ -10074,6 +10412,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         break;
                 }
             } else {
+                document.mime_type = "application/octet-stream";
+            }
+            // Do not rely only on the randomized staging path: this is the final Telegram
+            // document metadata boundary. The authenticated manifest carries the real name.
+            if (FORK_SECURE_TRANSPORT_MIME.equals(mime)) {
                 document.mime_type = "application/octet-stream";
             }
             if (!forceDocument && document.mime_type.equals("image/gif") && (editingMessageObject == null || editingMessageObject.getGroupIdForUse() == 0)) {
@@ -11361,6 +11704,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         replyToTopMsg,
                         storyItem,
                         quote,
+                        forceDocument,
                         editingMessageObject,
                         notify,
                         scheduleDate,

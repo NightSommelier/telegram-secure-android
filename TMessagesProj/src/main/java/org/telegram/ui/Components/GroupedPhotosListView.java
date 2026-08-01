@@ -68,6 +68,7 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
         long getAvatarsDialogId();
         int getSlideshowMessageId();
         ArrayList<ImageLocation> getImagesArrLocations();
+        ArrayList<ImageLocation> getSecureImagesArrLocations();
         ArrayList<MessageObject> getImagesArr();
         List<TL_iv.PageBlock> getPageBlockArr();
         Object getParentObject();
@@ -107,6 +108,7 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
 
         int currentIndex = delegate.getCurrentIndex();
         ArrayList<ImageLocation> imagesArrLocations = delegate.getImagesArrLocations();
+        ArrayList<ImageLocation> secureImagesArrLocations = delegate.getSecureImagesArrLocations();
         ArrayList<MessageObject> imagesArr = delegate.getImagesArr();
         List<TL_iv.PageBlock> pageBlockArr = delegate.getPageBlockArr();
         int slideshowMessageId = delegate.getSlideshowMessageId();
@@ -157,6 +159,13 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
                     }
                 }
             }
+        } else if (secureImagesArrLocations != null && !secureImagesArrLocations.isEmpty()) {
+            if (currentIndex >= secureImagesArrLocations.size()) {
+                currentIndex = secureImagesArrLocations.size() - 1;
+            }
+            currentObject = secureImagesArrLocations.get(currentIndex);
+            newCount = secureImagesArrLocations.size();
+            hasPhotos = newCount > 1;
         } else if (pageBlockArr != null && !pageBlockArr.isEmpty()) {
             TL_iv.PageBlock pageBlock = pageBlockArr.get(currentIndex);
             currentObject = pageBlock;
@@ -311,6 +320,12 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
                         }
                     }
                 }
+            } else if (secureImagesArrLocations != null && !secureImagesArrLocations.isEmpty()) {
+                currentObjects.addAll(secureImagesArrLocations);
+                currentPhotos.addAll(secureImagesArrLocations);
+                currentImage = currentIndex;
+                animateToItem = -1;
+                animateToItemFast = false;
             } else if (pageBlockArr != null && !pageBlockArr.isEmpty()) {
                 if (currentGroupId != 0) {
                     for (int a = currentIndex, size = pageBlockArr.size(); a < size; a++) {
@@ -447,6 +462,9 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
                         parent = currentObjects.get(a);
                     } else if (currentObjects.get(0) instanceof TL_iv.PageBlock) {
                         parent = delegate.getParentObject();
+                    } else if (delegate.getSecureImagesArrLocations() != null
+                            && !delegate.getSecureImagesArrLocations().isEmpty()) {
+                        parent = "fork_secure_viewer";
                     } else {
                         parent = "avatar_" + delegate.getAvatarsDialogId();
                     }
@@ -469,6 +487,9 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
                         parent = currentObjects.get(a);
                     } else if (currentObjects.get(0) instanceof TL_iv.PageBlock) {
                         parent = delegate.getParentObject();
+                    } else if (delegate.getSecureImagesArrLocations() != null
+                            && !delegate.getSecureImagesArrLocations().isEmpty()) {
+                        parent = "fork_secure_viewer";
                     } else {
                         parent = "avatar_" + delegate.getAvatarsDialogId();
                     }
@@ -503,6 +524,7 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
     public boolean onSingleTapUp(MotionEvent e) {
         int currentIndex = delegate.getCurrentIndex();
         ArrayList<ImageLocation> imagesArrLocations = delegate.getImagesArrLocations();
+        ArrayList<ImageLocation> secureImagesArrLocations = delegate.getSecureImagesArrLocations();
         ArrayList<MessageObject> imagesArr = delegate.getImagesArr();
         List<TL_iv.PageBlock> pageBlockArr = delegate.getPageBlockArr();
 
@@ -542,6 +564,15 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
                     moveLineProgress = 1.0f;
                     animateAllLine = true;
                     delegate.setCurrentIndex(idx);
+                } else if (secureImagesArrLocations != null && !secureImagesArrLocations.isEmpty()) {
+                    ImageLocation location = (ImageLocation) currentObjects.get(num);
+                    int idx = secureImagesArrLocations.indexOf(location);
+                    if (currentIndex == idx) {
+                        return true;
+                    }
+                    moveLineProgress = 1.0f;
+                    animateAllLine = true;
+                    delegate.setCurrentIndex(idx);
                 }
                 break;
             }
@@ -566,6 +597,7 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
 
         int currentIndex = delegate.getCurrentIndex();
         ArrayList<ImageLocation> imagesArrLocations = delegate.getImagesArrLocations();
+        ArrayList<ImageLocation> secureImagesArrLocations = delegate.getSecureImagesArrLocations();
         ArrayList<MessageObject> imagesArr = delegate.getImagesArr();
         List<TL_iv.PageBlock> pageBlockArr = delegate.getPageBlockArr();
 
@@ -581,6 +613,9 @@ public class GroupedPhotosListView extends View implements GestureDetector.OnGes
             } else if (imagesArrLocations != null && !imagesArrLocations.isEmpty()) {
                 ImageLocation location = (ImageLocation) photo;
                 nextPhoto = imagesArrLocations.indexOf(location);
+            } else if (secureImagesArrLocations != null && !secureImagesArrLocations.isEmpty()) {
+                ImageLocation location = (ImageLocation) photo;
+                nextPhoto = secureImagesArrLocations.indexOf(location);
             }
             if (nextPhoto >= 0) {
                 ignoreChanges = true;

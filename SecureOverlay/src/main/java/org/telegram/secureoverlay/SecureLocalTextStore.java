@@ -63,6 +63,13 @@ final class SecureLocalTextStore {
         return load(INCOMING_PREFIX, carrier);
     }
 
+    void forgetOutgoing(String carrier)
+            throws KeystoreEncryptedBlobStore.StateStoreException {
+        String storageKey = key(OUTGOING_PREFIX, account, peerUserId, carrier);
+        blobs.delete(storageKey);
+        evictDisplayCopies(storageKey);
+    }
+
     private void remember(String prefix, String carrier, String plaintext)
             throws KeystoreEncryptedBlobStore.StateStoreException {
         SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);

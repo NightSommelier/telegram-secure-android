@@ -2,7 +2,10 @@ package org.telegram.secureoverlay;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /** Per-account, per-peer secure-mode gate. No message is encrypted unless paired. */
 public final class SecureChatState {
@@ -15,6 +18,7 @@ public final class SecureChatState {
     private static final String PENDING_MESSAGE_PREFIX = "pending-message.";
     private static final String PENDING_KIND_PREFIX = "pending-kind.";
     private static final String LAST_PAIRING_MESSAGE_PREFIX = "last-pairing-message.";
+    private static final String LAST_READY_MESSAGE_PREFIX = "last-ready-message.";
     private static final String IDENTITY_EPOCH = "identity-epoch";
     private final SharedPreferences preferences;
 
@@ -50,6 +54,25 @@ public final class SecureChatState {
 
     public SecureChatState(Context context) {
         preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    static void clearForMissingKeystore(Context context) {
+        if (!context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .commit()) {
+            throw new IllegalStateException(
+                    "failed to clear orphaned secure chat state");
+        }
+        SecureLocalTextStore.evictDisplayPrefixes(
+                SecureLocalTextStore.OUTGOING_PREFIX,
+                SecureLocalTextStore.INCOMING_PREFIX);
+    }
+
+    static boolean hasStoredState(Context context) {
+        return !context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getAll()
+                .isEmpty();
     }
 
     public boolean isPaired(int account, long peerUserId) {
@@ -91,6 +114,29 @@ public final class SecureChatState {
         return preferences.getInt(key(LAST_PAIRING_MESSAGE_PREFIX, account, peerUserId), 0);
     }
 
+    public boolean shouldAcknowledgeSessionReady(
+            int account, long peerUserId, int messageId) {
+        requirePeer(peerUserId);
+        return messageId > preferences.getInt(
+                key(LAST_READY_MESSAGE_PREFIX, account, peerUserId), 0);
+    }
+
+    public void recordSessionReadyAcknowledgement(
+            int account, long peerUserId, int messageId) {
+        requirePeer(peerUserId);
+        if (messageId <= 0) {
+            throw new IllegalArgumentException(
+                    "session-ready message id must be positive");
+        }
+        String stateKey = key(LAST_READY_MESSAGE_PREFIX, account, peerUserId);
+        int current = preferences.getInt(stateKey, 0);
+        if (messageId > current
+                && !preferences.edit().putInt(stateKey, messageId).commit()) {
+            throw new IllegalStateException(
+                    "failed to persist session-ready acknowledgement");
+        }
+    }
+
     public long getIdentityEpoch() {
         return preferences.getLong(IDENTITY_EPOCH, 0);
     }
@@ -114,6 +160,62 @@ public final class SecureChatState {
         int paused = countBooleanKeys(PAUSED_PREFIX + accountSuffix);
         int identityPending = countBooleanKeys(IDENTITY_PENDING_PREFIX + accountSuffix);
         return new Summary(paired, waiting, paused, identityPending);
+    }
+
+    /**
+     * Returns the protected-contact roster needed to keep old pairing carriers from replaying
+     * after history recovery. Active modes are intentionally not exported.
+     */
+    List<SecureHistoryBackupCodec.PeerRecord> getRecoveryPeers(int account) {
+        if (account < 0) {
+            throw new IllegalArgumentException("account must not be negative");
+        }
+        TreeMap<Long, Integer> peers = new TreeMap<>();
+        collectPeers(peers, account, PAIRED_PREFIX);
+        collectPeers(peers, account, WAITING_PREFIX);
+        collectPeers(peers, account, PAUSED_PREFIX);
+        collectPeers(peers, account, IDENTITY_PENDING_PREFIX);
+        collectPeers(peers, account, LAST_PAIRING_MESSAGE_PREFIX);
+        List<SecureHistoryBackupCodec.PeerRecord> records =
+                new ArrayList<>(peers.size());
+        for (Map.Entry<Long, Integer> peer : peers.entrySet()) {
+            records.add(new SecureHistoryBackupCodec.PeerRecord(
+                    peer.getKey(), peer.getValue()));
+        }
+        return records;
+    }
+
+    /**
+     * Replaces every secure-chat gate with a paused roster in one preferences transaction.
+     *
+     * <p>No recovered contact becomes trusted or send-capable until a new pairing succeeds.</p>
+     */
+    void restorePausedPeers(
+            int account,
+            long generation,
+            List<SecureHistoryBackupCodec.PeerRecord> peers) {
+        if (account < 0 || generation <= 0 || peers == null) {
+            throw new IllegalArgumentException("invalid secure history chat state");
+        }
+        SharedPreferences.Editor editor = preferences.edit().clear()
+                .putLong(IDENTITY_EPOCH, generation - 1);
+        long previousPeer = 0;
+        for (SecureHistoryBackupCodec.PeerRecord peer : peers) {
+            if (peer == null || peer.peerUserId <= previousPeer) {
+                throw new IllegalArgumentException(
+                        "non-canonical secure history peer state");
+            }
+            editor.putBoolean(key(PAUSED_PREFIX, account, peer.peerUserId), true);
+            if (peer.lastPairingMessageId > 0) {
+                editor.putInt(
+                        key(LAST_PAIRING_MESSAGE_PREFIX, account, peer.peerUserId),
+                        peer.lastPairingMessageId);
+            }
+            previousPeer = peer.peerUserId;
+        }
+        if (!editor.commit()) {
+            throw new IllegalStateException("failed to restore secure history chat state");
+        }
     }
 
     public void markWaiting(int account, long peerUserId) {
@@ -263,6 +365,25 @@ public final class SecureChatState {
             }
         }
         return count;
+    }
+
+    private void collectPeers(
+            TreeMap<Long, Integer> peers, int account, String recordPrefix) {
+        String prefix = recordPrefix + account + '.';
+        for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
+            if (!entry.getKey().startsWith(prefix)) {
+                continue;
+            }
+            String suffix = entry.getKey().substring(prefix.length());
+            try {
+                long peerUserId = Long.parseLong(suffix);
+                requirePeer(peerUserId);
+                int lastMessageId = getLastPairingMessageId(account, peerUserId);
+                peers.merge(peerUserId, lastMessageId, Math::max);
+            } catch (NumberFormatException error) {
+                throw new IllegalStateException("invalid secure chat state key", error);
+            }
+        }
     }
 
     private static String key(String prefix, int account, long peerUserId) {

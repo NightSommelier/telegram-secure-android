@@ -2020,7 +2020,11 @@ public class ChatActionCell extends BaseCell implements DownloadController.FileD
         CharSequence text = null;
         MessageObject messageObject = currentMessageObject;
         if (messageObject != null) {
-            if (messageObject.isExpiredStory()) {
+            if (messageObject.forkSecureService
+                    && !TextUtils.isEmpty(
+                            messageObject.forkSecureServiceText)) {
+                text = messageObject.forkSecureServiceText;
+            } else if (messageObject.isExpiredStory()) {
                 long dialogId = messageObject.messageOwner.media.user_id;
                 if (dialogId != UserConfig.getInstance(currentAccount).getClientUserId()) {
                     text = StoriesUtilities.createExpiredStoryString(true, R.string.ExpiredStoryMention);
