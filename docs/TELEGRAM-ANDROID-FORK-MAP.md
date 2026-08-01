@@ -164,6 +164,12 @@ cells without recalculating the grid after every file. The sender records video 
 building the manifest, so new albums do not wait for a decrypted file merely to discover their
 aspect ratios.
 
+Attachment manifests allow positive dimensions for authenticated `video/*` entries, including
+`video/webm`; ordinary documents must keep both dimensions zero. Legacy video manifests with no
+dimensions remain readable and fall back to dimensions discovered from the local plaintext file.
+The secure viewer uses the local authenticated path, so WebM does not depend on Telegram's
+server-side document MIME classification.
+
 ### Telegram visual/performance settings
 
 Secure UI must follow existing Telegram controls instead of adding a parallel

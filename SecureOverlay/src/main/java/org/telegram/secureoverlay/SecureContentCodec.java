@@ -420,6 +420,14 @@ public final class SecureContentCodec {
             byte[] mimeType,
             byte[] caption,
             boolean photo) {
+        String decodedMimeType = mimeType == null
+                ? "" : new String(mimeType, StandardCharsets.US_ASCII);
+        boolean video = !photo && decodedMimeType.startsWith("video/");
+        boolean dimensionsPresent = width != 0 || height != 0;
+        boolean invalidDimensions = photo
+                ? width <= 0 || width > 16384 || height <= 0 || height > 16384
+                : dimensionsPresent && (!video
+                        || width <= 0 || width > 16384 || height <= 0 || height > 16384);
         if (mediaId == null
                 || mediaId.length != 16
                 || key == null
@@ -439,9 +447,7 @@ public final class SecureContentCodec {
                 || mimeType.length > 127
                 || caption == null
                 || caption.length > 256
-                || (photo && (width <= 0 || width > 16384
-                        || height <= 0 || height > 16384))
-                || (!photo && (width != 0 || height != 0))) {
+                || invalidDimensions) {
             throw new IllegalArgumentException("invalid secure attachment manifest");
         }
         String decodedFileName = strictUtf8(fileName);
@@ -452,7 +458,6 @@ public final class SecureContentCodec {
                 || containsControl(decodedFileName)) {
             throw new IllegalArgumentException("unsafe secure attachment name");
         }
-        String decodedMimeType = new String(mimeType, StandardCharsets.US_ASCII);
         if (!decodedMimeType.matches(
                 "[a-z0-9][a-z0-9.+-]{0,62}/[a-z0-9][a-z0-9.+-]{0,62}")) {
             throw new IllegalArgumentException("invalid secure attachment MIME type");

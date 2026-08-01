@@ -62,6 +62,104 @@ public final class SecureContentCodecTest {
     }
 
     @Test
+    public void videoAttachmentMetadataRoundTripsWithDimensions() {
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "clip.mp4",
+                "video/mp4",
+                "",
+                1920,
+                1080,
+                false);
+
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(
+                SecureContentCodec.encodeAttachment(attachment));
+
+        assertEquals(SecureContentCodec.TYPE_FILE, decoded.type);
+        assertEquals("video/mp4", decoded.attachment.mimeType);
+        assertEquals(1920, decoded.attachment.width);
+        assertEquals(1080, decoded.attachment.height);
+        assertFalse(decoded.attachment.photo);
+    }
+
+    @Test
+    public void webmVideoManifestIsSupported() {
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "clip.webm",
+                "video/webm",
+                "",
+                1280,
+                720,
+                false);
+
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(
+                SecureContentCodec.encodeAttachment(attachment));
+
+        assertEquals(SecureContentCodec.TYPE_FILE, decoded.type);
+        assertEquals("video/webm", decoded.attachment.mimeType);
+        assertEquals(1280, decoded.attachment.width);
+        assertEquals(720, decoded.attachment.height);
+    }
+
+    @Test
+    public void genericFileCannotClaimVisualDimensions() {
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "data.bin",
+                "application/octet-stream",
+                "",
+                1920,
+                1080,
+                false);
+        try {
+            SecureContentCodec.encodeAttachment(attachment);
+            fail("expected generic file dimensions rejection");
+        } catch (IllegalArgumentException expected) {
+            // Dimensions are reserved for photos and authenticated video manifests.
+        }
+    }
+
+    @Test
+    public void legacyVideoWithoutDimensionsRemainsReadable() {
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "legacy.mp4",
+                "video/mp4",
+                "",
+                0,
+                0,
+                false);
+
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(
+                SecureContentCodec.encodeAttachment(attachment));
+
+        assertEquals(SecureContentCodec.TYPE_FILE, decoded.type);
+        assertEquals(0, decoded.attachment.width);
+        assertEquals(0, decoded.attachment.height);
+    }
+
+    @Test
     public void encryptedCaptionCarriesAlbumIdWithoutChangingDisplayedCaption() {
         String albumId = "00112233445566778899aabbccddeeff";
         String encoded = SecureContentCodec.encodeCaption("опис", true, albumId);
