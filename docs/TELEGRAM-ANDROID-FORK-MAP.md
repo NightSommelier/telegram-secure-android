@@ -96,6 +96,30 @@ If entering a chat still causes a visible delay, profile `MediaDataController`,
 `SecureMediaIndex`, and `PhotoViewer` binding first, then prewarm only the
 authenticated local paths that are actually visible.
 
+### Latest runtime evidence
+
+On 2026-08-01, CPH (`636567fd`) reproduced a remaining delay only when entering
+the chat after leaving it; switching inside an already-open album was responsive.
+The current code path calls `ChatActivity.applySecureTextOverlay()` for the
+loaded batch. After a process restart, `SecureLocalTextStore.displayCache` is
+cold, so the first per-message reads may cross the Keystore-backed
+`SharedPreferences` store. This is a working hypothesis, not yet a measured
+root cause. The next safe step is timing the first/second overlay pass and
+separately timing `SecureMediaIndex.find`, manifest restore, and thumbnail bind
+before adding a worker-thread preload or changing cache semantics.
+
+### Caption editing boundary
+
+Long-press/message-menu editing of an authenticated photo or video is handled by
+`SendMessagesHelper.editForkSecureAttachmentCaptionIfNeeded()`. It decrypts the
+old manifest, changes only the authenticated caption/above-below marker, creates
+a new carrier, and calls `messages.editMessage`; media bytes, local path, and
+album identity stay unchanged. Only the author may edit a paired 1:1 message.
+The same helper has a separate Saved Messages branch. Fullscreen viewer caption
+editing uses `PhotoViewer.PhotoViewerProvider.onApplyCaption()` instead, so its
+secure provider must be tested/wired separately before claiming that editing from
+the viewer is persistent.
+
 UI-точки медіа:
 
 - `MessageObject.java` — класифікація виду і розмірів, grouped album state;
