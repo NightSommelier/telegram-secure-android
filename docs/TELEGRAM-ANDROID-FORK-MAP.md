@@ -158,11 +158,22 @@ Album layout has an explicit metadata barrier. `ChatActivity` first remembers ea
 original Telegram `grouped_id`, keeps that native document group while any member is still
 pending, and only then creates the secure visual group. A secure album is eligible only when all
 members have the same authenticated album id, a positive width/height, and a photo or video
-manifest. The member list is sorted by message id and `GroupedMessages.calculate()` runs only
-when that ordered set changes. Later ciphertext/plaintext completion therefore fills existing
-cells without recalculating the grid after every file. The sender records video dimensions while
-building the manifest, so new albums do not wait for a decrypted file merely to discover their
-aspect ratios.
+manifest. Members retain the chat-timeline order (not transient local/server message-id order),
+and protected albums larger than four items use balanced rows of at most three cells. Later
+ciphertext/plaintext completion fills existing cells without recalculating the grid after every
+file. The sender records video dimensions while building the manifest, so new albums do not wait
+for a decrypted file merely to discover their aspect ratios.
+
+### Deferred album ACK regression
+
+On 2026-08-02, a fresh outgoing nine-item album could still show misplaced cells during the
+short interval in which Telegram replaces local messages with server acknowledgements. Leaving
+and reopening the chat rebuilt the same album as a correct 3×3 grid, so the media manifest and
+stored order are intact; the remaining fault is an in-memory ACK/group-position rebind. Keep it
+as a focused UI regression: reproduce with one fresh 9-item outgoing album, inspect
+`NotificationCenter.messageReceivedByServer` together with `applySecureAlbumGrouping`, then add
+a regression test or runtime evidence before committing another fix. Do not mix that experiment
+with support for new media kinds.
 
 Attachment manifests allow positive dimensions for authenticated `video/*` entries, including
 `video/webm`; ordinary documents must keep both dimensions zero. Legacy video manifests with no
