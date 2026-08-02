@@ -179,6 +179,40 @@ public final class SecureMediaCrypto {
             int width,
             int height,
             boolean photo) {
+        return encryptAttachmentFile(
+                source,
+                destination,
+                fileName,
+                mimeType,
+                caption,
+                width,
+                height,
+                photo,
+                photo
+                        ? SecureContentCodec.ATTACHMENT_PRESENTATION_FILE
+                        : mimeType != null && mimeType.startsWith("video/")
+                                ? SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
+                                : mimeType != null && mimeType.startsWith("audio/")
+                                        ? SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
+                                        : SecureContentCodec.ATTACHMENT_PRESENTATION_FILE,
+                0,
+                "",
+                "");
+    }
+
+    public static SecureContentCodec.Attachment encryptAttachmentFile(
+            File source,
+            File destination,
+            String fileName,
+            String mimeType,
+            String caption,
+            int width,
+            int height,
+            boolean photo,
+            int presentation,
+            int durationSeconds,
+            String title,
+            String performer) {
         if (source == null || destination == null || !source.isFile()) {
             throw new IllegalArgumentException("secure attachment source is unavailable");
         }
@@ -201,7 +235,11 @@ public final class SecureMediaCrypto {
                 caption,
                 width,
                 height,
-                photo));
+                photo,
+                presentation,
+                durationSeconds,
+                title,
+                performer));
         File parent = destination.getParentFile();
         if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
             throw new SecureMediaException("cannot create secure attachment directory", null);
@@ -264,7 +302,11 @@ public final class SecureMediaCrypto {
                 caption,
                 width,
                 height,
-                photo);
+                photo,
+                presentation,
+                durationSeconds,
+                title,
+                performer);
         // Validate all metadata before a carrier can be produced.
         SecureContentCodec.encodeAttachment(manifest);
         return manifest;

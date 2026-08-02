@@ -22,6 +22,12 @@ public final class SecureContentCodec {
     private static final byte[] MAGIC = new byte[] {'F', 'S', 'C', '1'};
     private static final int HEADER_BYTES = MAGIC.length + 1 + 4;
     private static final int MAX_CONTENT_BYTES = 16 * 1024;
+    private static final byte[] ATTACHMENT_PRESENTATION_MAGIC =
+            new byte[] {'F', 'S', 'M', '1'};
+    private static final int ATTACHMENT_PRESENTATION_HEADER_BYTES =
+            ATTACHMENT_PRESENTATION_MAGIC.length + 1 + 4 + 2 + 2;
+    private static final int MAX_ATTACHMENT_PRESENTATION_TEXT_BYTES = 128;
+    private static final int MAX_ATTACHMENT_DURATION_SECONDS = 12 * 60 * 60;
 
     public static final int TYPE_TEXT = 1;
     public static final int TYPE_STATIC_STICKER = 2;
@@ -33,6 +39,12 @@ public final class SecureContentCodec {
     public static final int STICKER_FORMAT_WEBP = 1;
     public static final int STICKER_FORMAT_TGS = 2;
     public static final int STICKER_FORMAT_WEBM = 3;
+
+    public static final int ATTACHMENT_PRESENTATION_FILE = 0;
+    public static final int ATTACHMENT_PRESENTATION_VIDEO = 1;
+    public static final int ATTACHMENT_PRESENTATION_AUDIO = 2;
+    public static final int ATTACHMENT_PRESENTATION_VOICE = 3;
+    public static final int ATTACHMENT_PRESENTATION_ROUND_VIDEO = 4;
 
     private SecureContentCodec() {}
 
@@ -84,7 +96,11 @@ public final class SecureContentCodec {
                 encodeCaption(caption, above, albumId.isEmpty() ? null : albumId),
                 attachment.width,
                 attachment.height,
-                attachment.photo);
+                attachment.photo,
+                attachment.presentation,
+                attachment.durationSeconds,
+                attachment.title,
+                attachment.performer);
     }
 
     /** Returns the authenticated album identifier, or an empty string for a standalone item. */
@@ -166,6 +182,8 @@ public final class SecureContentCodec {
         byte[] fileName = attachment.fileName.getBytes(StandardCharsets.UTF_8);
         byte[] mimeType = attachment.mimeType.getBytes(StandardCharsets.US_ASCII);
         byte[] caption = attachment.caption.getBytes(StandardCharsets.UTF_8);
+        byte[] title = attachment.title.getBytes(StandardCharsets.UTF_8);
+        byte[] performer = attachment.performer.getBytes(StandardCharsets.UTF_8);
         validateAttachmentFields(
                 attachment.mediaId,
                 attachment.key,
@@ -179,9 +197,20 @@ public final class SecureContentCodec {
                 mimeType,
                 caption,
                 attachment.photo);
+        validateAttachmentPresentation(
+                attachment.presentation,
+                attachment.durationSeconds,
+                title,
+                performer,
+                attachment.mimeType,
+                attachment.width,
+                attachment.height,
+                attachment.photo);
         ByteBuffer payload = ByteBuffer.allocate(
                         16 + 32 + 12 + 32 + 4 + 4 + 2 + 2 + 2 + 2 + 4
-                                + fileName.length + mimeType.length + caption.length)
+                                + fileName.length + mimeType.length + caption.length
+                                + ATTACHMENT_PRESENTATION_HEADER_BYTES
+                                + title.length + performer.length)
                 .order(ByteOrder.BIG_ENDIAN);
         payload.put(attachment.mediaId);
         payload.put(attachment.key);
@@ -197,6 +226,13 @@ public final class SecureContentCodec {
         payload.put(fileName);
         payload.put(mimeType);
         payload.put(caption);
+        payload.put(ATTACHMENT_PRESENTATION_MAGIC);
+        payload.put((byte) attachment.presentation);
+        payload.putInt(attachment.durationSeconds);
+        payload.putShort((short) title.length);
+        payload.putShort((short) performer.length);
+        payload.put(title);
+        payload.put(performer);
         return encode(attachment.photo ? TYPE_PHOTO : TYPE_FILE, payload.array());
     }
 
@@ -370,7 +406,7 @@ public final class SecureContentCodec {
         int mimeTypeSize = input.getShort() & 0xffff;
         int captionSize = input.getInt();
         long variableSize = (long) fileNameSize + mimeTypeSize + captionSize;
-        if (captionSize < 0 || variableSize != input.remaining()) {
+        if (captionSize < 0 || variableSize > input.remaining()) {
             throw new IllegalArgumentException("invalid secure attachment metadata length");
         }
         byte[] fileName = new byte[fileNameSize];
@@ -379,6 +415,11 @@ public final class SecureContentCodec {
         input.get(fileName);
         input.get(mimeType);
         input.get(caption);
+        String decodedMimeType = new String(mimeType, StandardCharsets.US_ASCII);
+        AttachmentPresentation presentation = input.hasRemaining()
+                ? decodeAttachmentPresentation(input, decodedMimeType, width, height, photo)
+                : new AttachmentPresentation(
+                        defaultAttachmentPresentation(decodedMimeType, photo), 0, "", "");
         validateAttachmentFields(
                 mediaId,
                 key,
@@ -392,6 +433,15 @@ public final class SecureContentCodec {
                 mimeType,
                 caption,
                 photo);
+        validateAttachmentPresentation(
+                presentation.kind,
+                presentation.durationSeconds,
+                presentation.title.getBytes(StandardCharsets.UTF_8),
+                presentation.performer.getBytes(StandardCharsets.UTF_8),
+                decodedMimeType,
+                width,
+                height,
+                photo);
         return new Attachment(
                 mediaId,
                 key,
@@ -400,11 +450,127 @@ public final class SecureContentCodec {
                 plaintextSize,
                 ciphertextSize,
                 strictUtf8(fileName),
-                new String(mimeType, StandardCharsets.US_ASCII),
+                decodedMimeType,
                 strictUtf8AllowEmpty(caption),
                 width,
                 height,
-                photo);
+                photo,
+                presentation.kind,
+                presentation.durationSeconds,
+                presentation.title,
+                presentation.performer);
+    }
+
+    private static AttachmentPresentation decodeAttachmentPresentation(
+            ByteBuffer input, String mimeType, int width, int height, boolean photo) {
+        if (input.remaining() < ATTACHMENT_PRESENTATION_HEADER_BYTES) {
+            throw new IllegalArgumentException("truncated secure attachment presentation");
+        }
+        for (byte expected : ATTACHMENT_PRESENTATION_MAGIC) {
+            if (input.get() != expected) {
+                throw new IllegalArgumentException("invalid secure attachment presentation");
+            }
+        }
+        int kind = input.get() & 0xff;
+        int durationSeconds = input.getInt();
+        int titleSize = input.getShort() & 0xffff;
+        int performerSize = input.getShort() & 0xffff;
+        if ((long) titleSize + performerSize != input.remaining()) {
+            throw new IllegalArgumentException("invalid secure attachment presentation length");
+        }
+        byte[] title = new byte[titleSize];
+        byte[] performer = new byte[performerSize];
+        input.get(title);
+        input.get(performer);
+        validateAttachmentPresentation(
+                kind, durationSeconds, title, performer, mimeType, width, height, photo);
+        return new AttachmentPresentation(
+                kind,
+                durationSeconds,
+                strictUtf8AllowEmpty(title),
+                strictUtf8AllowEmpty(performer));
+    }
+
+    private static int defaultAttachmentPresentation(String mimeType, boolean photo) {
+        if (photo) {
+            return ATTACHMENT_PRESENTATION_FILE;
+        }
+        if (mimeType != null && mimeType.startsWith("video/")) {
+            return ATTACHMENT_PRESENTATION_VIDEO;
+        }
+        if (mimeType != null && mimeType.startsWith("audio/")) {
+            return ATTACHMENT_PRESENTATION_AUDIO;
+        }
+        return ATTACHMENT_PRESENTATION_FILE;
+    }
+
+    private static void validateAttachmentPresentation(
+            int kind,
+            int durationSeconds,
+            byte[] title,
+            byte[] performer,
+            String mimeType,
+            int width,
+            int height,
+            boolean photo) {
+        boolean audio = mimeType != null && mimeType.startsWith("audio/");
+        boolean video = mimeType != null && mimeType.startsWith("video/");
+        boolean textPresent = (title != null && title.length != 0)
+                || (performer != null && performer.length != 0);
+        if (durationSeconds < 0
+                || durationSeconds > MAX_ATTACHMENT_DURATION_SECONDS
+                || title == null
+                || title.length > MAX_ATTACHMENT_PRESENTATION_TEXT_BYTES
+                || performer == null
+                || performer.length > MAX_ATTACHMENT_PRESENTATION_TEXT_BYTES) {
+            throw new IllegalArgumentException("invalid secure attachment presentation");
+        }
+        strictUtf8AllowEmpty(title);
+        strictUtf8AllowEmpty(performer);
+        if (photo) {
+            if (kind != ATTACHMENT_PRESENTATION_FILE || durationSeconds != 0 || textPresent) {
+                throw new IllegalArgumentException("invalid secure photo presentation");
+            }
+            return;
+        }
+        if (kind == ATTACHMENT_PRESENTATION_FILE) {
+            if (durationSeconds != 0 || textPresent) {
+                throw new IllegalArgumentException("invalid secure file presentation");
+            }
+        } else if (kind == ATTACHMENT_PRESENTATION_VIDEO) {
+            if (!video || textPresent) {
+                throw new IllegalArgumentException("invalid secure video presentation");
+            }
+        } else if (kind == ATTACHMENT_PRESENTATION_AUDIO) {
+            if (!audio) {
+                throw new IllegalArgumentException("invalid secure audio presentation");
+            }
+        } else if (kind == ATTACHMENT_PRESENTATION_VOICE) {
+            if (!audio || durationSeconds <= 0 || textPresent) {
+                throw new IllegalArgumentException("invalid secure voice presentation");
+            }
+        } else if (kind == ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+            if (!video || durationSeconds <= 0 || textPresent
+                    || width <= 0 || height <= 0 || width != height) {
+                throw new IllegalArgumentException("invalid secure round-video presentation");
+            }
+        } else {
+            throw new IllegalArgumentException("unknown secure attachment presentation");
+        }
+    }
+
+    private static final class AttachmentPresentation {
+        final int kind;
+        final int durationSeconds;
+        final String title;
+        final String performer;
+
+        AttachmentPresentation(int kind, int durationSeconds, String title, String performer) {
+            this.kind = kind;
+            this.durationSeconds = durationSeconds;
+            this.title = title;
+            this.performer = performer;
+        }
     }
 
     private static void validateAttachmentFields(
@@ -629,6 +795,10 @@ public final class SecureContentCodec {
         public final int width;
         public final int height;
         public final boolean photo;
+        public final int presentation;
+        public final int durationSeconds;
+        public final String title;
+        public final String performer;
 
         public Attachment(
                 byte[] mediaId,
@@ -643,6 +813,42 @@ public final class SecureContentCodec {
                 int width,
                 int height,
                 boolean photo) {
+            this(
+                    mediaId,
+                    key,
+                    nonce,
+                    ciphertextSha256,
+                    plaintextSize,
+                    ciphertextSize,
+                    fileName,
+                    mimeType,
+                    caption,
+                    width,
+                    height,
+                    photo,
+                    defaultAttachmentPresentation(mimeType, photo),
+                    0,
+                    "",
+                    "");
+        }
+
+        public Attachment(
+                byte[] mediaId,
+                byte[] key,
+                byte[] nonce,
+                byte[] ciphertextSha256,
+                int plaintextSize,
+                int ciphertextSize,
+                String fileName,
+                String mimeType,
+                String caption,
+                int width,
+                int height,
+                boolean photo,
+                int presentation,
+                int durationSeconds,
+                String title,
+                String performer) {
             this.mediaId = StaticSticker.copy(mediaId);
             this.key = StaticSticker.copy(key);
             this.nonce = StaticSticker.copy(nonce);
@@ -655,6 +861,10 @@ public final class SecureContentCodec {
             this.width = width;
             this.height = height;
             this.photo = photo;
+            this.presentation = presentation;
+            this.durationSeconds = durationSeconds;
+            this.title = title == null ? "" : title;
+            this.performer = performer == null ? "" : performer;
         }
     }
 }

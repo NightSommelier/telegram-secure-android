@@ -21470,6 +21470,7 @@ public class ChatActivity extends BaseFragment implements
             if (attribute instanceof TLRPC.TL_documentAttributeSticker
                     || attribute instanceof TLRPC.TL_documentAttributeImageSize
                     || attribute instanceof TLRPC.TL_documentAttributeVideo
+                    || attribute instanceof TLRPC.TL_documentAttributeAudio
                     || attribute instanceof TLRPC.TL_documentAttributeFilename) {
                 document.attributes.remove(i);
             }
@@ -21507,7 +21508,11 @@ public class ChatActivity extends BaseFragment implements
                 manifest.height,
                 manifest.fileName,
                 manifest.mimeType,
-                manifest.caption);
+                manifest.caption,
+                manifest.presentation,
+                manifest.durationSeconds,
+                manifest.title,
+                manifest.performer);
         message.forkSecureCipherPath =
                 ciphertext == null ? null : ciphertext.getAbsolutePath();
         indexPreparedSecureMedia(message);
@@ -21576,6 +21581,23 @@ public class ChatActivity extends BaseFragment implements
         // use an opaque display name.
         fileName.file_name = "file";
         document.attributes.add(fileName);
+        if (message.forkSecureMediaPresentation
+                        == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
+                || message.forkSecureMediaPresentation
+                        == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+            TLRPC.TL_documentAttributeAudio audio =
+                    new TLRPC.TL_documentAttributeAudio();
+            audio.duration = message.forkSecureMediaDurationSeconds;
+            audio.title = TextUtils.isEmpty(message.forkSecureMediaTitle)
+                    ? "" : message.forkSecureMediaTitle;
+            audio.performer = TextUtils.isEmpty(message.forkSecureMediaPerformer)
+                    ? "" : message.forkSecureMediaPerformer;
+            audio.flags |= 1;
+            audio.flags |= 2;
+            audio.voice = message.forkSecureMediaPresentation
+                    == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
+            document.attributes.add(audio);
+        }
         if (!TextUtils.isEmpty(message.forkSecureMediaMime)
                 && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/")) {
             TLRPC.TL_documentAttributeVideo video =
@@ -21583,7 +21605,8 @@ public class ChatActivity extends BaseFragment implements
             video.w = message.forkSecureMediaWidth > 0 ? message.forkSecureMediaWidth : 1;
             video.h = message.forkSecureMediaHeight > 0 ? message.forkSecureMediaHeight : 1;
             video.duration = 0;
-            video.round_message = false;
+            video.round_message = message.forkSecureMediaPresentation
+                    == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
             video.supports_streaming = true;
             if (message.forkSecureMediaWidth <= 0
                     || message.forkSecureMediaHeight <= 0

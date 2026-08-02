@@ -61,8 +61,8 @@ payload не підтриманий або сесія не готова, від�
 ## 3. Потік медіа
 
 ```text
-Telegram picker/share intent
-    -> SendMessagesHelper: identify photo/video/document/sticker/audio
+Telegram picker/share intent or recorder output
+    -> SendMessagesHelper: identify photo/video/document/sticker/audio/voice/round
     -> SecureContentCodec: authenticated manifest
     -> SecureMediaCrypto: encrypt bytes, random upload name
     -> Telegram uploads opaque file + TGS1 manifest
@@ -71,12 +71,15 @@ Telegram picker/share intent
     -> ChatMessageCell / DialogCell / PhotoViewer / media grid
 ```
 
-Реальне ім'я, MIME, caption, розмір, dimensions і album id належать до
+Реальне ім'я, MIME, caption, розмір, dimensions, album id та presentation
+metadata (file/video/audio/voice/round, duration, title, performer) належать до
 зашифрованого manifest. У Telegram-полях та upload-name залишаються лише
-безпечні технічні значення. `SecureMediaIndex` дозволяє відновити прев'ю у
-списку чатів; `SecureMediaCache` обмежує локальні копії. Для відео список чатів
-використовує статичний `vthumb://0:` thumbnail, а повноекранний viewer може
-використовувати звичайне відтворення після розшифрування.
+безпечні технічні значення. Старі attachment manifests без presentation
+extension декодуються зі safe defaults; пошкоджене розширення відхиляється.
+`SecureMediaIndex` дозволяє відновити прев'ю у списку чатів; `SecureMediaCache`
+обмежує локальні копії. Для відео список чатів використовує статичний
+`vthumb://0:` thumbnail, а повноекранний viewer може використовувати звичайне
+відтворення після розшифрування.
 
 ### Viewer layout and thumbnail cache
 
@@ -259,6 +262,6 @@ adb -s <serial> shell monkey -p ua.securechat.telegram 1
 Перед передачею APK виконати `git diff --check`, зафіксувати device/serial,
 тестовий сценарій і відомі failures. Не комітити `local.properties`, API
 credentials, keystores, decrypted media або device dumps. Поточна черга після
-медіа-preview/albums: native voice/round/GIF/audio/document playback, Telegram
-actions, повне recovery-фізичне тестування, потім performance/cache/privacy
-аудит.
+медіа-preview/albums: ручне двопристроєве підтвердження native
+voice/round/audio playback, GIF/document playback, Telegram actions, повне
+recovery-фізичне тестування, потім performance/cache/privacy аудит.

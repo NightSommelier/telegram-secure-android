@@ -202,6 +202,67 @@ public final class SecureContentCodecTest {
     }
 
     @Test
+    public void voiceAttachmentPresentationRoundTripsInsideAuthenticatedManifest() {
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "voice.ogg",
+                "audio/ogg",
+                "",
+                0,
+                0,
+                false,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE,
+                37,
+                "",
+                "");
+
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(
+                SecureContentCodec.encodeAttachment(attachment));
+
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE,
+                decoded.attachment.presentation);
+        assertEquals(37, decoded.attachment.durationSeconds);
+        assertEquals("", decoded.attachment.title);
+        assertEquals("", decoded.attachment.performer);
+    }
+
+    @Test
+    public void legacyAttachmentWithoutPresentationExtensionRemainsReadable() {
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16], new byte[32], new byte[12], new byte[32],
+                123, 123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "audio.ogg", "audio/ogg", "", 0, 0, false);
+        byte[] current = SecureContentCodec.encodeAttachment(attachment);
+        // FSM1 has a 13-byte header and no title/performer for this legacy-compatible value.
+        byte[] legacy = java.util.Arrays.copyOf(current, current.length - 13);
+        ByteBuffer.wrap(legacy).order(ByteOrder.BIG_ENDIAN).putInt(5, legacy.length - 9);
+
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(legacy);
+
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO,
+                decoded.attachment.presentation);
+        assertEquals(0, decoded.attachment.durationSeconds);
+    }
+
+    @Test
+    public void malformedAttachmentPresentationFailsClosed() {
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16], new byte[32], new byte[12], new byte[32],
+                123, 123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "voice.ogg", "audio/ogg", "", 0, 0, false,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE, 1, "", "");
+        byte[] malformed = SecureContentCodec.encodeAttachment(attachment);
+        malformed[malformed.length - 13] ^= 1;
+
+        assertMalformed(malformed);
+    }
+
+    @Test
     public void unsafeAttachmentNameIsRejected() {
         SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
                 new byte[16],

@@ -2291,6 +2291,134 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         }
     }
 
+    /**
+     * Routes recorder-originated voice and round-video documents through the same encrypted
+     * attachment pipeline as picker files. These messages bypass prepareSendingDocuments upstream,
+     * so without this boundary the protected-chat send guard would only reject them.
+     */
+    private boolean prepareForkSecureDirectDocumentIfNeeded(
+            TLRPC.TL_document document,
+            String path,
+            String caption,
+            long dialogId,
+            MessageObject replyToMsg,
+            MessageObject replyToTopMsg,
+            TL_stories.StoryItem storyItem,
+            ChatActivity.ReplyQuote quote,
+            boolean notify,
+            int scheduleDate,
+            int scheduleRepeatPeriod,
+            String quickReplyShortcut,
+            int quickReplyShortcutId,
+            long effectId,
+            boolean invertMedia,
+            long payStars,
+            long monoForumPeerId,
+            MessageSuggestionParams suggestionParams,
+            int ttl) {
+        if (document == null || TextUtils.isEmpty(path) || ttl != 0) {
+            return false;
+        }
+        boolean savedMessages = isForkSecureSavedMessagesDialog(getAccountInstance(), dialogId)
+                && SecureSavedMessagesSettings.isSecureByDefault(
+                        ApplicationLoader.applicationContext, currentAccount);
+        if (!DialogObject.isUserDialog(dialogId) && !savedMessages) {
+            return false;
+        }
+        SecureChatEngine secureChat = null;
+        if (!savedMessages) {
+            try {
+                secureChat = new SecureChatEngine(
+                        ApplicationLoader.applicationContext, currentAccount, dialogId);
+                if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                        || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                    showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                    return true;
+                }
+                if (secureChat.getMode() != SecureChatEngine.Mode.PROTECTED) {
+                    return false;
+                }
+            } catch (RuntimeException error) {
+                FileLog.e(error);
+                showForkSecureError(R.string.ForkSecureSetupSendFailed);
+                return true;
+            }
+        }
+        ForkSecureAttachmentPresentation presentation =
+                presentationForForkSecureDocument(document);
+        ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
+        sources.add(new ForkSecureAttachmentSource(
+                path,
+                null,
+                caption,
+                document.mime_type,
+                false,
+                presentation.kind,
+                presentation.durationSeconds,
+                presentation.title,
+                presentation.performer));
+        prepareForkSecureAttachments(
+                getAccountInstance(),
+                secureChat,
+                sources,
+                dialogId,
+                replyToMsg,
+                replyToTopMsg,
+                storyItem,
+                quote,
+                notify,
+                scheduleDate,
+                scheduleRepeatPeriod,
+                quickReplyShortcut,
+                quickReplyShortcutId,
+                effectId,
+                invertMedia,
+                payStars,
+                monoForumPeerId,
+                suggestionParams);
+        return true;
+    }
+
+    private static ForkSecureAttachmentPresentation presentationForForkSecureDocument(
+            TLRPC.Document document) {
+        int kind = document != null && document.mime_type != null
+                && document.mime_type.startsWith("video/")
+                ? SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
+                : document != null && document.mime_type != null
+                        && document.mime_type.startsWith("audio/")
+                        ? SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
+                        : SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
+        int durationSeconds = 0;
+        String title = "";
+        String performer = "";
+        if (document != null) {
+            for (int i = 0; i < document.attributes.size(); i++) {
+                TLRPC.DocumentAttribute attribute = document.attributes.get(i);
+                if (attribute instanceof TLRPC.TL_documentAttributeAudio) {
+                    durationSeconds = (int) Math.max(0, Math.ceil(attribute.duration));
+                    title = attribute.title;
+                    performer = attribute.performer;
+                    if (attribute.voice && durationSeconds > 0) {
+                        kind = SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
+                        title = "";
+                        performer = "";
+                    }
+                } else if (attribute instanceof TLRPC.TL_documentAttributeVideo) {
+                    durationSeconds = (int) Math.max(0,
+                            Math.ceil(attribute.duration));
+                    if (attribute.round_message && durationSeconds > 0) {
+                        kind = SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
+                    }
+                }
+            }
+        }
+        return new ForkSecureAttachmentPresentation(
+                kind,
+                durationSeconds,
+                trimForkSecurePresentationText(title),
+                trimForkSecurePresentationText(performer));
+    }
+
     private static boolean prepareForkSecureDocumentsIfNeeded(
             AccountInstance accountInstance,
             ArrayList<String> paths,
@@ -2800,6 +2928,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             height = videoAttribute.h;
                         }
                     }
+                    ForkSecureAttachmentPresentation presentation =
+                            inferForkSecureAttachmentPresentation(
+                                    resolved, mimeType, width, height);
                     SecureContentCodec.Attachment manifest =
                             SecureMediaCrypto.encryptAttachmentFile(
                                     resolved.file,
@@ -2817,7 +2948,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                                     : null),
                                     width,
                                     height,
-                                    resolved.photo);
+                                    resolved.photo,
+                                    presentation.kind,
+                                    presentation.durationSeconds,
+                                    presentation.title,
+                                    presentation.performer);
                     if (SecureContentCodec.encodeAttachment(manifest).length > 600) {
                         encryptedFile.delete();
                         throw new IllegalArgumentException(
@@ -3020,7 +3155,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 safeForkSecureFileName(fileName),
                 mimeType,
                 source.caption == null ? "" : source.caption,
-                source.photo);
+                source.photo,
+                source.presentation,
+                source.durationSeconds,
+                source.title,
+                source.performer);
     }
 
     private static String queryForkSecureFileName(Uri uri) {
@@ -3095,20 +3234,135 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         return value;
     }
 
+    private static ForkSecureAttachmentPresentation inferForkSecureAttachmentPresentation(
+            ForkSecureResolvedSource source, String mimeType, int width, int height) {
+        int kind = source.presentation;
+        int durationSeconds = Math.max(0, source.durationSeconds);
+        String title = source.title;
+        String performer = source.performer;
+        if (kind == -1) {
+            if (source.photo) {
+                kind = SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
+            } else if (mimeType.startsWith("video/")) {
+                kind = SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO;
+            } else if (mimeType.startsWith("audio/")) {
+                kind = SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO;
+                MediaMetadataRetriever retriever = null;
+                try {
+                    retriever = new MediaMetadataRetriever();
+                    retriever.setDataSource(source.file.getAbsolutePath());
+                    String duration = retriever.extractMetadata(
+                            MediaMetadataRetriever.METADATA_KEY_DURATION);
+                    if (!TextUtils.isEmpty(duration)) {
+                        durationSeconds = (int) Math.ceil(
+                                Long.parseLong(duration) / 1000.0d);
+                    }
+                    title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
+                    performer = retriever.extractMetadata(
+                            MediaMetadataRetriever.METADATA_KEY_ARTIST);
+                    if (durationSeconds > 0
+                            && ("audio/ogg".equals(mimeType)
+                                    || "audio/opus".equals(mimeType))
+                            && MediaController.isOpusFile(source.file.getAbsolutePath()) == 1) {
+                        kind = SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
+                        title = "";
+                        performer = "";
+                    }
+                } catch (RuntimeException ignored) {
+                    // A media scanner failure must not cause plaintext fallback. The attachment
+                    // remains a generic authenticated audio file without decorative metadata.
+                    title = "";
+                    performer = "";
+                } finally {
+                    if (retriever != null) {
+                        try {
+                            retriever.release();
+                        } catch (Exception ignored) {
+                            // Nothing to recover here.
+                        }
+                    }
+                }
+            } else {
+                kind = SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
+            }
+        }
+        if (kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
+                || kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+            title = "";
+            performer = "";
+        }
+        return new ForkSecureAttachmentPresentation(
+                kind,
+                durationSeconds,
+                trimForkSecurePresentationText(title),
+                trimForkSecurePresentationText(performer));
+    }
+
+    private static String trimForkSecurePresentationText(String value) {
+        if (TextUtils.isEmpty(value)) {
+            return "";
+        }
+        StringBuilder result = new StringBuilder();
+        for (int i = 0; i < value.length(); i++) {
+            result.append(value.charAt(i));
+            if (result.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 128) {
+                result.setLength(result.length() - 1);
+                break;
+            }
+        }
+        return result.toString();
+    }
+
+    private static final class ForkSecureAttachmentPresentation {
+        final int kind;
+        final int durationSeconds;
+        final String title;
+        final String performer;
+
+        ForkSecureAttachmentPresentation(
+                int kind, int durationSeconds, String title, String performer) {
+            this.kind = kind;
+            this.durationSeconds = durationSeconds;
+            this.title = title;
+            this.performer = performer;
+        }
+    }
+
     private static final class ForkSecureAttachmentSource {
         final String path;
         final Uri uri;
         final String caption;
         final String mimeType;
         final boolean photo;
+        final int presentation;
+        final int durationSeconds;
+        final String title;
+        final String performer;
 
         ForkSecureAttachmentSource(
                 String path, Uri uri, String caption, String mimeType, boolean photo) {
+            this(path, uri, caption, mimeType, photo, -1, 0, "", "");
+        }
+
+        ForkSecureAttachmentSource(
+                String path,
+                Uri uri,
+                String caption,
+                String mimeType,
+                boolean photo,
+                int presentation,
+                int durationSeconds,
+                String title,
+                String performer) {
             this.path = path;
             this.uri = uri;
             this.caption = caption;
             this.mimeType = mimeType;
             this.photo = photo;
+            this.presentation = presentation;
+            this.durationSeconds = durationSeconds;
+            this.title = title == null ? "" : title;
+            this.performer = performer == null ? "" : performer;
         }
     }
 
@@ -3119,6 +3373,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final String mimeType;
         final String caption;
         final boolean photo;
+        final int presentation;
+        final int durationSeconds;
+        final String title;
+        final String performer;
 
         ForkSecureResolvedSource(
                 File file,
@@ -3126,13 +3384,21 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 String fileName,
                 String mimeType,
                 String caption,
-                boolean photo) {
+                boolean photo,
+                int presentation,
+                int durationSeconds,
+                String title,
+                String performer) {
             this.file = file;
             this.temporary = temporary;
             this.fileName = fileName;
             this.mimeType = mimeType;
             this.caption = caption;
             this.photo = photo;
+            this.presentation = presentation;
+            this.durationSeconds = durationSeconds;
+            this.title = title == null ? "" : title;
+            this.performer = performer == null ? "" : performer;
         }
     }
 
@@ -5365,6 +5631,29 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 replyToMsg = null;
                 replyToTopMsg = null;
             }
+        }
+        if (!forkSecureCarrier
+                && prepareForkSecureDirectDocumentIfNeeded(
+                        document,
+                        path,
+                        caption,
+                        peer,
+                        replyToMsg,
+                        replyToTopMsg,
+                        replyToStoryItem,
+                        replyQuote,
+                        notify,
+                        scheduleDate,
+                        scheduleRepeatPeriod,
+                        quick_reply_shortcut,
+                        quick_reply_shortcut_id,
+                        sendMessageParams.effect_id,
+                        invert_media,
+                        sendMessageParams.payStars,
+                        sendMessageParams.monoForumPeer,
+                        sendMessageParams.suggestionParams,
+                        ttl)) {
+            return;
         }
         if (!forkSecureCarrier && isForkSecureProtectedPeer(peer)) {
             showForkSecureError(R.string.ForkSecureActionUnsupported);

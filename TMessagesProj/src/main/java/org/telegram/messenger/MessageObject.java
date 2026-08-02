@@ -224,6 +224,11 @@ public class MessageObject {
     public String forkSecureMediaName;
     public String forkSecureMediaMime;
     public String forkSecureMediaCaption;
+    /** Authenticated local presentation metadata; never read from Telegram transport. */
+    public int forkSecureMediaPresentation;
+    public int forkSecureMediaDurationSeconds;
+    public String forkSecureMediaTitle;
+    public String forkSecureMediaPerformer;
     /** Local-only authenticated album identifier carried inside the encrypted manifest. */
     public String forkSecureAlbumId;
     /** Local-only original Telegram grouped id, retained before secure presentation remapping. */
@@ -313,12 +318,49 @@ public class MessageObject {
             String name,
             String mime,
             String caption) {
+        markForkSecureMediaReady(
+                path,
+                kind,
+                width,
+                height,
+                name,
+                mime,
+                caption,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_FILE,
+                0,
+                "",
+                "");
+    }
+
+    public void markForkSecureMediaReady(
+            String path,
+            int kind,
+            int width,
+            int height,
+            String name,
+            String mime,
+            String caption,
+            int presentation,
+            int durationSeconds,
+            String title,
+            String performer) {
         if (!isForkSecureCarrier() || TextUtils.isEmpty(path)) {
             return;
         }
         ForkSecureMediaUiState state =
                 new ForkSecureMediaUiState(
-                        path, kind, width, height, name, mime, caption, false);
+                        path,
+                        kind,
+                        width,
+                        height,
+                        name,
+                        mime,
+                        caption,
+                        presentation,
+                        durationSeconds,
+                        title,
+                        performer,
+                        false);
         synchronized (forkSecureMediaUiCache) {
             putForkSecureMediaUiState(messageOwner.message, state);
         }
@@ -475,6 +517,10 @@ public class MessageObject {
         forkSecureMediaName = state.name;
         forkSecureMediaMime = state.mime;
         forkSecureMediaCaption = state.caption;
+        forkSecureMediaPresentation = state.presentation;
+        forkSecureMediaDurationSeconds = state.durationSeconds;
+        forkSecureMediaTitle = state.title;
+        forkSecureMediaPerformer = state.performer;
         forkSecureMediaPending = state.pending;
         if (!TextUtils.isEmpty(state.path)) {
             attachPathExists = true;
@@ -511,6 +557,10 @@ public class MessageObject {
         final String name;
         final String mime;
         final String caption;
+        final int presentation;
+        final int durationSeconds;
+        final String title;
+        final String performer;
         final boolean pending;
 
         ForkSecureMediaUiState(
@@ -522,6 +572,34 @@ public class MessageObject {
                 String mime,
                 String caption,
                 boolean pending) {
+            this(
+                    path,
+                    kind,
+                    width,
+                    height,
+                    name,
+                    mime,
+                    caption,
+                    SecureContentCodec.ATTACHMENT_PRESENTATION_FILE,
+                    0,
+                    "",
+                    "",
+                    pending);
+        }
+
+        ForkSecureMediaUiState(
+                String path,
+                int kind,
+                int width,
+                int height,
+                String name,
+                String mime,
+                String caption,
+                int presentation,
+                int durationSeconds,
+                String title,
+                String performer,
+                boolean pending) {
             this.path = path;
             this.kind = kind;
             this.width = width;
@@ -529,6 +607,10 @@ public class MessageObject {
             this.name = name;
             this.mime = mime;
             this.caption = caption;
+            this.presentation = presentation;
+            this.durationSeconds = durationSeconds;
+            this.title = title;
+            this.performer = performer;
             this.pending = pending;
         }
     }
