@@ -1,4 +1,4 @@
-## Telegram Fork-Secure (local beta)
+# Telegram Fork-Secure [![Android CI](https://github.com/NightSommelier/telegram-secure-android/actions/workflows/android.yml/badge.svg?branch=master)](https://github.com/NightSommelier/telegram-secure-android/actions/workflows/android.yml) [![License: GPL v2 or later](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](LICENSE)
 
 This checkout is a private Telegram Android fork for local device testing. Its
 active product-specific code is in `TMessagesProj/` and `SecureOverlay/`;
@@ -39,11 +39,12 @@ MTproto protocol manuals: https://core.telegram.org/mtproto
 
 You will require Android Studio 2025.1.4, Android NDK 27.2.12479018 and Android SDK 35.
 
-1. Clone the Telegram source code with its submodules:
+1. Clone the Fork-Secure repository with its upstream submodules:
    ```bash
-   git clone --recursive --shallow-submodules https://github.com/DrKLO/Telegram.git Telegram
+   git clone --recursive --shallow-submodules https://github.com/NightSommelier/telegram-secure-android.git telegram-secure-android
+   cd telegram-secure-android
    ```
-   In case you forgot the `--recursive` flag, change to the `Telegram` directory and run:
+   In case you forgot the `--recursive` flag, run this from the checkout:
    ```bash
    git submodule init && git submodule update --init --recursive --depth=1
    ```

@@ -21,7 +21,9 @@ Configure these repository secrets before the first protected build:
 - `RELEASE_KEY_ALIAS`
 - `RELEASE_KEY_PASSWORD`
 
-The workflow installs JDK 21, Android platform/build-tools 35, NDK
-27.2.12479018 and CMake 3.22.1 on GitHub-hosted Ubuntu. Secrets are written
-only to ignored temporary files and removed in an `always()` step. Do not
-enable write tokens or secrets for pull requests from forks.
+The workflow uses the GitHub-hosted Android SDK at
+`/usr/local/lib/android/sdk` and invokes its command-line tools by absolute
+path. It installs JDK 21, Android platform/build-tools 35, NDK 27.2.12479018
+and CMake 3.22.1. Secrets are written only to ignored temporary files and
+removed in an `always()` step. Do not enable write tokens or secrets for pull
+requests from forks.
