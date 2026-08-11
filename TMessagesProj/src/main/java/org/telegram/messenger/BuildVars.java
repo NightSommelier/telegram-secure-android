@@ -79,12 +79,10 @@ public class BuildVars {
         return false;
     }
 
-    private static Boolean betaApp;
     public static boolean isBetaApp() {
-        if (betaApp == null) {
-            betaApp = ApplicationLoader.applicationContext != null && "ua.securechat.telegram".equals(ApplicationLoader.applicationContext.getPackageName());
-        }
-        return betaApp;
+        // Fork-Secure keeps its own package id to coexist with Telegram, but production builds
+        // must not opt into Telegram Beta behavior merely because of that id.
+        return false;
     }
 
 
