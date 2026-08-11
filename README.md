@@ -1,4 +1,17 @@
-## Telegram messenger for Android
+## Telegram Fork-Secure (local beta)
+
+This checkout is a private Telegram Android fork for local device testing. Its
+active product-specific code is in `TMessagesProj/` and `SecureOverlay/`;
+setup, local build commands and MVP boundaries are documented in
+[`docs/LOCAL-MVP.md`](docs/LOCAL-MVP.md). Fork-Secure adds an experimental
+protected mode to ordinary 1:1 chats and Saved Messages without changing
+Telegram Secret Chats. It is not independently security-reviewed; see
+[`docs/protocol-review/REVIEW-DECISION.md`](docs/protocol-review/REVIEW-DECISION.md).
+
+Do not use Telegram's name/logo in a way that implies an official client, and
+never commit API credentials, keystores or decrypted media.
+
+## Upstream Telegram Android source
 
 [Telegram](https://telegram.org) is a messaging app with a focus on speed and security. It’s superfast, simple and free.
 This repo contains the official source code for [Telegram App for Android](https://play.google.com/store/apps/details?id=org.telegram.messenger).

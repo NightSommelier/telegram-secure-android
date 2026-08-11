@@ -101,6 +101,19 @@ authenticated local paths that are actually visible.
 
 ### Latest runtime evidence
 
+### Performance tracing (2026-08-11)
+
+`ChatActivity` exposes privacy-safe `android.os.Trace` sections for
+`ForkSecure#getEngine`, `#enginePrewarm`, `#overlay`, `#cachedOverlayBatch`,
+`#cachedOverlayOne`, `#savedOverlay`, `#replyOverlay`, `#pairingOffer`,
+`#decrypt`, and `#outgoingCache`. The names contain no message, carrier, peer
+or key material. Capture a bounded system trace with `atrace -a
+ua.securechat.telegram`, then compare cold entry into a protected 1:1 chat and
+Saved Messages with a normal chat, group, channel, profile and Shared Media.
+Use the resulting timings to move only cache-safe work off the UI thread; do
+not move ratchet advancement, pairing acceptance or state mutation without an
+ordered fail-closed design and regression coverage.
+
 On 2026-08-01, CPH (`636567fd`) reproduced a remaining delay only when entering
 the chat after leaving it; switching inside an already-open album was responsive.
 The current code path calls `ChatActivity.applySecureTextOverlay()` for the

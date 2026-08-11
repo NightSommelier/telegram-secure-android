@@ -4,6 +4,24 @@ This journal records security-relevant project decisions and their evidence.
 Tracked documentation and Git history are the source of truth; this journal
 does not grant implementation authority.
 
+## 2026-08-11 — private beta implementation and performance audit
+
+**Event:** Fork-Secure functionality was iterated in the maintained Telegram
+fork for local two-device testing: protected 1:1 text/media presentation,
+Saved Messages mode, recovery UI, local secure media cache and Telegram-style
+viewer/list integration.
+
+**Runtime evidence:** A low-memory RMX3491 trace found cold protected-chat
+history work on the UI thread. A targeted engine prewarm reduced the measured
+main-thread engine construction from about 176 ms to about 1 ms. Further trace
+markers now distinguish engine prewarm, initial/cached overlay, Saved Messages,
+reply overlay and pairing work. Remaining history delay is still under audit;
+no performance marker contains plaintext, keys, carrier data or contact IDs.
+
+**Security status:** The historical independent review gate remains
+`CHANGES REQUIRED`. Local builds and manual device checks demonstrate behavior,
+not cryptographic approval or a production security guarantee.
+
 ## 2026-07-21 — protocol-review baseline established
 
 **Event:** Pinned the Telegram fork to upstream commit

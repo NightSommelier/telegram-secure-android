@@ -1,0 +1,154 @@
+name: Telegram Fork-Secure Android
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing v* tag to rebuild and republish"
+        required: true
+        type: string
+
+jobs:
+  build:
+    # The server runner is registered with the linux-amd64 label.
+    runs-on: linux-amd64
+    env:
+      # Keep Gradle's dependency cache on the runner, but outside the checkout.
+      GRADLE_USER_HOME: /tmp/telegram-secure-gradle
+
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || forgejo.ref }}
+          fetch-depth: 0
+
+      - name: Verify runner toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          command -v java >/dev/null
+          java_major=$(java -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -n 1)
+          test "$java_major" = 21
+
+          sdk_dir="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "$sdk_dir"
+          test -d "$sdk_dir/platforms/android-35"
+          test -x "$sdk_dir/build-tools/35.0.0/aapt2"
+          test -d "$sdk_dir/ndk/27.2.12479018"
+          test -d "$sdk_dir/cmake/3.22.1"
+
+          printf 'Runner: %s/%s\n' "$(uname -s)" "$(uname -m)"
+          printf 'Java: %s\n' "$java_major"
+          printf 'Android SDK: %s\n' "$sdk_dir"
+
+      - name: Materialize private build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          : "${TELEGRAM_API_ID:?TELEGRAM_API_ID must be provided by the runner environment}"
+          : "${TELEGRAM_API_HASH:?TELEGRAM_API_HASH must be provided by the runner environment}"
+          : "${RELEASE_KEYSTORE_BASE64:?RELEASE_KEYSTORE_BASE64 must be provided by the runner environment}"
+          : "${RELEASE_STORE_PASSWORD:?RELEASE_STORE_PASSWORD must be provided by the runner environment}"
+          : "${RELEASE_KEY_ALIAS:?RELEASE_KEY_ALIAS must be provided by the runner environment}"
+          : "${RELEASE_KEY_PASSWORD:?RELEASE_KEY_PASSWORD must be provided by the runner environment}"
+
+          sdk_dir="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          {
+            printf 'sdk.dir=%s\n' "$sdk_dir"
+            if [[ -n "${ANDROID_CMAKE_DIR:-}" ]]; then
+              printf 'cmake.dir=%s\n' "$ANDROID_CMAKE_DIR"
+            fi
+            printf 'TELEGRAM_API_ID=%s\n' "$TELEGRAM_API_ID"
+            printf 'TELEGRAM_API_HASH=%s\n' "$TELEGRAM_API_HASH"
+          } > local.properties
+
+          mkdir -p keystore
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > keystore/telegram-fork-secure-release.p12
+          test -s keystore/telegram-fork-secure-release.p12
+
+          {
+            printf 'RELEASE_STORE_FILE=keystore/telegram-fork-secure-release.p12\n'
+            printf 'RELEASE_STORE_PASSWORD=%s\n' "$RELEASE_STORE_PASSWORD"
+            printf 'RELEASE_KEY_ALIAS=%s\n' "$RELEASE_KEY_ALIAS"
+            printf 'RELEASE_KEY_PASSWORD=%s\n' "$RELEASE_KEY_PASSWORD"
+          } > signing.properties
+
+      - name: Build production APK and compile SecureOverlay tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sdk_dir="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          abi="${TELEGRAM_ABI:-arm64-v8a}"
+          case "$abi" in
+            armeabi-v7a|arm64-v8a|x86|x86_64) ;;
+            *) printf 'Unsupported TELEGRAM_ABI: %s\n' "$abi" >&2; exit 1 ;;
+          esac
+
+          rm -f TMessagesProj_App/build/outputs/apk/afat/release/app.apk
+          ./gradlew :SecureOverlay:compileDebugAndroidTestJavaWithJavac :TMessagesProj_App:assembleAfatRelease \
+            --no-daemon \
+            --console=plain \
+            -PLOCAL_MVP_ABI="$abi" \
+            "-Pandroid.aapt2FromMavenOverride=$sdk_dir/build-tools/35.0.0/aapt2"
+
+          apk=TMessagesProj_App/build/outputs/apk/afat/release/app.apk
+          test -s "$apk"
+          "$sdk_dir/build-tools/35.0.0/aapt2" dump badging "$apk" >/dev/null
+
+          version_name=$(sed -n 's/^APP_VERSION_NAME=//p' gradle.properties)
+          test -n "$version_name"
+          mkdir -p dist/release
+          cp "$apk" "dist/release/telegram-secure-${version_name}.apk"
+          sha256sum "dist/release/telegram-secure-${version_name}.apk" \
+            > "dist/release/telegram-secure-${version_name}.apk.sha256"
+          test -z "$(find dist/release -maxdepth 1 -type f -size 0 -print -quit)"
+          ls -lh dist/release
+
+      - name: Upload production APK artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: telegram-fork-secure-${{ forgejo.sha }}
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Resolve release revision
+        id: release_ref
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || forgejo.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$FORGEJO_OUTPUT"
+          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$FORGEJO_OUTPUT"
+
+      - name: Create or update Forgejo release
+        if: >
+          (forgejo.event_name == 'push' && forgejo.ref_type == 'tag' && startsWith(forgejo.ref_name, 'v')) ||
+          (forgejo.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v'))
+        uses: actions/forgejo-release@v2
+        with:
+          tag: ${{ steps.release_ref.outputs.tag }}
+          sha: ${{ steps.release_ref.outputs.sha }}
+          release-dir: dist/release
+          title: Telegram Fork-Secure ${{ steps.release_ref.outputs.tag }}
+          direction: upload
+          prerelease: false
+          override: true
+
+      - name: Remove private build inputs
+        if: always()
+        shell: bash
+        run: |
+          rm -f local.properties signing.properties
+          rm -rf keystore

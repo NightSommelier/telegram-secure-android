@@ -1,13 +1,48 @@
-# Security policy
+# Security Policy
 
-## Current status
+## Статус
 
-Telegram Secure is under development. This checkout is an upstream Telegram Android baseline; it does not yet provide the planned secure-content overlay. Do not rely on it for additional confidentiality guarantees.
+Telegram Fork-Secure — приватний beta-форк для локального тестування, а не
+публічний захищений месенджер. Додатковий режим Fork-Secure реалізований для
+звичайних 1:1 чатів і Saved Messages; Telegram Secret Chats не змінюються.
 
-## Reporting
+Незалежний перегляд протоколу не завершено. Чинне рішення —
+[`CHANGES REQUIRED`](docs/protocol-review/REVIEW-DECISION.md). Локальна
+збірка, автоматизовані тести або ручна перевірка на двох пристроях не є
+підтвердженням криптографічної безпеки. Не використовуйте beta для даних, де
+помилка конфіденційності може завдати значної шкоди.
 
-There is no public vulnerability-reporting endpoint yet. Do not publish sensitive reports in public issues. Before any external distribution, the project must publish a monitored security contact, supported-version policy, coordinated-disclosure procedure and response-time targets.
+## Повідомлення про вразливість
 
-## Scope of future review
+Не публікуйте вразливості, логи, carriers, резервні копії, ключі, PIN/паролі
+або розшифровані вкладення у публічних issue, чатах чи комітах. Для приватного
+beta повідомляйте про проблему власнику проєкту через заздалегідь узгоджений
+поза-смуговий приватний канал. Додайте:
 
-The product must undergo independent review of its secure-overlay protocol and implementation before a confidential-communication beta. Reports involving upstream Telegram Android should also be handled through the appropriate upstream reporting channel when applicable.
+- версію APK, модель і версію Android;
+- мінімальні безпечні кроки відтворення;
+- очікувану й фактичну поведінку;
+- чи зачіпає проблема plaintext, ключі, backup/recovery, автентифікацію або
+  надсилання медіа.
+
+Перед зовнішнім розповсюдженням потрібні публічний контрольований контакт,
+підтримувана-version policy, coordinated disclosure та строки відповіді.
+
+## Межі та безпечна експлуатація
+
+- Не комітьте `local.properties`, API credentials, keystores, export-файли,
+  device dumps або розшифровані медіа.
+- Експортуйте recovery дані лише в зашифрований носій; тестуйте відновлення на
+  запасному встановленні, а не єдиній робочій копії.
+- Позначений Fork-Secure carrier, який неможливо перевірити чи розшифрувати,
+  має залишатися fail-closed і ніколи не ставати звичайним plaintext.
+- Проблеми upstream Telegram Android слід також повідомляти через відповідний
+  upstream security channel.
+
+## Межі рев’ю
+
+Будь-яка зміна протоколу, carrier parsing, ratchet/state persistence,
+Keystore lifecycle або Telegram transport boundary потребує окремого
+незалежного review. Дивіться [`docs/protocol-review/`](docs/protocol-review/)
+та карту реалізації в
+[`docs/TELEGRAM-ANDROID-FORK-MAP.md`](docs/TELEGRAM-ANDROID-FORK-MAP.md).

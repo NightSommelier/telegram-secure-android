@@ -1,13 +1,14 @@
 # Local MVP: Telegram Fork-Secure
 
-This repository builds a local, ordinary Telegram client for device testing.
-It does not provide an encrypted overlay or any additional confidentiality
-guarantee beyond Telegram's normal client behavior.
-Firebase library dependencies remain in the fork, but push delivery is not a
-feature of this local MVP. A custom package cannot use Telegram's official
-Firebase configuration, and a Firebase project owned by the fork would also
-need a server-side delivery arrangement with Telegram. Do not copy or reuse
-Telegram's Firebase configuration.
+This repository builds **Telegram Fork-Secure**, a local Telegram Android fork
+for private beta testing. It includes an experimental Fork-Secure layer for
+ordinary 1:1 chats and a separate protected Saved Messages mode. Native Telegram
+Secret Chats are not modified; groups, channels, and ordinary chats use normal
+Telegram behavior.
+
+The additional layer is not independently security-reviewed. The protocol-review
+gate remains [`CHANGES REQUIRED`](protocol-review/REVIEW-DECISION.md), so this
+MVP must not be presented as a high-assurance confidential messenger.
 
 ## One-time local setup
 
@@ -66,9 +67,13 @@ this key is configured, so they cannot use Telegram's upstream signing key.
 
 1. Start **Telegram Fork-Secure** and leave **Use test server** disabled.
 2. Log in to two separate production accounts on two devices.
-3. Send text, a photo, a document, and a voice message in both directions.
-4. Close and reopen both apps; confirm that the accounts, chats, and received
-   media remain available.
+3. In a paired 1:1 chat, verify protected text, captions, photos, files and
+   supported media in both directions; also verify an ordinary message after
+   turning protection off.
+4. Verify protected Saved Messages text/media separately.
+5. Close and reopen both apps; confirm that accounts, chats and received media
+   remain available. Test import/recovery on a spare installation before relying
+   on a backup.
 
 ## Verified local MVP (2026-07-22)
 
@@ -81,4 +86,5 @@ this key is configured, so they cannot use Telegram's upstream signing key.
 - Notifications were observed during the two-device release test. Behavior
   after force-stop or device reboot remains outside this smoke test.
 
-`SecureOverlay` and `docs/protocol-review` are intentionally outside this MVP.
+`SecureOverlay` is part of the fork implementation. `docs/protocol-review`
+remains the independent-review boundary and must not be changed to imply approval.
