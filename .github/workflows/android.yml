@@ -137,23 +137,52 @@ jobs:
             printf 'RELEASE_KEY_PASSWORD=%s\n' "$RELEASE_KEY_PASSWORD"
           } > signing.properties
 
-      - name: Build release APK and checksum
+      - name: Build release APKs and checksums
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew :TMessagesProj_App:assembleAfatRelease \
-            --no-daemon \
-            --console=plain \
-            -PLOCAL_MVP_ABI=arm64-v8a \
-            "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/35.0.0/aapt2"
-          apk=TMessagesProj_App/build/outputs/apk/afat/release/app.apk
-          test -s "$apk"
-          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$apk" >/dev/null
           version_name=$(sed -n 's/^APP_VERSION_NAME=//p' gradle.properties)
           mkdir -p dist/release
-          cp "$apk" "dist/release/telegram-fork-secure-${version_name}.apk"
-          sha256sum "dist/release/telegram-fork-secure-${version_name}.apk" \
-            > "dist/release/telegram-fork-secure-${version_name}.apk.sha256"
+          apk=TMessagesProj_App/build/outputs/apk/afat/release/app.apk
+
+          build_apk() {
+            local label="$1"
+            local abi="${2:-}"
+            local output="dist/release/telegram-fork-secure-${version_name}-${label}.apk"
+            local gradle_args=(
+              clean
+              :TMessagesProj_App:assembleAfatRelease
+              --no-daemon
+              --console=plain
+              "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/35.0.0/aapt2"
+            )
+            if [ -n "$abi" ]; then
+              gradle_args+=("-PLOCAL_MVP_ABI=$abi")
+            fi
+
+            rm -f "$apk"
+            ./gradlew "${gradle_args[@]}"
+            test -s "$apk"
+            "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$apk" >/dev/null
+            cp "$apk" "$output"
+
+            case "$label" in
+              universal)
+                for required_abi in armeabi-v7a arm64-v8a x86 x86_64; do
+                  unzip -Z1 "$output" | grep -Eq "^lib/$required_abi/libtmessages\\.[0-9]+\\.so$"
+                done
+                ;;
+              *)
+                unzip -Z1 "$output" | grep -Eq "^lib/$abi/libtmessages\\.[0-9]+\\.so$"
+                ;;
+            esac
+            sha256sum "$output" > "$output.sha256"
+          }
+
+          # Universal is the default Android APK; architecture-specific assets are smaller.
+          build_apk universal
+          build_apk arm64-v8a arm64-v8a
+          build_apk armeabi-v7a armeabi-v7a
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -174,7 +203,32 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/release/* --clobber
           else
-            gh release create "$tag" dist/release/* --title "Telegram Fork-Secure $tag" --generate-notes
+            cat > dist/release/RELEASE-NOTES.md <<EOF
+          ## Fork-Secure $tag
+
+          **Application version:** $(sed -n 's/^APP_VERSION_NAME=//p' gradle.properties)
+          **Source commit:** ${GITHUB_SHA::12}
+
+          ### Included APKs
+
+          - universal: all supported Android ABIs; use this when unsure.
+          - arm64-v8a: current 64-bit ARM phones.
+          - armeabi-v7a: older 32-bit ARM phones.
+
+          Every APK is signed with the project release key. A matching SHA-256 file is included for each APK.
+
+          ### Changes in this build
+
+          - Fork-Secure protected text and media functionality from the current fork state.
+          - CI now verifies debug compilation without release credentials and builds signed release APKs from protected GitHub Secrets.
+          - Multi-architecture release artifacts for Android devices.
+
+          > This is a pre-release. The independent security review remains **CHANGES REQUIRED**; do not treat this build as a completed cryptographic audit.
+          EOF
+            gh release create "$tag" dist/release/*.apk dist/release/*.sha256 \
+              --title "Telegram Fork-Secure $tag" \
+              --notes-file dist/release/RELEASE-NOTES.md \
+              --prerelease
           fi
 
       - name: Remove private build inputs
