@@ -34,10 +34,10 @@ For crypto, storage, or state changes, also run the connected
 `SecureOverlay` tests. For transport or chat UI changes, verify the affected
 flow on two test devices and record what was tested manually.
 
-The signing-capable Forgejo workflow runs only after a protected `master` push
-or protected tag. It intentionally does not execute untrusted pull-request
-code. Until an unprivileged PR runner exists, include the local verification
-output in the PR description.
+GitHub Actions compiles pull requests without repository secrets. Its
+signing-capable production APK job runs only after a `master` push, a `v*` tag,
+or manual dispatch. See [`docs/GITHUB-ACTIONS.md`](docs/GITHUB-ACTIONS.md).
+Never enable write tokens or release secrets for pull requests from forks.
 
 ## Pull requests and commits
 
