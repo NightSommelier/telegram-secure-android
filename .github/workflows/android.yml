@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           ./gradlew \
             :SecureOverlay:compileDebugAndroidTestJavaWithJavac \
-            :TMessagesProj:compileReleaseJavaWithJavac \
+            :TMessagesProj:compileDebugJavaWithJavac \
             --no-daemon \
             --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/35.0.0/aapt2"
