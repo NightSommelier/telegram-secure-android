@@ -1,6 +1,5 @@
 package org.telegram.secureoverlay;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -17,7 +16,12 @@ import javax.crypto.spec.SecretKeySpec;
 
 /** Per-file authenticated encryption used before media bytes enter Telegram transport. */
 public final class SecureMediaCrypto {
-    public static final int MAX_STATIC_STICKER_BYTES = 1024 * 1024;
+    /**
+     * Animated and video stickers legitimately exceed one MiB. Keep a bounded ceiling while
+     * processing files in fixed-size chunks so a sticker-panel tap cannot duplicate the whole
+     * file in the application heap.
+     */
+    public static final int MAX_STATIC_STICKER_BYTES = 8 * 1024 * 1024;
     /** Streaming attachment ceiling for the local MVP (Telegram documents can be much larger). */
     public static final int MAX_ATTACHMENT_BYTES = 512 * 1024 * 1024;
     public static final int GCM_TAG_BYTES = 16;
@@ -87,26 +91,85 @@ public final class SecureMediaCrypto {
         if (source == null || destination == null || !source.isFile()) {
             throw new IllegalArgumentException("secure sticker source is unavailable");
         }
-        byte[] plaintext = readBounded(source, MAX_STATIC_STICKER_BYTES);
-        EncryptedStaticSticker encrypted =
-                encryptSticker(plaintext, width, height, emoji, format);
+        long sourceSize = source.length();
+        if (sourceSize <= 0 || sourceSize > MAX_STATIC_STICKER_BYTES
+                || !matchesStickerFormat(source, format)) {
+            throw new IllegalArgumentException("secure sticker bytes do not match their format");
+        }
+        byte[] mediaId = randomBytes(16);
+        byte[] key = randomBytes(KEY_BYTES);
+        byte[] nonce = randomBytes(NONCE_BYTES);
+        // Validate caller-supplied dimensions and metadata before writing any encrypted bytes.
+        SecureContentCodec.encodeSticker(new SecureContentCodec.StaticSticker(
+                mediaId,
+                key,
+                nonce,
+                new byte[32],
+                (int) sourceSize,
+                (int) sourceSize + GCM_TAG_BYTES,
+                width,
+                height,
+                emoji,
+                format));
         File parent = destination.getParentFile();
         if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
             throw new SecureMediaException("cannot create secure media directory", null);
         }
         File temporary = new File(destination.getAbsolutePath() + ".tmp");
-        try (FileOutputStream output = new FileOutputStream(temporary, false)) {
-            output.write(encrypted.ciphertext);
+        MessageDigest digest = newSha256();
+        long plaintextBytes = 0;
+        long ciphertextBytes = 0;
+        try (FileInputStream input = new FileInputStream(source);
+                FileOutputStream output = new FileOutputStream(temporary, false)) {
+            Cipher cipher = createStickerCipher(Cipher.ENCRYPT_MODE, key, nonce, format);
+            byte[] buffer = new byte[64 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                plaintextBytes += count;
+                if (plaintextBytes > MAX_STATIC_STICKER_BYTES) {
+                    throw new IllegalArgumentException("secure sticker exceeds size limit");
+                }
+                byte[] encrypted = cipher.update(buffer, 0, count);
+                if (encrypted != null && encrypted.length != 0) {
+                    output.write(encrypted);
+                    digest.update(encrypted);
+                    ciphertextBytes += encrypted.length;
+                }
+            }
+            byte[] finalBytes = cipher.doFinal();
+            output.write(finalBytes);
+            digest.update(finalBytes);
+            ciphertextBytes += finalBytes.length;
             output.getFD().sync();
-        } catch (IOException e) {
+        } catch (IllegalArgumentException e) {
             temporary.delete();
-            throw new SecureMediaException("cannot persist encrypted secure media", e);
+            throw e;
+        } catch (IOException | GeneralSecurityException e) {
+            temporary.delete();
+            throw new SecureMediaException("cannot encrypt secure sticker", e);
+        }
+        if (plaintextBytes != sourceSize
+                || ciphertextBytes != plaintextBytes + GCM_TAG_BYTES) {
+            temporary.delete();
+            throw new SecureMediaException("secure sticker size changed while reading", null);
         }
         if (!temporary.renameTo(destination)) {
             temporary.delete();
             throw new SecureMediaException("cannot finalize encrypted secure media", null);
         }
-        return encrypted.manifest;
+        SecureContentCodec.StaticSticker manifest = new SecureContentCodec.StaticSticker(
+                mediaId,
+                key,
+                nonce,
+                digest.digest(),
+                (int) plaintextBytes,
+                (int) ciphertextBytes,
+                width,
+                height,
+                emoji,
+                format);
+        SecureContentCodec.encodeSticker(manifest);
+        return manifest;
     }
 
     public static byte[] decryptStaticSticker(
@@ -145,20 +208,54 @@ public final class SecureMediaCrypto {
         if (ciphertextFile == null || destination == null || !ciphertextFile.isFile()) {
             throw new IllegalArgumentException("secure sticker ciphertext is unavailable");
         }
-        byte[] ciphertext = readBounded(
-                ciphertextFile, MAX_STATIC_STICKER_BYTES + GCM_TAG_BYTES);
-        byte[] plaintext = decryptStaticSticker(ciphertext, manifest);
+        if (manifest == null
+                || ciphertextFile.length() != manifest.ciphertextSize
+                || !MessageDigest.isEqual(
+                        sha256File(ciphertextFile, MAX_STATIC_STICKER_BYTES + GCM_TAG_BYTES),
+                        manifest.ciphertextSha256)) {
+            throw new IllegalArgumentException("secure sticker ciphertext does not match manifest");
+        }
         File parent = destination.getParentFile();
         if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
             throw new SecureMediaException("cannot create decrypted media directory", null);
         }
         File temporary = new File(destination.getAbsolutePath() + ".tmp");
-        try (FileOutputStream output = new FileOutputStream(temporary, false)) {
-            output.write(plaintext);
+        long plaintextBytes = 0;
+        try (FileInputStream input = new FileInputStream(ciphertextFile);
+                FileOutputStream output = new FileOutputStream(temporary, false)) {
+            Cipher cipher = createStickerCipher(
+                    Cipher.DECRYPT_MODE, manifest.key, manifest.nonce, manifest.format);
+            byte[] buffer = new byte[64 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                byte[] decrypted = cipher.update(buffer, 0, count);
+                if (decrypted != null && decrypted.length != 0) {
+                    output.write(decrypted);
+                    plaintextBytes += decrypted.length;
+                    if (plaintextBytes > manifest.plaintextSize) {
+                        throw new IllegalArgumentException(
+                                "secure sticker plaintext exceeds manifest");
+                    }
+                }
+            }
+            byte[] finalBytes = cipher.doFinal();
+            output.write(finalBytes);
+            plaintextBytes += finalBytes.length;
             output.getFD().sync();
-        } catch (IOException e) {
+        } catch (AEADBadTagException e) {
             temporary.delete();
-            throw new SecureMediaException("cannot persist decrypted secure media", e);
+            throw new IllegalArgumentException("secure sticker authentication failed", e);
+        } catch (IllegalArgumentException e) {
+            temporary.delete();
+            throw e;
+        } catch (IOException | GeneralSecurityException e) {
+            temporary.delete();
+            throw new SecureMediaException("cannot decrypt secure sticker", e);
+        }
+        if (plaintextBytes != manifest.plaintextSize
+                || !matchesStickerFormat(temporary, manifest.format)) {
+            temporary.delete();
+            throw new IllegalArgumentException("secure sticker plaintext is invalid");
         }
         if (destination.exists() && !destination.delete()) {
             temporary.delete();
@@ -383,18 +480,24 @@ public final class SecureMediaCrypto {
 
     private static byte[] crypt(
             int mode, byte[] input, byte[] key, byte[] nonce, int format) {
-        if (key == null || key.length != KEY_BYTES || nonce == null || nonce.length != NONCE_BYTES) {
-            throw new IllegalArgumentException("invalid secure media key material");
-        }
         try {
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(mode, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
-            cipher.updateAAD(STICKER_AAD_PREFIX);
-            cipher.updateAAD(new byte[] {(byte) format});
+            Cipher cipher = createStickerCipher(mode, key, nonce, format);
             return cipher.doFinal(input);
         } catch (GeneralSecurityException e) {
             throw new SecureMediaException("secure media cryptography failed", e);
         }
+    }
+
+    private static Cipher createStickerCipher(int mode, byte[] key, byte[] nonce, int format)
+            throws GeneralSecurityException {
+        if (key == null || key.length != KEY_BYTES || nonce == null || nonce.length != NONCE_BYTES) {
+            throw new IllegalArgumentException("invalid secure media key material");
+        }
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(mode, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+        cipher.updateAAD(STICKER_AAD_PREFIX);
+        cipher.updateAAD(new byte[] {(byte) format});
+        return cipher;
     }
 
     private static Cipher createAttachmentCipher(
@@ -452,31 +555,33 @@ public final class SecureMediaCrypto {
         return false;
     }
 
+    private static boolean matchesStickerFormat(File source, int format) {
+        int headerSize = format == SecureContentCodec.STICKER_FORMAT_WEBP ? 12
+                : format == SecureContentCodec.STICKER_FORMAT_TGS ? 2
+                : format == SecureContentCodec.STICKER_FORMAT_WEBM ? 4 : 0;
+        if (headerSize == 0) {
+            return false;
+        }
+        byte[] header = new byte[headerSize];
+        try (FileInputStream input = new FileInputStream(source)) {
+            int offset = 0;
+            while (offset < header.length) {
+                int count = input.read(header, offset, header.length - offset);
+                if (count == -1) {
+                    return false;
+                }
+                offset += count;
+            }
+            return matchesStickerFormat(header, format);
+        } catch (IOException e) {
+            throw new SecureMediaException("cannot read secure sticker header", e);
+        }
+    }
+
     private static byte[] randomBytes(int count) {
         byte[] value = new byte[count];
         new SecureRandom().nextBytes(value);
         return value;
-    }
-
-    private static byte[] readBounded(File source, int maximum) {
-        long size = source.length();
-        if (size <= 0 || size > maximum) {
-            throw new IllegalArgumentException("secure media size is invalid");
-        }
-        try (FileInputStream input = new FileInputStream(source);
-                ByteArrayOutputStream output = new ByteArrayOutputStream((int) size)) {
-            byte[] buffer = new byte[16 * 1024];
-            int count;
-            while ((count = input.read(buffer)) != -1) {
-                if (output.size() + count > maximum) {
-                    throw new IllegalArgumentException("secure media exceeds size limit");
-                }
-                output.write(buffer, 0, count);
-            }
-            return output.toByteArray();
-        } catch (IOException e) {
-            throw new SecureMediaException("cannot read secure media", e);
-        }
     }
 
     private static byte[] sha256(byte[] value) {

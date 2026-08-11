@@ -16,6 +16,22 @@ import org.signal.libsignal.protocol.state.SessionRecord;
 @RunWith(AndroidJUnit4.class)
 public final class SecureChatEngineStateTest {
     @Test
+    public void detectsOnlyTheTargetPeersPersistedSecureStateForPrewarm() {
+        Context context = ApplicationProvider.getApplicationContext();
+        long protectedPeer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long otherPeer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        SecureChatState state = new SecureChatState(context);
+
+        assertFalse(SecureChatEngine.hasLocalState(context, 0, protectedPeer));
+        assertFalse(SecureChatEngine.hasLocalState(context, 0, otherPeer));
+
+        state.markPaired(0, protectedPeer);
+
+        assertTrue(SecureChatEngine.hasLocalState(context, 0, protectedPeer));
+        assertFalse(SecureChatEngine.hasLocalState(context, 0, otherPeer));
+    }
+
+    @Test
     public void resumesPausedChatOnlyWhenExistingSessionStillExists() {
         Context context = ApplicationProvider.getApplicationContext();
 

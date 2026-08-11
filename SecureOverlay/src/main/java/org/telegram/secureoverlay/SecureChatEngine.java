@@ -59,6 +59,18 @@ public final class SecureChatEngine {
         return keyguard != null && keyguard.isDeviceLocked();
     }
 
+    /**
+     * Checks whether a direct peer has persisted secure state without opening Android Keystore or
+     * a Signal session. Chat UI uses this to avoid spending work on ordinary conversations.
+     */
+    public static boolean hasLocalState(Context context, int account, long peerUserId) {
+        if (context == null || account < 0 || peerUserId <= 0) {
+            return false;
+        }
+        return new SecureChatState(context.getApplicationContext())
+                .hasStateForPeer(account, peerUserId);
+    }
+
     public enum Mode {
         OFF,
         WAITING,

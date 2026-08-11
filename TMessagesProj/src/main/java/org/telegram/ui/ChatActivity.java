@@ -61,6 +61,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.os.Trace;
 import android.os.Vibrator;
 import android.provider.ContactsContract;
 import android.provider.MediaStore;
@@ -446,6 +447,7 @@ public class ChatActivity extends BaseFragment implements
     private ActionBarMenuItem.Item timeItem2;
     private ActionBarMenuItem secureModeItem;
     private SecureChatEngine secureChatEngine;
+    private boolean forkSecureEnginePrewarmQueued;
     private SecureSavedMessagesKeyStore.KeyMaterial savedMessagesKeyMaterial;
     private int forkSecureReadyAckScheduledMessageId;
     private boolean forkSecureSuppressedWebPageSearch;
@@ -2997,6 +2999,8 @@ public class ChatActivity extends BaseFragment implements
         }
 
         super.onFragmentCreate();
+
+        prewarmSecureChatEngine();
 
         if (chatMode == MODE_PINNED) {
             ArrayList<MessageObject> messageObjects = new ArrayList<>();
@@ -20583,19 +20587,75 @@ public class ChatActivity extends BaseFragment implements
      * plaintext is loaded from the app's Keystore-encrypted local display cache.
      */
     public SecureChatEngine getSecureChatEngine() {
-        if (secureChatEngine == null || secureChatEngine.isStale()) {
-            secureChatEngine = new SecureChatEngine(getContext(), currentAccount, dialog_id);
+        Trace.beginSection("ForkSecure#getEngine");
+        try {
+            if (secureChatEngine == null || secureChatEngine.isStale()) {
+                secureChatEngine = new SecureChatEngine(getContext(), currentAccount, dialog_id);
+            }
+            return secureChatEngine;
+        } finally {
+            Trace.endSection();
         }
-        return secureChatEngine;
+    }
+
+    /**
+     * Opens the expensive local secure stores before a known protected conversation's history is
+     * delivered. No carrier is parsed, no key state is changed, and normal chats do no Keystore
+     * work. If loading wins the race, getSecureChatEngine keeps its synchronous fail-closed path.
+     */
+    private void prewarmSecureChatEngine() {
+        if (forkSecureEnginePrewarmQueued
+                || !DialogObject.isUserDialog(dialog_id)
+                || isForkSecureSavedMessagesChat()
+                || !SecureChatEngine.hasLocalState(getContext(), currentAccount, dialog_id)) {
+            return;
+        }
+        forkSecureEnginePrewarmQueued = true;
+        final Context applicationContext = getContext().getApplicationContext();
+        final int account = currentAccount;
+        final long peer = dialog_id;
+        Utilities.globalQueue.postRunnable(() -> {
+            SecureChatEngine prepared = null;
+            Trace.beginSection("ForkSecure#enginePrewarm");
+            try {
+                prepared = new SecureChatEngine(applicationContext, account, peer);
+            } catch (RuntimeException error) {
+                FileLog.e(error);
+            } finally {
+                Trace.endSection();
+            }
+            final SecureChatEngine readyEngine = prepared;
+            AndroidUtilities.runOnUIThread(() -> {
+                forkSecureEnginePrewarmQueued = false;
+                if (readyEngine != null
+                        && (secureChatEngine == null || secureChatEngine.isStale())) {
+                    secureChatEngine = readyEngine;
+                }
+            });
+        });
     }
 
     private void applySecureTextOverlay(ArrayList<MessageObject> candidates) {
+        Trace.beginSection("ForkSecure#overlay");
+        try {
+            applySecureTextOverlayInternal(candidates);
+        } finally {
+            Trace.endSection();
+        }
+    }
+
+    private void applySecureTextOverlayInternal(ArrayList<MessageObject> candidates) {
         // Telegram Secret Chats keep their native protocol and never enter this overlay.
         if (!DialogObject.isUserDialog(dialog_id) || candidates == null || candidates.isEmpty()) {
             return;
         }
         if (isForkSecureSavedMessagesChat()) {
-            applySavedMessagesSecureTextOverlay(candidates);
+            Trace.beginSection("ForkSecure#savedOverlay");
+            try {
+                applySavedMessagesSecureTextOverlay(candidates);
+            } finally {
+                Trace.endSection();
+            }
             return;
         }
         final SecureChatEngine secureChat;
@@ -20612,7 +20672,7 @@ public class ChatActivity extends BaseFragment implements
             if (message == null || message.messageOwner == null) {
                 continue;
             }
-            applySecureReplyOverlay(message, secureChat);
+            applyForkSecureReplyOverlay(message, secureChat);
             String carrier = message.messageOwner.message;
             try {
                 message.forkSecureVerified = false;
@@ -20638,7 +20698,8 @@ public class ChatActivity extends BaseFragment implements
                         message.applyNewText(getString(R.string.ForkSecurePairingOfferSent));
                     } else {
                         SecureChatEngine.PairingOfferResult result =
-                                secureChat.receivePairingOffer(carrier, message.getId());
+                                receiveForkSecurePairingOffer(
+                                        secureChat, carrier, message.getId());
                         if (result == SecureChatEngine.PairingOfferResult.ACCEPTED_INITIAL) {
                             message.applyNewText(getString(
                                     R.string.ForkSecurePairingCompletedConfirming));
@@ -20672,7 +20733,7 @@ public class ChatActivity extends BaseFragment implements
                     }
                     applyForkSecureServiceStyle(message, true);
                 } else if (message.isOutOwner()) {
-                    String localText = secureChat.getOutgoingText(carrier);
+                    String localText = getForkSecureOutgoingText(secureChat, carrier);
                     if (localText != null) {
                         message.applyNewText(formatForkSecureDisplayText(localText));
                         message.forkSecureVerified = true;
@@ -20694,7 +20755,7 @@ public class ChatActivity extends BaseFragment implements
                                 R.string.ForkSecureOutgoingUnavailable));
                     }
                 } else {
-                    String localText = secureChat.decryptText(carrier);
+                    String localText = decryptForkSecureText(secureChat, carrier);
                     message.applyNewText(formatForkSecureDisplayText(localText));
                     message.forkSecureVerified = true;
                     applyForkSecureServiceStyle(
@@ -20737,6 +20798,44 @@ public class ChatActivity extends BaseFragment implements
                 && chatActivityEnterView != null) {
             sendForkSecureSessionReadyAcknowledgement(
                     pairingAcknowledgementMessageId);
+        }
+    }
+
+    private String getForkSecureOutgoingText(SecureChatEngine secureChat, String carrier) {
+        Trace.beginSection("ForkSecure#outgoingCache");
+        try {
+            return secureChat.getOutgoingText(carrier);
+        } finally {
+            Trace.endSection();
+        }
+    }
+
+    private void applyForkSecureReplyOverlay(
+            MessageObject message, SecureChatEngine secureChat) {
+        Trace.beginSection("ForkSecure#replyOverlay");
+        try {
+            applySecureReplyOverlay(message, secureChat);
+        } finally {
+            Trace.endSection();
+        }
+    }
+
+    private SecureChatEngine.PairingOfferResult receiveForkSecurePairingOffer(
+            SecureChatEngine secureChat, String carrier, int messageId) {
+        Trace.beginSection("ForkSecure#pairingOffer");
+        try {
+            return secureChat.receivePairingOffer(carrier, messageId);
+        } finally {
+            Trace.endSection();
+        }
+    }
+
+    private String decryptForkSecureText(SecureChatEngine secureChat, String carrier) {
+        Trace.beginSection("ForkSecure#decrypt");
+        try {
+            return secureChat.decryptText(carrier);
+        } finally {
+            Trace.endSection();
         }
     }
 
@@ -20907,7 +21006,7 @@ public class ChatActivity extends BaseFragment implements
                         : R.string.ForkSecurePairingOfferReceived));
                 applyForkSecureServiceStyle(message, true);
             } else if (message.isOutOwner()) {
-                String localText = secureChat.getOutgoingText(carrier);
+                String localText = getForkSecureOutgoingText(secureChat, carrier);
                 if (localText == null) {
                     message.applyNewText(getString(R.string.ForkSecureOutgoingUnavailable));
                 } else {
@@ -20929,7 +21028,7 @@ public class ChatActivity extends BaseFragment implements
             } else {
                 String localText = cacheOnly
                         ? secureChat.getIncomingText(carrier)
-                        : secureChat.decryptText(carrier);
+                        : decryptForkSecureText(secureChat, carrier);
                 if (localText == null) {
                     // A replacement received before its original bubble is authenticated must
                     // never expose the marked Telegram carrier.
@@ -21910,6 +22009,15 @@ public class ChatActivity extends BaseFragment implements
      * session, accept a pairing offer, or emit a control message.
      */
     private void applyCachedSecureTextOverlay(ArrayList<MessageObject> candidates) {
+        Trace.beginSection("ForkSecure#cachedOverlayBatch");
+        try {
+            applyCachedSecureTextOverlayInternal(candidates);
+        } finally {
+            Trace.endSection();
+        }
+    }
+
+    private void applyCachedSecureTextOverlayInternal(ArrayList<MessageObject> candidates) {
         if (!DialogObject.isUserDialog(dialog_id)
                 || candidates == null
                 || candidates.isEmpty()) {
@@ -21917,7 +22025,7 @@ public class ChatActivity extends BaseFragment implements
         }
         boolean containsSecureDisplay = false;
         for (int i = 0; i < candidates.size(); i++) {
-            if (hasSecureDisplayCarrier(candidates.get(i))) {
+            if (needsCachedSecureTextOverlay(candidates.get(i))) {
                 containsSecureDisplay = true;
                 break;
             }
@@ -21951,7 +22059,16 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void applyCachedSecureTextOverlay(MessageObject message) {
-        if (!DialogObject.isUserDialog(dialog_id) || !hasSecureDisplayCarrier(message)) {
+        Trace.beginSection("ForkSecure#cachedOverlayOne");
+        try {
+            applyCachedSecureTextOverlayInternal(message);
+        } finally {
+            Trace.endSection();
+        }
+    }
+
+    private void applyCachedSecureTextOverlayInternal(MessageObject message) {
+        if (!DialogObject.isUserDialog(dialog_id) || !needsCachedSecureTextOverlay(message)) {
             return;
         }
         if (isForkSecureSavedMessagesChat()) {
@@ -21986,6 +22103,36 @@ public class ChatActivity extends BaseFragment implements
         }
         return message.messageOwner.reply_to != null
                 && SecureCarrierCodec.isMarked(message.messageOwner.reply_to.quote_text);
+    }
+
+    /**
+     * Metadata redraws can reach this boundary many times for the same MessageObject. Once a
+     * text-only carrier has been authenticated and replaced in memory, loading its local
+     * Keystore copy again cannot improve the display. Reprocess any raw/reset message, secure
+     * quote, or media still waiting for its ciphertext so this optimization never weakens the
+     * fail-closed or attachment paths.
+     */
+    private boolean needsCachedSecureTextOverlay(MessageObject message) {
+        if (!hasSecureDisplayCarrier(message)) {
+            return false;
+        }
+        if (message == null || message.messageOwner == null
+                || !SecureCarrierCodec.isMarked(message.messageOwner.message)
+                || !message.forkSecureVerified
+                || TextUtils.equals(message.messageText, message.messageOwner.message)) {
+            return true;
+        }
+        if (message.replyMessageObject != null
+                && message.replyMessageObject.messageOwner != null
+                && SecureCarrierCodec.isMarked(message.replyMessageObject.messageOwner.message)) {
+            return true;
+        }
+        if (message.messageOwner.reply_to != null
+                && SecureCarrierCodec.isMarked(message.messageOwner.reply_to.quote_text)) {
+            return true;
+        }
+        return message.getDocument() != null
+                && TextUtils.isEmpty(message.forkSecureMediaPath);
     }
 
     /**

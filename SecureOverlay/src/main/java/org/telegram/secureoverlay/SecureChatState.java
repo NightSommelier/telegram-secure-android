@@ -150,6 +150,20 @@ public final class SecureChatState {
         return false;
     }
 
+    /**
+     * Returns whether this exact peer has durable secure state worth preparing before its history
+     * is rendered. This deliberately reads only regular preferences; it must not touch Keystore
+     * or a Signal session while the UI decides whether a background prewarm is useful.
+     */
+    public boolean hasStateForPeer(int account, long peerUserId) {
+        return peerUserId > 0 && (isPaired(account, peerUserId)
+                || isWaiting(account, peerUserId)
+                || isPaused(account, peerUserId)
+                || isIdentityPending(account, peerUserId)
+                || getLastPairingMessageId(account, peerUserId) > 0
+                || preferences.contains(key(LAST_READY_MESSAGE_PREFIX, account, peerUserId)));
+    }
+
     public Summary getSummary(int account) {
         if (account < 0) {
             throw new IllegalArgumentException("account must not be negative");

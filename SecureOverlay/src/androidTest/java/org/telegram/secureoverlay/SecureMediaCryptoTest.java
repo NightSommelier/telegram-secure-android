@@ -80,6 +80,41 @@ public final class SecureMediaCryptoTest {
     }
 
     @Test
+    public void largeAnimatedStickerFileStreamsAndRoundTrips() throws IOException {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        File directory = new File(context.getCacheDir(), "secure-large-tgs-crypto-test");
+        directory.mkdirs();
+        File source = new File(directory, "source.tgs");
+        File encrypted = new File(directory, "opaque.bin");
+        File decrypted = new File(directory, "decrypted.tgs");
+        byte[] plaintext = new byte[2 * 1024 * 1024 + 3];
+        plaintext[0] = (byte) 0x1f;
+        plaintext[1] = (byte) 0x8b;
+        for (int i = 2; i < plaintext.length; i++) {
+            plaintext[i] = (byte) (i * 17);
+        }
+        try (FileOutputStream output = new FileOutputStream(source, false)) {
+            output.write(plaintext);
+        }
+
+        SecureContentCodec.StaticSticker manifest = SecureMediaCrypto.encryptStickerFile(
+                source,
+                encrypted,
+                512,
+                512,
+                "",
+                SecureContentCodec.STICKER_FORMAT_TGS);
+        SecureMediaCrypto.decryptStickerFile(encrypted, decrypted, manifest);
+
+        assertEquals(plaintext.length + SecureMediaCrypto.GCM_TAG_BYTES, encrypted.length());
+        assertArrayEquals(plaintext, readFile(decrypted));
+        source.delete();
+        encrypted.delete();
+        decrypted.delete();
+        directory.delete();
+    }
+
+    @Test
     public void manifestFormatCannotBeChangedWithoutAuthenticationFailure() {
         SecureMediaCrypto.EncryptedStaticSticker encrypted =
                 SecureMediaCrypto.encryptSticker(
