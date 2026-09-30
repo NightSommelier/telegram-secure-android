@@ -22648,6 +22648,12 @@ public class ChatActivity extends BaseFragment implements
         }
         boolean enabled = SecureSavedMessagesSettings.isSecureByDefault(
                 getContext(), currentAccount);
+        if (enabled) {
+            suppressForkSecureLinkPreview();
+            clearForkSecureCloudDraft();
+        } else {
+            restoreForkSecureLinkPreviewSearch();
+        }
         secureModeItem.setIcon(
                 enabled ? R.drawable.outline_header_lock_24 : R.drawable.outline_shield_plain_24,
                 true);
@@ -22679,13 +22685,15 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private boolean isForkSecureContentProtected() {
-        if (currentEncryptedChat != null || !DialogObject.isUserDialog(dialog_id)) {
+        if (currentEncryptedChat != null) {
             return false;
         }
-        if (dialog_id == getUserConfig().getClientUserId()
-                && SecureSavedMessagesSettings.isSecureByDefault(
-                        ApplicationLoader.applicationContext, currentAccount)) {
-            return true;
+        if (isForkSecureSavedMessagesChat()) {
+            Context context = getContext() != null ? getContext() : ApplicationLoader.applicationContext;
+            return SecureSavedMessagesSettings.isSecureByDefault(context, currentAccount);
+        }
+        if (!DialogObject.isUserDialog(dialog_id)) {
+            return false;
         }
         try {
             SecureChatEngine.Mode mode = getSecureChatEngine().getMode();
@@ -22736,7 +22744,7 @@ public class ChatActivity extends BaseFragment implements
     private void clearForkSecureCloudDraft() {
         getMediaDataController().saveDraft(
                 dialog_id,
-                0,
+                computeDraftThreadId(replyingMessageObject),
                 "",
                 null,
                 null,
@@ -32405,6 +32413,11 @@ public class ChatActivity extends BaseFragment implements
     @Override
     public void onResume() {
         super.onResume();
+        if (isSavedMessagesSecureUiEligible()) {
+            updateSavedMessagesModeUi();
+        } else if (isSecureModeUiEligible()) {
+            updateSecureModeUi();
+        }
         if (!forkSecureDeferredMessages.isEmpty()
                 && !SecureChatEngine.isStateTemporarilyUnavailable(getContext())) {
             ArrayList<MessageObject> deferred = new ArrayList<>();
