@@ -395,11 +395,8 @@ public class MessageObject {
         int mediaKind;
         if (entry.kind == SecureMediaIndex.KIND_PHOTO) {
             mediaKind = FORK_SECURE_MEDIA_KIND_PHOTO;
-        } else if (entry.kind == SecureMediaIndex.KIND_FILE
-                || entry.kind == SecureMediaIndex.KIND_VIDEO) {
-            mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
         } else {
-            return false;
+            mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
         }
         File plaintext = new File(entry.plaintextPath);
         String albumId = "";

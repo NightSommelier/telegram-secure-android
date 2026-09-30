@@ -2315,6 +2315,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (!DialogObject.isUserDialog(peer)) {
             return false;
         }
+        if (peer == getUserConfig().getClientUserId()) {
+            return SecureSavedMessagesSettings.isSecureByDefault(
+                    ApplicationLoader.applicationContext, currentAccount);
+        }
         try {
             SecureChatEngine.Mode mode = new SecureChatEngine(
                     ApplicationLoader.applicationContext,
@@ -3466,6 +3470,17 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     ) {
         if (messages == null || messages.isEmpty()) {
             return 0;
+        }
+        if (isForkSecureProtectedPeer(peer)) {
+            showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+            return 0;
+        }
+        for (int i = 0; i < messages.size(); i++) {
+            MessageObject msg = messages.get(i);
+            if (msg != null && msg.isForkSecureCarrier()) {
+                showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+                return 0;
+            }
         }
         int sendResult = 0;
         long myId = getUserConfig().getClientUserId();
@@ -5822,27 +5837,40 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             return;
         }
         if (!forkSecureCarrier && isForkSecureProtectedPeer(peer)) {
+            final boolean savedMessages = peer == getUserConfig().getClientUserId();
             if (user != null && user.phone != null && ttl == 0) {
                 try {
-                    SecureChatEngine secureChat = new SecureChatEngine(
-                            ApplicationLoader.applicationContext, currentAccount, peer);
-                    if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
-                            || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
-                        showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
-                        return;
+                    SecureContentCodec.Contact secureContact = new SecureContentCodec.Contact(
+                            user.phone,
+                            user.first_name,
+                            user.last_name,
+                            "");
+                    String carrier;
+                    if (savedMessages) {
+                        SecureSavedMessagesKeyStore.KeyMaterial key =
+                                new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
+                        byte[] payload = SecureContentCodec.encodeContact(secureContact);
+                        carrier = SecureCarrierCodec.encode(
+                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                                SecureSavedMessageCrypto.encryptRecord(payload, key));
+                    } else {
+                        SecureChatEngine secureChat = new SecureChatEngine(
+                                ApplicationLoader.applicationContext, currentAccount, peer);
+                        if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                                || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                            showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                            return;
+                        }
+                        if (!secureChat.isPaired()) {
+                            showForkSecureError(R.string.ForkSecureActionUnsupported);
+                            return;
+                        }
+                        carrier = secureChat.encryptContact(secureContact);
                     }
-                    if (secureChat.isPaired()) {
-                        SecureContentCodec.Contact secureContact = new SecureContentCodec.Contact(
-                                user.phone,
-                                user.first_name,
-                                user.last_name,
-                                "");
-                        String carrier = secureChat.encryptContact(secureContact);
-                        sendMessageParams.user = null;
-                        sendMessageParams.message = carrier;
-                        sendMessage(sendMessageParams);
-                        return;
-                    }
+                    sendMessageParams.user = null;
+                    sendMessageParams.message = carrier;
+                    sendMessage(sendMessageParams);
+                    return;
                 } catch (Exception error) {
                     FileLog.e(error);
                     showForkSecureError(R.string.ForkSecureSetupSendFailed);
@@ -5850,27 +5878,39 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 }
             } else if (location != null && location.geo != null && ttl == 0) {
                 try {
-                    SecureChatEngine secureChat = new SecureChatEngine(
-                            ApplicationLoader.applicationContext, currentAccount, peer);
-                    if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
-                            || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
-                        showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
-                        return;
+                    int accuracy = location.geo.accuracy_radius;
+                    int period = location.period;
+                    SecureContentCodec.GeoLocation secureLocation = new SecureContentCodec.GeoLocation(
+                            location.geo.lat,
+                            location.geo._long,
+                            accuracy,
+                            period);
+                    String carrier;
+                    if (savedMessages) {
+                        SecureSavedMessagesKeyStore.KeyMaterial key =
+                                new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
+                        byte[] payload = SecureContentCodec.encodeLocation(secureLocation);
+                        carrier = SecureCarrierCodec.encode(
+                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                                SecureSavedMessageCrypto.encryptRecord(payload, key));
+                    } else {
+                        SecureChatEngine secureChat = new SecureChatEngine(
+                                ApplicationLoader.applicationContext, currentAccount, peer);
+                        if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                                || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                            showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                            return;
+                        }
+                        if (!secureChat.isPaired()) {
+                            showForkSecureError(R.string.ForkSecureActionUnsupported);
+                            return;
+                        }
+                        carrier = secureChat.encryptLocation(secureLocation);
                     }
-                    if (secureChat.isPaired()) {
-                        int accuracy = location.geo.accuracy_radius;
-                        int period = location.period;
-                        SecureContentCodec.GeoLocation secureLocation = new SecureContentCodec.GeoLocation(
-                                location.geo.lat,
-                                location.geo._long,
-                                accuracy,
-                                period);
-                        String carrier = secureChat.encryptLocation(secureLocation);
-                        sendMessageParams.location = null;
-                        sendMessageParams.message = carrier;
-                        sendMessage(sendMessageParams);
-                        return;
-                    }
+                    sendMessageParams.location = null;
+                    sendMessageParams.message = carrier;
+                    sendMessage(sendMessageParams);
+                    return;
                 } catch (Exception error) {
                     FileLog.e(error);
                     showForkSecureError(R.string.ForkSecureSetupSendFailed);
