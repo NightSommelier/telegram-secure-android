@@ -8282,7 +8282,7 @@ public class MessageObject {
                 hasEntities = !entities.isEmpty();
             }
 
-            boolean useManualParse = forceManualEntities || !hasEntities && (
+            boolean useManualParse = forceManualEntities || isForkSecureCarrier() || !hasEntities && (
                 eventId != 0 ||
                 getMedia(messageOwner) instanceof TLRPC.TL_messageMediaPhoto_old ||
                 getMedia(messageOwner) instanceof TLRPC.TL_messageMediaPhoto_layer68 ||
@@ -8294,6 +8294,9 @@ public class MessageObject {
                 messageOwner.id < 0
             );
 
+            if (!(caption instanceof Spannable)) {
+                caption = new SpannableStringBuilder(caption);
+            }
             if (useManualParse) {
                 if (containsUrls(caption)) {
                     try {
@@ -9188,7 +9191,7 @@ public class MessageObject {
             hasEntities = !getEntities().isEmpty();
         }
 
-        boolean useManualParse = !hasEntities && (
+        boolean useManualParse = isForkSecureCarrier() || !hasEntities && (
             eventId != 0 ||
             messageOwner instanceof TLRPC.TL_message_old ||
             messageOwner instanceof TLRPC.TL_message_old2 ||
@@ -9202,6 +9205,10 @@ public class MessageObject {
             messageOwner.id < 0
         );
 
+        if (!(messageText instanceof Spannable)) {
+            messageText = new SpannableStringBuilder(messageText);
+        }
+
         if (useManualParse) {
             addLinks(isOutOwner(), messageText, true, true);
         } else {
@@ -9213,9 +9220,6 @@ public class MessageObject {
             applyTimestampsHighlightForReplyMsg();
         }
 
-        if (!(messageText instanceof Spannable)) {
-            messageText = new SpannableStringBuilder(messageText);
-        }
         return addEntitiesToText(messageText, useManualParse);
     }
 
