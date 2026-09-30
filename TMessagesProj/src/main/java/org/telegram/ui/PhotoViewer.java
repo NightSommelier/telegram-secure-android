@@ -15863,6 +15863,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             if (newMessageObject != null) {
                 newMessageObject.openedInViewer = true;
             }
+            updateWindowSecure();
             isLivePhoto = newMessageObject.isLivePhoto();
             isVideo = newMessageObject.isVideo();
             if (newMessageObject.isSponsored()) {
@@ -17761,9 +17762,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         MessageObject message = getViewerActionMessage();
         currentDialogId = message.getDialogId();
+        boolean screenProtection = org.telegram.secureoverlay.SecureContentSettings.isScreenProtectionEnabled(
+                ApplicationLoader.applicationContext);
         boolean noforwards = MessagesController.getInstance(currentAccount)
                 .isPeerNoForwards(currentDialogId)
-                || message.messageOwner != null && message.messageOwner.noforwards;
+                || (message.messageOwner != null && message.messageOwner.noforwards)
+                || screenProtection;
         boolean canWrite = true;
         if (currentDialogId < 0) {
             TLRPC.Chat chat = MessagesController.getInstance(message.currentAccount)
@@ -18214,19 +18218,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR |
                 WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM |
                 WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS;
-            MessageObject secureWindowMessage = messageObject != null
-                    ? messageObject : getForkSecureViewerMessage();
-            if (chatActivity != null && chatActivity.getCurrentEncryptedChat() != null ||
-                avatarsDialogId != 0 && MessagesController.getInstance(currentAccount).isPeerNoForwards(avatarsDialogId) ||
-                secureWindowMessage != null && (MessagesController.getInstance(currentAccount).isPeerNoForwards(secureWindowMessage.getDialogId()) ||
-                (secureWindowMessage.messageOwner != null && secureWindowMessage.messageOwner.noforwards)) || secureWindowMessage != null && secureWindowMessage.hasRevealedExtendedMedia()
-            ) {
-                windowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_SECURE;
-                AndroidUtilities.logFlagSecure();
-            } else {
-                windowLayoutParams.flags &=~ WindowManager.LayoutParams.FLAG_SECURE;
-                AndroidUtilities.logFlagSecure();
-            }
+            updateWindowSecure();
             windowLayoutParams.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_IS_FORWARD_NAVIGATION;
             windowView.setFocusable(false);
             containerView.setFocusable(false);
@@ -18794,11 +18786,47 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         videoPlayerSeekbar.setBufferedProgress(0);
     }
 
+    private void updateWindowSecure() {
+        if (windowView == null || windowLayoutParams == null || parentActivity == null) {
+            return;
+        }
+        MessageObject secureWindowMessage = currentMessageObject != null
+                ? currentMessageObject
+                : getForkSecureViewerMessage();
+        boolean forkSecureProtected = (secureWindowMessage != null && secureWindowMessage.isForkSecureCarrier())
+                || (parentChatActivity != null && parentChatActivity.isForkSecureContentProtected());
+        boolean forkSecureScreenProtection = forkSecureProtected
+                && org.telegram.secureoverlay.SecureContentSettings.isScreenProtectionEnabled(
+                        ApplicationLoader.applicationContext);
+        boolean shouldSecure = (parentChatActivity != null && parentChatActivity.getCurrentEncryptedChat() != null)
+                || (avatarsDialogId != 0 && MessagesController.getInstance(currentAccount).isPeerNoForwards(avatarsDialogId))
+                || (secureWindowMessage != null && (MessagesController.getInstance(currentAccount).isPeerNoForwards(secureWindowMessage.getDialogId())
+                    || (secureWindowMessage.messageOwner != null && secureWindowMessage.messageOwner.noforwards)))
+                || (secureWindowMessage != null && secureWindowMessage.hasRevealedExtendedMedia())
+                || forkSecureScreenProtection;
+        int oldFlags = windowLayoutParams.flags;
+        if (shouldSecure) {
+            windowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_SECURE;
+        } else {
+            windowLayoutParams.flags &= ~WindowManager.LayoutParams.FLAG_SECURE;
+        }
+        if (oldFlags != windowLayoutParams.flags && windowView.isAttachedToWindow()) {
+            WindowManager wm = (WindowManager) parentActivity.getSystemService(Context.WINDOW_SERVICE);
+            try {
+                wm.updateViewLayout(windowView, windowLayoutParams);
+                AndroidUtilities.logFlagSecure();
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+        }
+    }
+
     private void makeFocusable() {
         windowLayoutParams.flags =
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
                     WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR |
                     WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS;
+        updateWindowSecure();
         windowLayoutParams.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_IS_FORWARD_NAVIGATION;
         WindowManager wm1 = (WindowManager) parentActivity.getSystemService(Context.WINDOW_SERVICE);
         try {

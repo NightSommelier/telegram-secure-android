@@ -22901,7 +22901,7 @@ public class ChatActivity extends BaseFragment implements
         }
     }
 
-    private boolean isForkSecureContentProtected() {
+    public boolean isForkSecureContentProtected() {
         if (currentEncryptedChat != null) {
             return false;
         }

@@ -21,17 +21,18 @@ Fork-Secure cannot hide those properties while using Telegram transport.
 | --- | --- | --- |
 | Text | Encrypted `TGS1:` carrier; local display cache | Telegram still observes carrier size/timing |
 | Replies and quotes | Encrypted body; plaintext quote fields stripped | Reply message ID remains Telegram metadata |
-| Forwarding | Secure text is decrypted locally and re-encrypted for the destination | Secure media forwarding is blocked |
+| Forwarding | Secure text and media (photos, voice, video, audio, files) decrypted locally and re-encrypted for the destination with presentation preservation | Destination must be a protected peer or Saved Messages session |
 | Silent send | `notify=false` is preserved | Telegram sees the silent flag |
 | Scheduled send | Encrypted carrier and schedule parameters are preserved | Telegram sees schedule; delayed/out-of-order ratchet behavior needs tests |
 | Stickers | WEBP, TGS and WEBM bytes are encrypted under opaque upload names | File size and timing remain visible |
-| Photos | Original bytes, name, MIME and caption are encrypted; native viewer works | Albums, spoilers and view-once are incomplete |
-| Documents | File bytes and authenticated metadata are encrypted | Native media-specific playback is incomplete |
+| Photos & Media Viewer | Original bytes, name, MIME and caption are encrypted; native viewer, albums and swipe sequences work; `FLAG_SECURE` enforced; gallery save/share blocked under screen protection | Spoilers and view-once remain incomplete |
+| Documents & Audio/Voice | File bytes, authenticated metadata, waveform, title/performer encrypted; native playback routed via decrypted cache | Streaming for very large multi-gigabyte media files |
 | Edits | Encrypted edit control message with local rollback support | Replay protection and edit history in cache |
-| Reactions | Native Telegram reactions are available without per-action warnings | Telegram sees the emoji, target message ID and actor; this limitation remains documented in the secure-chat status details |
+| Reactions | Blocked fail-closed on protected chats and Fork-Secure carriers | Unencrypted reactions rejected with user notification |
 | Deletion | Authenticated Signal remote delete control packet purges decrypted text, content, and disk files by digest | Telegram still syncs carrier deletion; delayed delivery of delete control if peer is offline |
 | Contacts | Encrypted `TYPE_CONTACT` payload inside carrier; unencrypted contact data stripped | Telegram sees carrier size only |
 | Location | Encrypted `TYPE_GEO_LOCATION` payload; bubble preview blocks external tile requests (`currentMapProvider = -1`), opens in protected secret mode | Telegram sees carrier size only; user must consent to view map |
+| Screen Protection | `FLAG_SECURE` enforced across `ChatActivity`, `ProfileActivity`, `ChatMessageCell`, and `PhotoViewer`; gallery export and sharing blocked | Root/OS-level screen hooks outside Android window security |
 | Identity reset and recovery | Reset, identity-only archive, and manual identity-plus-history archive prototype | History restore pauses every recovered chat; automatic backup and safe multi-device protocol remain pending |
 
 ## Closed P0 fallback paths

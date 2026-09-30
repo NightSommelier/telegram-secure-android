@@ -2520,7 +2520,32 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             flagSecure = null;
         }
         if (layout != null && layout.getParentActivity() != null) {
-            flagSecure = new FlagSecureReason(layout.getParentActivity().getWindow(), () -> currentEncryptedChat != null || isPeerNoForwards());
+            flagSecure = new FlagSecureReason(layout.getParentActivity().getWindow(), () ->
+                currentEncryptedChat != null ||
+                isPeerNoForwards() ||
+                (org.telegram.secureoverlay.SecureContentSettings.isScreenProtectionEnabled(ApplicationLoader.applicationContext)
+                        && isForkSecureProtected())
+            );
+        }
+    }
+
+    private boolean isForkSecureProtected() {
+        long peerId = dialogId != 0 ? dialogId : userId;
+        if (!DialogObject.isUserDialog(peerId)) {
+            return false;
+        }
+        try {
+            org.telegram.secureoverlay.SecureChatEngine secureChat =
+                    new org.telegram.secureoverlay.SecureChatEngine(
+                            ApplicationLoader.applicationContext,
+                            currentAccount,
+                            peerId);
+            org.telegram.secureoverlay.SecureChatEngine.Mode mode = secureChat.getMode();
+            return mode == org.telegram.secureoverlay.SecureChatEngine.Mode.PROTECTED
+                    || mode == org.telegram.secureoverlay.SecureChatEngine.Mode.IDENTITY_CHANGED
+                    || mode == org.telegram.secureoverlay.SecureChatEngine.Mode.RECOVERY_CHANGED;
+        } catch (RuntimeException ignored) {
+            return false;
         }
     }
 

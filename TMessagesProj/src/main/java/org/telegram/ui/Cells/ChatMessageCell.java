@@ -12224,7 +12224,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         currentMessageObject.type == MessageObject.TYPE_PAID_MEDIA && (groupMedia == null || !groupMedia.hidden) ||
                         currentMessageObject.messageOwner.noforwards && !currentMessageObject.isEphemeral() ||
                         currentMessageObject.isVoiceOnce() ||
-                        currentMessageObject.hasRevealedExtendedMedia()
+                        currentMessageObject.hasRevealedExtendedMedia() ||
+                        (currentMessageObject.isForkSecureCarrier()
+                            && org.telegram.secureoverlay.SecureContentSettings.isScreenProtectionEnabled(
+                                    org.telegram.messenger.ApplicationLoader.applicationContext))
                     )
                 );
                 if (attachedToWindow) {
