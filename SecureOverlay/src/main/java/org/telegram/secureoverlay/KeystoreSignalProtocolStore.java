@@ -72,13 +72,58 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     @Override public IdentityKeyPair getIdentityKeyPair() { return identity; }
     @Override public int getLocalRegistrationId() { return registrationId; }
 
+    private static final int PRE_KEY_POOL_MIN = 10;
+    private static final int PRE_KEY_POOL_BATCH = 50;
+
+    private int getNextPreKeyId() {
+        try {
+            byte[] b = blobs.get("counter/prekey");
+            int current = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 0;
+            if (current == 0 && containsPreKey(1)) {
+                current = 1;
+            }
+            int next = current + 1;
+            if (next >= 0xFFFFFF || next <= 0) {
+                next = 1;
+            }
+            blobs.put("counter/prekey", ByteBuffer.allocate(4).putInt(next).array());
+            return next;
+        } catch (Exception e) {
+            throw failure(e);
+        }
+    }
+
+    public synchronized void replenishPreKeysIfNeeded() {
+        try {
+            List<Integer> existing = index("prekey");
+            if (existing.size() >= PRE_KEY_POOL_MIN) {
+                return;
+            }
+            int needed = PRE_KEY_POOL_BATCH - existing.size();
+            for (int i = 0; i < needed; i++) {
+                int id = getNextPreKeyId();
+                while (containsPreKey(id)) {
+                    id = getNextPreKeyId();
+                }
+                storePreKey(id, new PreKeyRecord(id, ECKeyPair.generate()));
+            }
+        } catch (Exception e) {
+            throw failure(e);
+        }
+    }
+
     /** Creates the one-time material required to publish a 1:1 pre-key bundle. */
     public synchronized LocalPreKeyMaterial ensureLocalPreKeyMaterial() {
-        final int preKeyId = 1;
         final int signedPreKeyId = 2;
         final int kyberPreKeyId = 3;
         try {
-            if (!containsPreKey(preKeyId)) {
+            replenishPreKeysIfNeeded();
+            List<Integer> existing = index("prekey");
+            int preKeyId;
+            if (!existing.isEmpty()) {
+                preKeyId = existing.get(0);
+            } else {
+                preKeyId = getNextPreKeyId();
                 storePreKey(preKeyId, new PreKeyRecord(preKeyId, ECKeyPair.generate()));
             }
             if (!containsSignedPreKey(signedPreKeyId)) {
@@ -143,7 +188,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     public static void resetProtocolState(Context context) {
         try {
             new KeystoreEncryptedBlobStore(context.getApplicationContext()).deleteRoots(
-                    IDENTITY, REGISTRATION, "prekey", "signed", "kyber", "index",
+                    IDENTITY, REGISTRATION, "counter", "prekey", "signed", "kyber", "index",
                     "kyber-used", "session", "sender");
         } catch (Exception e) {
             throw failure(e);
@@ -182,6 +227,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
                     replacements,
                     IDENTITY,
                     REGISTRATION,
+                    "counter",
                     "prekey",
                     "signed",
                     "kyber",

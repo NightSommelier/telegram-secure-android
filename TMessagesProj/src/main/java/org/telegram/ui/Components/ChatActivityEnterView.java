@@ -7673,6 +7673,9 @@ public class ChatActivityEnterView extends FrameLayout implements
                                         SecureContentCodec.encodeAttachment(attachment), key));
                     } else {
                         SecureChatEngine secureChat = getSecureChatEngine();
+                        if (secureChat == null || !secureChat.isPaired()) {
+                            return;
+                        }
                         attachment = secureChat.getOutgoingAttachment(carrier);
                         attachment = new SecureContentCodec.Attachment(
                                 attachment.mediaId, attachment.key, attachment.nonce,
@@ -7684,15 +7687,36 @@ public class ChatActivityEnterView extends FrameLayout implements
                                         editingMessageObject.messageOwner.invert_media),
                                 attachment.width,
                                 attachment.height, attachment.photo);
-                        message[0] = secureChat.encryptAttachmentForTransport(
-                                attachment, 1024, 4096).attachmentCarrier;
+                        SecureChatEngine.AttachmentEditTransport editTransport =
+                                secureChat.encryptAttachmentForEdit(attachment, 1024, 4096);
+                        message[0] = editTransport.attachmentCarrier;
+                        editingMessageObject.forkSecureAttachmentEditTransport = editTransport;
                     }
                 } else {
-                    SecureChatEngine secureChat = getSecureChatEngine();
-                    if (!secureChat.isPaired() || message[0].length() > 2800) {
-                        return;
+                    if (parentFragment != null
+                            && parentFragment.isSavedMessagesSecureModeEnabled()) {
+                        SecureSavedMessagesKeyStore.KeyMaterial key;
+                        try {
+                            key = new SecureSavedMessagesKeyStore(parentFragment.getContext())
+                                    .getOrCreate(currentAccount);
+                        } catch (Exception error) {
+                            throw new IllegalStateException(
+                                    "Saved Messages key unavailable", error);
+                        }
+                        byte[] payload = SecureContentCodec.encodeText(message[0].toString());
+                        message[0] = SecureCarrierCodec.encode(
+                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                                SecureSavedMessageCrypto.encryptRecord(payload, key));
+                    } else {
+                        SecureChatEngine secureChat = getSecureChatEngine();
+                        if (secureChat == null || !secureChat.isPaired() || message[0].length() > 2800) {
+                            return;
+                        }
+                        SecureChatEngine.TextEditTransport editTransport =
+                                secureChat.encryptTextForEdit(message[0].toString(), 4096);
+                        message[0] = editTransport.textCarrier;
+                        editingMessageObject.forkSecureTextEditTransport = editTransport;
                     }
-                    message[0] = secureChat.encryptText(message[0].toString());
                 }
                 entities = null;
             } catch (RuntimeException error) {

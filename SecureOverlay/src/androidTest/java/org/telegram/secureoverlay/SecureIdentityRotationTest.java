@@ -507,6 +507,40 @@ public final class SecureIdentityRotationTest {
                 SecurePreKeyBundleCodec.encode(bundle));
     }
 
+    @Test
+    public void textEditAdvancesRatchetAndCanRollBack() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        SecureChatEngine.resetOwnIdentity(context);
+        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        RemotePeer remotePeer = remotePeer();
+        SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
+        engine.receivePairingOffer(remotePeer.offer, 401);
+        String confirmation = engine.createPairingAcknowledgement();
+        decryptFromEngine(remotePeer, confirmation);
+        String ready = encryptFromRemote(
+                remotePeer, "\u0000fork-secure-control:pairing-ready:v1");
+        engine.decryptText(ready);
+
+        SecureChatEngine.TextEditTransport transport =
+                engine.encryptTextForEdit("edited message text", 4096);
+        assertTrue(transport.textCarrier != null && transport.textCarrier.length() <= 4096);
+
+        byte[] decrypted = decryptFromEngine(remotePeer, transport.textCarrier);
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(decrypted);
+        assertEquals(SecureContentCodec.TYPE_TEXT, decoded.type);
+        assertEquals("edited message text", decoded.text);
+
+        SecureChatEngine.TextEditTransport failedTransport =
+                engine.encryptTextForEdit("failed text", 4096);
+        engine.rollbackTextEdit(failedTransport);
+
+        SecureChatEngine.TextEditTransport nextTransport =
+                engine.encryptTextForEdit("recovered text", 4096);
+        byte[] nextDecrypted = decryptFromEngine(remotePeer, nextTransport.textCarrier);
+        SecureContentCodec.Decoded nextDecoded = SecureContentCodec.decode(nextDecrypted);
+        assertEquals("recovered text", nextDecoded.text);
+    }
+
     private static String pairingOffer(
             IdentityKeyPair identity,
             SecureRecoveryGenerationStore.Record recovery) {

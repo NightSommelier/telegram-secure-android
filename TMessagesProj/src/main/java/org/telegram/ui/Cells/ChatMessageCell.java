@@ -8711,7 +8711,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                                     autoDownload = false;
                                 }
                                 String filter = currentPhotoObject instanceof TLRPC.TL_photoStrippedSize || "s".equals(currentPhotoObject.type) ? currentPhotoFilterThumb : currentPhotoFilter;
-                                if ((messageObject.mediaExists || autoDownload) && !currentMessageObject.isRepostPreview) {
+                                if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+                                    photoImage.setImage(ImageLocation.getForPath(messageObject.forkSecureMediaPath), null, ImageLocation.getForDocument(currentPhotoObject, documentAttach), filter, null, null, currentPhotoObjectThumbStripped, 0, null, messageObject, 0);
+                                } else if ((messageObject.mediaExists || autoDownload) && !currentMessageObject.isRepostPreview) {
                                     autoPlayingMedia = true;
                                     TLRPC.VideoSize videoSize = MessageObject.getDocumentVideoThumb(document);
                                     if (!messageObject.mediaExists && videoSize != null && (currentPhotoObject == null || currentPhotoObjectThumb == null)) {
@@ -10516,7 +10518,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     } else if (messageObject.type == MessageObject.TYPE_GIF || messageObject.type == MessageObject.TYPE_ROUND_VIDEO) {
                         String fileName = FileLoader.getAttachFileName(messageObject.getDocument());
                         int localFile = 0;
-                        if (messageObject.attachPathExists) {
+                        if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath) && new File(messageObject.forkSecureMediaPath).exists()) {
+                            DownloadController.getInstance(currentAccount).removeLoadingFileObserver(this);
+                            localFile = 3;
+                        } else if (messageObject.attachPathExists) {
                             DownloadController.getInstance(currentAccount).removeLoadingFileObserver(this);
                             localFile = 1;
                         } else if (messageObject.mediaExists) {
@@ -10547,6 +10552,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                                         photoImage.setImage(ImageLocation.getForDocument(document), ImageLoader.AUTOPLAY_FILTER, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, cacheType);
                                     }
                                 }
+                            } else if (localFile == 3) {
+                                photoImage.setImage(ImageLocation.getForPath(messageObject.forkSecureMediaPath), null, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, 0, null, messageObject, cacheType);
                             } else if (localFile == 1) {
                                 photoImage.setImage(ImageLocation.getForPath(messageObject.isSendError() ? null : messageObject.messageOwner.attachPath), null, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, 0, null, messageObject, cacheType);
                             } else {

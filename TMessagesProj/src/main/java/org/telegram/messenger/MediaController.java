@@ -3077,7 +3077,13 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
         MessageObject nextAudio = voiceMessagesPlaylist.get(1);
         File file = null;
-        if (nextAudio.messageOwner.attachPath != null && nextAudio.messageOwner.attachPath.length() > 0) {
+        if (!TextUtils.isEmpty(nextAudio.forkSecureMediaPath)) {
+            file = new File(nextAudio.forkSecureMediaPath);
+            if (!file.exists()) {
+                file = null;
+            }
+        }
+        if (file == null && nextAudio.messageOwner.attachPath != null && nextAudio.messageOwner.attachPath.length() > 0) {
             file = new File(nextAudio.messageOwner.attachPath);
             if (!file.exists()) {
                 file = null;
@@ -3116,7 +3122,13 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
         MessageObject nextAudio = currentPlayList.get(nextIndex);
         File file = null;
-        if (!TextUtils.isEmpty(nextAudio.messageOwner.attachPath)) {
+        if (!TextUtils.isEmpty(nextAudio.forkSecureMediaPath)) {
+            file = new File(nextAudio.forkSecureMediaPath);
+            if (!file.exists()) {
+                file = null;
+            }
+        }
+        if (file == null && !TextUtils.isEmpty(nextAudio.messageOwner.attachPath)) {
             file = new File(nextAudio.messageOwner.attachPath);
             if (!file.exists()) {
                 file = null;
@@ -3669,7 +3681,14 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         seekToProgressPending = 0;
         File file = null;
         boolean exists = false;
-        if (messageObject.messageOwner.attachPath != null && messageObject.messageOwner.attachPath.length() > 0) {
+        if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+            file = new File(messageObject.forkSecureMediaPath);
+            exists = file.exists();
+            if (!exists) {
+                file = null;
+            }
+        }
+        if (file == null && messageObject.messageOwner.attachPath != null && messageObject.messageOwner.attachPath.length() > 0) {
             file = new File(messageObject.messageOwner.attachPath);
             exists = file.exists();
             if (!exists) {
@@ -4848,7 +4867,9 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
     public void generateWaveform(MessageObject messageObject) {
         final String id = messageObject.getId() + "_" + messageObject.getDialogId();
-        final String path = FileLoader.getInstance(messageObject.currentAccount).getPathToMessage(messageObject.messageOwner).getAbsolutePath();
+        final String path = !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
+                ? messageObject.forkSecureMediaPath
+                : FileLoader.getInstance(messageObject.currentAccount).getPathToMessage(messageObject.messageOwner).getAbsolutePath();
         if (generatingWaveform.containsKey(id)) {
             return;
         }

@@ -14373,84 +14373,192 @@ public class ChatActivity extends BaseFragment implements
      */
     private void forwardForkSecureTextMessages(
             ArrayList<MessageObject> messagesToForward, boolean notify, int scheduleDate) {
-        if (!DialogObject.isUserDialog(dialog_id)) {
-            showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
-            return;
+        final boolean savedMessages = isForkSecureSavedMessagesChat();
+        final SecureChatEngine targetChat;
+        if (savedMessages) {
+            if (!isSavedMessagesSecureModeEnabled()) {
+                showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
+                return;
+            }
+            targetChat = null;
+        } else {
+            if (!DialogObject.isUserDialog(dialog_id)) {
+                showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
+                return;
+            }
+            try {
+                targetChat = getSecureChatEngine();
+                if (targetChat == null || targetChat.getMode() != SecureChatEngine.Mode.PROTECTED) {
+                    showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
+                    return;
+                }
+            } catch (RuntimeException e) {
+                FileLog.e(e);
+                showForkSecureForwardError(R.string.ForkSecureSetupSendFailed);
+                return;
+            }
         }
         if (!checkSlowModeAlert()) {
             return;
         }
         try {
-            SecureChatEngine targetChat = getSecureChatEngine();
-            if (targetChat.getMode() != SecureChatEngine.Mode.PROTECTED) {
-                showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
-                return;
-            }
-            ArrayList<String> plaintextMessages = new ArrayList<>();
             for (int i = 0; i < messagesToForward.size(); i++) {
                 MessageObject sourceMessage = messagesToForward.get(i);
                 if (sourceMessage == null
                         || !sourceMessage.isForkSecureCarrier()
-                        || !DialogObject.isUserDialog(sourceMessage.getDialogId())) {
-                    showForkSecureForwardError(R.string.ForkSecureForwardTextOnly);
+                        || (!DialogObject.isUserDialog(sourceMessage.getDialogId())
+                                && sourceMessage.getDialogId() != getUserConfig().getClientUserId())) {
+                    showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
                     return;
                 }
                 String sourceCarrier = sourceMessage.messageOwner.message;
                 SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(sourceCarrier);
                 if (decoded == null
-                        || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
-                    showForkSecureForwardError(R.string.ForkSecureForwardTextOnly);
+                        || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                        || sourceMessage.forkSecureService) {
+                    showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
                     return;
                 }
-                SecureChatEngine sourceChat = new SecureChatEngine(
-                        getContext(), currentAccount, sourceMessage.getDialogId());
-                String plaintext = sourceMessage.isOutOwner()
-                        ? sourceChat.getOutgoingText(sourceCarrier)
-                        : sourceChat.getIncomingText(sourceCarrier);
-                if (TextUtils.isEmpty(plaintext)
-                        || SecureChatEngine.isPairingAcknowledgementDisplay(plaintext)
-                        || SecureChatEngine.isPairingRejectionDisplay(plaintext)
-                        || SecureChatEngine.isStaticStickerDisplay(plaintext)
-                        || SecureChatEngine.isAttachmentDisplay(plaintext)) {
-                    showForkSecureForwardError(R.string.ForkSecureForwardTextOnly);
-                    return;
+                if (sourceMessage.forkSecureMediaKind != MessageObject.FORK_SECURE_MEDIA_KIND_NONE
+                        || !TextUtils.isEmpty(sourceMessage.forkSecureMediaPath)) {
+                    if (TextUtils.isEmpty(sourceMessage.forkSecureMediaPath)
+                            || !new File(sourceMessage.forkSecureMediaPath).exists()) {
+                        showForkSecureForwardError(R.string.ForkSecureForwardFailed);
+                        return;
+                    }
                 }
-                plaintextMessages.add(plaintext);
             }
-            ArrayList<String> encryptedMessages = new ArrayList<>(plaintextMessages.size());
-            for (int i = 0; i < plaintextMessages.size(); i++) {
-                encryptedMessages.add(targetChat.encryptText(plaintextMessages.get(i)));
-            }
+
             if ((scheduleDate != 0) == (chatMode == MODE_SCHEDULED)) {
                 waitingForSendingMessageLoad = true;
                 if (chatAdapter != null) {
                     chatAdapter.checkRemoveBotForumRowsStartThreadRow(true);
                 }
             }
-            for (int i = 0; i < encryptedMessages.size(); i++) {
-                SendMessagesHelper.SendMessageParams params =
-                        SendMessagesHelper.SendMessageParams.of(
-                                encryptedMessages.get(i),
-                                dialog_id,
+
+            for (int i = 0; i < messagesToForward.size(); i++) {
+                MessageObject sourceMessage = messagesToForward.get(i);
+                if (sourceMessage.forkSecureMediaKind != MessageObject.FORK_SECURE_MEDIA_KIND_NONE
+                        || !TextUtils.isEmpty(sourceMessage.forkSecureMediaPath)) {
+                    String mediaPath = sourceMessage.forkSecureMediaPath;
+                    String caption = sourceMessage.forkSecureMediaCaption != null
+                            ? sourceMessage.forkSecureMediaCaption
+                            : "";
+                    String mime = sourceMessage.forkSecureMediaMime;
+                    if (sourceMessage.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+                        SendMessagesHelper.prepareSendingPhoto(
+                                getAccountInstance(),
+                                mediaPath,
                                 null,
+                                null,
+                                dialog_id,
                                 getThreadMessage(),
                                 null,
-                                false,
                                 null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                0,
                                 null,
                                 null,
                                 notify,
                                 scheduleDate,
                                 0,
+                                false,
+                                caption,
+                                quickReplyShortcut,
+                                getQuickReplyId(),
+                                0,
+                                0);
+                    } else {
+                        ArrayList<String> paths = new ArrayList<>();
+                        paths.add(mediaPath);
+                        ArrayList<String> originalPaths = new ArrayList<>();
+                        originalPaths.add(mediaPath);
+                        SendMessagesHelper.prepareSendingDocuments(
+                                getAccountInstance(),
+                                paths,
+                                originalPaths,
                                 null,
-                                false);
-                params.quick_reply_shortcut = quickReplyShortcut;
-                params.quick_reply_shortcut_id = getQuickReplyId();
-                params.monoForumPeer = getSendMonoForumPeerId();
-                params.suggestionParams = getSendMessageSuggestionParams();
-                getSendMessagesHelper().sendMessage(params);
+                                caption,
+                                mime,
+                                dialog_id,
+                                getThreadMessage(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                notify,
+                                scheduleDate,
+                                null,
+                                quickReplyShortcut,
+                                getQuickReplyId(),
+                                0,
+                                false,
+                                0);
+                    }
+                } else {
+                    String sourceCarrier = sourceMessage.messageOwner.message;
+                    SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(sourceCarrier);
+                    String plaintext;
+                    if (sourceMessage.getDialogId() == getUserConfig().getClientUserId()) {
+                        SecureSavedMessagesKeyStore.KeyMaterial key =
+                                new SecureSavedMessagesKeyStore(getContext()).getOrCreate(currentAccount);
+                        byte[] decrypted = SecureSavedMessageCrypto.decryptRecord(decoded.payload, key);
+                        SecureContentCodec.Decoded content = SecureContentCodec.decode(decrypted);
+                        plaintext = content.text;
+                    } else {
+                        SecureChatEngine sourceChat = new SecureChatEngine(
+                                getContext(), currentAccount, sourceMessage.getDialogId());
+                        plaintext = sourceMessage.isOutOwner()
+                                ? sourceChat.getOutgoingText(sourceCarrier)
+                                : sourceChat.getIncomingText(sourceCarrier);
+                    }
+                    if (TextUtils.isEmpty(plaintext)
+                            || SecureChatEngine.isPairingAcknowledgementDisplay(plaintext)
+                            || SecureChatEngine.isPairingRejectionDisplay(plaintext)) {
+                        continue;
+                    }
+                    String encryptedText;
+                    if (savedMessages) {
+                        SecureSavedMessagesKeyStore.KeyMaterial targetKey =
+                                new SecureSavedMessagesKeyStore(getContext()).getOrCreate(currentAccount);
+                        byte[] payload = SecureContentCodec.encodeText(plaintext);
+                        encryptedText = SecureCarrierCodec.encode(
+                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                                SecureSavedMessageCrypto.encryptRecord(payload, targetKey));
+                    } else {
+                        encryptedText = targetChat.encryptText(plaintext);
+                    }
+                    SendMessagesHelper.SendMessageParams params =
+                            SendMessagesHelper.SendMessageParams.of(
+                                    encryptedText,
+                                    dialog_id,
+                                    null,
+                                    getThreadMessage(),
+                                    null,
+                                    false,
+                                    null,
+                                    null,
+                                    null,
+                                    notify,
+                                    scheduleDate,
+                                    0,
+                                    null,
+                                    false);
+                    params.quick_reply_shortcut = quickReplyShortcut;
+                    params.quick_reply_shortcut_id = getQuickReplyId();
+                    params.monoForumPeer = getSendMonoForumPeerId();
+                    params.suggestionParams = getSendMessageSuggestionParams();
+                    getSendMessagesHelper().sendMessage(params);
+                }
             }
-        } catch (RuntimeException error) {
+            AndroidUtilities.runOnUIThread(() -> {
+                waitingForSendingMessageLoad = false;
+                hideFieldPanel(true);
+            });
+        } catch (Exception error) {
             FileLog.e(error);
             showForkSecureForwardError(R.string.ForkSecureForwardFailed);
         }
@@ -19189,7 +19297,7 @@ public class ChatActivity extends BaseFragment implements
                         selectedMessagesCanStarIds[index].remove(messageObject.getId());
                     }
                     if (messageObject.canEditMessage(currentChat)
-                            && !messageObject.isForkSecureCarrier()) {
+                            && (!messageObject.isForkSecureCarrier() || (messageObject.isOutOwner() && !messageObject.forkSecureService && messageObject.getId() > 0))) {
                         canEditMessagesCount--;
                     }
                     if (!messageObject.canDeleteMessage(chatMode == MODE_SCHEDULED, currentChat)) {
@@ -19199,7 +19307,7 @@ public class ChatActivity extends BaseFragment implements
                     if (chatMode == MODE_SCHEDULED
                             || !messageObject.canForwardMessage()
                             || noforwards
-                            || messageObject.isForkSecureCarrier()) {
+                            || (messageObject.isForkSecureCarrier() && messageObject.forkSecureService)) {
                         cantForwardMessagesCount--;
                     } else {
                         canForwardMessagesCount--;
@@ -19230,7 +19338,7 @@ public class ChatActivity extends BaseFragment implements
                         selectedMessagesCanStarIds[index].put(messageObject.getId(), messageObject);
                     }
                     if (messageObject.canEditMessage(currentChat)
-                            && !messageObject.isForkSecureCarrier()) {
+                            && (!messageObject.isForkSecureCarrier() || (messageObject.isOutOwner() && !messageObject.forkSecureService && messageObject.getId() > 0))) {
                         canEditMessagesCount++;
                     }
                     if (!messageObject.canDeleteMessage(chatMode == MODE_SCHEDULED, currentChat)) {
@@ -19240,7 +19348,7 @@ public class ChatActivity extends BaseFragment implements
                     if (chatMode == MODE_SCHEDULED
                             || !messageObject.canForwardMessage()
                             || noforwards
-                            || messageObject.isForkSecureCarrier()) {
+                            || (messageObject.isForkSecureCarrier() && messageObject.forkSecureService)) {
                         cantForwardMessagesCount++;
                     } else {
                         canForwardMessagesCount++;
@@ -22364,6 +22472,11 @@ public class ChatActivity extends BaseFragment implements
     private boolean isForkSecureContentProtected() {
         if (currentEncryptedChat != null || !DialogObject.isUserDialog(dialog_id)) {
             return false;
+        }
+        if (dialog_id == getUserConfig().getClientUserId()
+                && SecureSavedMessagesSettings.isSecureByDefault(
+                        ApplicationLoader.applicationContext, currentAccount)) {
+            return true;
         }
         try {
             SecureChatEngine.Mode mode = getSecureChatEngine().getMode();
@@ -33133,7 +33246,7 @@ public class ChatActivity extends BaseFragment implements
         boolean noforwardsOrPaidMedia = noforwards || message.type == MessageObject.TYPE_PAID_MEDIA;
         boolean allowUnpin = message.getDialogId() != mergeDialogId && allowPin && (pinnedMessageObjects.containsKey(message.getId()) || groupedMessages != null && !groupedMessages.messages.isEmpty() && pinnedMessageObjects.containsKey(groupedMessages.messages.get(0).getId())) && !message.isExpiredStory();
         boolean allowEdit = message.canEditMessage(currentChat)
-                && !message.isForkSecureCarrier()
+                && (!message.isForkSecureCarrier() || (message.isOutOwner() && !message.forkSecureService && message.getId() > 0))
                 && !chatActivityEnterView.hasAudioToSend()
                 && message.getDialogId() != mergeDialogId
                 && message.type != MessageObject.TYPE_STORY

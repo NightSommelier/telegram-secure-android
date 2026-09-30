@@ -1512,6 +1512,31 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         object.messageOwner.attachPath = object.previousAttachPath;
         object.messageOwner.send_state = MessageObject.MESSAGE_SEND_STATE_SENT;
 
+        if (object.forkSecureTextEditTransport != null) {
+            try {
+                SecureChatEngine secureChat = new SecureChatEngine(
+                        ApplicationLoader.applicationContext,
+                        currentAccount,
+                        object.getDialogId());
+                secureChat.rollbackTextEdit(object.forkSecureTextEditTransport);
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+            object.forkSecureTextEditTransport = null;
+        }
+        if (object.forkSecureAttachmentEditTransport != null) {
+            try {
+                SecureChatEngine secureChat = new SecureChatEngine(
+                        ApplicationLoader.applicationContext,
+                        currentAccount,
+                        object.getDialogId());
+                secureChat.rollbackAttachmentEdit(object.forkSecureAttachmentEditTransport);
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+            object.forkSecureAttachmentEditTransport = null;
+        }
+
         if (object.messageOwner.entities != null) {
             object.messageOwner.flags |= 128;
         } else {
@@ -4721,10 +4746,49 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (fragment == null || fragment.getParentActivity() == null) {
             return 0;
         }
-        if (messageObject == null
-                || isForkSecureProtectedPeer(messageObject.getDialogId())) {
-            showForkSecureError(R.string.ForkSecureEditUnsupported);
+        if (messageObject == null) {
             return 0;
+        }
+        if (isForkSecureProtectedPeer(messageObject.getDialogId())) {
+            if (messageObject.forkSecureService || !messageObject.isOutOwner() || scheduleDate != 0) {
+                showForkSecureError(R.string.ForkSecureEditUnsupported);
+                return 0;
+            }
+            if (message != null && !SecureCarrierCodec.isMarked(message)) {
+                final boolean savedMessages = messageObject.getDialogId() == getUserConfig().getClientUserId();
+                if (savedMessages) {
+                    try {
+                        SecureSavedMessagesKeyStore.KeyMaterial key =
+                                new SecureSavedMessagesKeyStore(
+                                        ApplicationLoader.applicationContext).getOrCreate(
+                                        currentAccount);
+                        message = SecureCarrierCodec.encode(
+                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                                SecureSavedMessageCrypto.encryptRecord(
+                                        SecureContentCodec.encodeText(message), key));
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                        showForkSecureError(R.string.ForkSecureEditFailed);
+                        return 0;
+                    }
+                } else {
+                    try {
+                        SecureChatEngine secureChat = new SecureChatEngine(
+                                ApplicationLoader.applicationContext,
+                                currentAccount,
+                                messageObject.getDialogId());
+                        SecureChatEngine.TextEditTransport transport =
+                                secureChat.encryptTextForEdit(message, 4096);
+                        message = transport.textCarrier;
+                        messageObject.forkSecureTextEditTransport = transport;
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                        showForkSecureError(R.string.ForkSecureEditFailed);
+                        return 0;
+                    }
+                }
+                entities = null;
+            }
         }
 
         final TLRPC.TL_messages_editMessage req = new TLRPC.TL_messages_editMessage();
@@ -4755,6 +4819,18 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             if (error == null) {
                 getMessagesController().processUpdates((TLRPC.Updates) response, false);
             } else {
+                if (messageObject.forkSecureTextEditTransport != null) {
+                    try {
+                        SecureChatEngine secureChat = new SecureChatEngine(
+                                ApplicationLoader.applicationContext,
+                                currentAccount,
+                                messageObject.getDialogId());
+                        secureChat.rollbackTextEdit(messageObject.forkSecureTextEditTransport);
+                    } catch (Exception rollbackError) {
+                        FileLog.e(rollbackError);
+                    }
+                    messageObject.forkSecureTextEditTransport = null;
+                }
                 AndroidUtilities.runOnUIThread(() -> AlertsCreator.processError(currentAccount, error, fragment, req));
             }
         });

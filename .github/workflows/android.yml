@@ -183,6 +183,8 @@ jobs:
           build_apk universal
           build_apk arm64-v8a arm64-v8a
           build_apk armeabi-v7a armeabi-v7a
+          build_apk x86_64 x86_64
+          build_apk x86 x86
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -214,6 +216,8 @@ jobs:
           - universal: all supported Android ABIs; use this when unsure.
           - arm64-v8a: current 64-bit ARM phones.
           - armeabi-v7a: older 32-bit ARM phones.
+          - x86_64: 64-bit Intel/AMD devices, Chromebooks, and emulators.
+          - x86: 32-bit x86 devices and emulators.
 
           Every APK is signed with the project release key. A matching SHA-256 file is included for each APK.
 

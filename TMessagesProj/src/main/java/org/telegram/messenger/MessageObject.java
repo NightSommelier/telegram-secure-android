@@ -55,6 +55,7 @@ import org.telegram.messenger.ringtone.RingtoneDataStore;
 import org.telegram.messenger.utils.tlutils.AmountUtils;
 import org.telegram.messenger.utils.tlutils.TlUtils;
 import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.tgnet.ConnectionsManager;
@@ -235,6 +236,8 @@ public class MessageObject {
     public long forkSecureNativeGroupId;
     /** Hides opaque transport metadata while authenticated media is prepared in background. */
     public boolean forkSecureMediaPending;
+    public SecureChatEngine.TextEditTransport forkSecureTextEditTransport;
+    public SecureChatEngine.AttachmentEditTransport forkSecureAttachmentEditTransport;
     public CharSequence linkDescription;
     public CharSequence caption;
     public CharSequence quizExplanation;

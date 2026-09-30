@@ -115,6 +115,19 @@ public final class SecureChatEngine {
         }
     }
 
+    public static final class TextEditTransport {
+        public final String textCarrier;
+        private final byte[] previousSession;
+        private final byte[] nextSession;
+
+        TextEditTransport(
+                String textCarrier, byte[] previousSession, byte[] nextSession) {
+            this.textCarrier = textCarrier;
+            this.previousSession = Arrays.copyOf(previousSession, previousSession.length);
+            this.nextSession = Arrays.copyOf(nextSession, nextSession.length);
+        }
+    }
+
     private final int account;
     private final long peerUserId;
     private final KeystoreSignalProtocolStore store;
@@ -511,6 +524,72 @@ public final class SecureChatEngine {
             } catch (Exception error) {
                 throw new SecureChatException(
                         "cannot roll back secure attachment edit", error);
+            }
+        }
+    }
+
+    /**
+     * Encrypts a replacement text carrier for editing an existing message. The session is advanced
+     * atomically within a rollback boundary so that if Telegram rejects the edit, the ratchet can be
+     * safely rewound.
+     */
+    public TextEditTransport encryptTextForEdit(String plaintext, int maxTextCharacters) {
+        if (!isPaired()) {
+            throw new SecureChatException("secure chat is not paired", null);
+        }
+        if (plaintext == null || plaintext.isEmpty()) {
+            throw new IllegalArgumentException("secure plaintext is empty");
+        }
+        if (maxTextCharacters <= 0) {
+            throw new IllegalArgumentException("secure carrier limits must be positive");
+        }
+        byte[] content = SecureContentCodec.encodeText(plaintext);
+        synchronized (ENCRYPT_LOCK) {
+            byte[] previousSession = null;
+            String carrier = null;
+            try {
+                previousSession = store.loadSession(peerAddress).serialize();
+                carrier = encryptAndRemember(content, plaintext);
+                if (carrier.length() > maxTextCharacters) {
+                    throw new IllegalArgumentException(
+                            "secure text carrier exceeds maximum allowed characters");
+                }
+                byte[] nextSession = store.loadSession(peerAddress).serialize();
+                return new TextEditTransport(carrier, previousSession, nextSession);
+            } catch (Exception error) {
+                try {
+                    if (previousSession != null) {
+                        store.storeSession(peerAddress, new SessionRecord(previousSession));
+                    }
+                    if (carrier != null) {
+                        localText.forgetOutgoing(carrier);
+                    }
+                } catch (Exception rollbackError) {
+                    error.addSuppressed(rollbackError);
+                }
+                throw new SecureChatException(
+                        "cannot create secure text edit carrier", error);
+            }
+        }
+    }
+
+    /** Rolls back a text-edit ratchet step only if no later secure send used it. */
+    public void rollbackTextEdit(TextEditTransport transport) {
+        if (transport == null) {
+            return;
+        }
+        synchronized (ENCRYPT_LOCK) {
+            try {
+                byte[] currentSession = store.loadSession(peerAddress).serialize();
+                if (!Arrays.equals(currentSession, transport.nextSession)) {
+                    return;
+                }
+                store.storeSession(
+                        peerAddress, new SessionRecord(transport.previousSession));
+                localText.forgetOutgoing(transport.textCarrier);
+            } catch (Exception error) {
+                throw new SecureChatException(
+                        "cannot roll back secure text edit", error);
             }
         }
     }
