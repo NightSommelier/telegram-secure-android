@@ -696,7 +696,7 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
         items.add(SettingCell.Factory.of(10, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_language, getString(R.string.SettingsLanguage), LocaleController.getCurrentLanguageName()));
 
         UItem forkSecureSettings = SettingCell.Factory.of(
-                24,
+                25,
                 IconBackgroundColors.BLUE_ALT.top,
                 IconBackgroundColors.BLUE_ALT.bottom,
                 R.drawable.outline_shield_plain_24,
@@ -850,7 +850,7 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
             case 10:
                 presentSettingFragment(new LanguageSelectActivity());
                 break;
-            case 24:
+            case 25:
                 presentSettingFragment(new ForkSecureSettingsActivity());
                 break;
 

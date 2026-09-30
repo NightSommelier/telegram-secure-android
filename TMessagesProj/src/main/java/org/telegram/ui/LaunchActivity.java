@@ -6463,7 +6463,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                                     null,
                                     null,
                                     0,
-                                    0,
                                     false,
                                     0);
                             if (sendingText != null) {

@@ -1961,8 +1961,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         notify,
                         scheduleDate,
                         scheduleRepeatPeriod,
-                        quick_reply_shortcut,
-                        quick_reply_shortcut_id,
+                        sendMessageChatArguments != null ? sendMessageChatArguments.quickReplyShortcut : null,
+                        sendMessageChatArguments != null ? sendMessageChatArguments.quickReplyShortcutId : 0,
                         stars,
                         monoForumPeerId,
                         suggestionParams,
@@ -2108,6 +2108,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             sendMessageParams.invert_media = invertMedia;
             sendMessage(sendMessageParams);
         }
+    }
+
+    private static SendMessageChatArguments buildSendMessageChatArguments(String quickReplyShortcut, int quickReplyShortcutId) {
+        if (quickReplyShortcut == null && quickReplyShortcutId == 0) {
+            return SendMessageChatArguments.EMPTY;
+        }
+        SendMessageChatArguments.Builder builder = new SendMessageChatArguments.Builder();
+        builder.setQuickReplyShortcut(quickReplyShortcut, quickReplyShortcutId);
+        return builder.build();
     }
 
     /**
@@ -2266,8 +2275,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         scheduleDate,
                         scheduleRepeatPeriod,
                         null,
-                        quickReplyShortcut,
-                        quickReplyShortcutId,
+                        buildSendMessageChatArguments(quickReplyShortcut, quickReplyShortcutId),
                         0,
                         invertMedia,
                         stars,
@@ -3072,7 +3080,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         storyItem, quote, null, null, groupId,
                         mediaCount == 10 || i == encryptedPaths.size() - 1, carriers.get(i),
                         notify, scheduleDate, scheduleRepeatPeriod, docType, true,
-                        quickReplyShortcut, quickReplyShortcutId, i == 0 ? effectId : 0,
+                        buildSendMessageChatArguments(quickReplyShortcut, quickReplyShortcutId), i == 0 ? effectId : 0,
                         invertMedia, payStars, monoForumPeerId, suggestionParams, null, -1);
             }
             if (groupId[0] != 0) {
@@ -11460,8 +11468,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         notify,
                         scheduleDate,
                         scheduleRepeatPeriod,
-                        quickReplyShortcut,
-                        quickReplyShortcutId,
+                        sendMessageChatArguments != null ? sendMessageChatArguments.quickReplyShortcut : null,
+                        sendMessageChatArguments != null ? sendMessageChatArguments.quickReplyShortcutId : 0,
                         effectId,
                         invertMedia,
                         payStars,
@@ -12213,8 +12221,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         notify,
                         scheduleDate,
                         scheduleRepeatPeriod,
-                        quickReplyShortcut,
-                        quickReplyShortcutId,
+                        sendMessageChatArguments != null ? sendMessageChatArguments.quickReplyShortcut : null,
+                        sendMessageChatArguments != null ? sendMessageChatArguments.quickReplyShortcutId : 0,
                         effectId,
                         invertMedia,
                         payStars,

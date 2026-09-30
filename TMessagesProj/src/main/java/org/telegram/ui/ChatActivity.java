@@ -14576,8 +14576,7 @@ public class ChatActivity extends BaseFragment implements
                                 0,
                                 false,
                                 caption,
-                                quickReplyShortcut,
-                                getQuickReplyId(),
+                                getMessageChatSendParams(),
                                 0,
                                 0);
                     } else {
@@ -14601,8 +14600,7 @@ public class ChatActivity extends BaseFragment implements
                                 notify,
                                 scheduleDate,
                                 null,
-                                quickReplyShortcut,
-                                getQuickReplyId(),
+                                getMessageChatSendParams(),
                                 0,
                                 false,
                                 0);
