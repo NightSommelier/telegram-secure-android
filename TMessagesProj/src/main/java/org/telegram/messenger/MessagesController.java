@@ -55,6 +55,8 @@ import org.telegram.SQLite.SQLiteCursor;
 import org.telegram.SQLite.SQLiteDatabase;
 import org.telegram.SQLite.SQLiteException;
 import org.telegram.SQLite.SQLitePreparedStatement;
+import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.messenger.support.LongSparseIntArray;
 import org.telegram.messenger.support.LongSparseLongArray;
@@ -9362,6 +9364,9 @@ public class MessagesController extends BaseController implements NotificationCe
                 } else {
                     markDialogMessageAsDeleted(dialogId, messages);
                 }
+                if (forAll && channelId == 0 && DialogObject.isUserDialog(dialogId) && taskId == 0) {
+                    sendForkSecureDeleteControlIfNeeded(dialogId, toSend != null ? toSend : messages);
+                }
                 getMessagesStorage().markMessagesAsDeleted(dialogId, messages, true, forAll, 0, topicId);
                 getMessagesStorage().updateDialogsWithDeletedMessages(dialogId, channelId, messages, null);
             }
@@ -9508,6 +9513,58 @@ public class MessagesController extends BaseController implements NotificationCe
                 }
             });
         }
+    }
+
+    private void sendForkSecureDeleteControlIfNeeded(final long dialogId, final ArrayList<Integer> messages) {
+        if (!DialogObject.isUserDialog(dialogId) || messages == null || messages.isEmpty()) {
+            return;
+        }
+        final Context context = ApplicationLoader.applicationContext;
+        if (!SecureChatEngine.hasLocalState(context, currentAccount, dialogId)) {
+            return;
+        }
+        final ArrayList<Integer> mids = new ArrayList<>(messages);
+        getMessagesStorage().getStorageQueue().postRunnable(() -> {
+            try {
+                String ids = TextUtils.join(",", mids);
+                SQLiteCursor cursor = getMessagesStorage().getDatabase().queryFinalized(
+                        String.format(java.util.Locale.US, "SELECT data FROM messages_v2 WHERE mid IN(%s) AND uid = %d", ids, dialogId));
+                ArrayList<byte[]> digests = new ArrayList<>();
+                try {
+                    java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                    while (cursor.next()) {
+                        NativeByteBuffer data = cursor.byteBufferValue(0);
+                        if (data != null) {
+                            TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                            if (message != null && SecureCarrierCodec.isMarked(message.message)) {
+                                digests.add(md.digest(message.message.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                            }
+                            data.reuse();
+                        }
+                    }
+                } finally {
+                    cursor.dispose();
+                }
+                if (!digests.isEmpty()) {
+                    AndroidUtilities.runOnUIThread(() -> {
+                        try {
+                            SecureChatEngine secureChat = new SecureChatEngine(context, currentAccount, dialogId);
+                            if (secureChat.isPaired()) {
+                                String controlCarrier = secureChat.encryptDeleteControl(digests);
+                                SendMessagesHelper.SendMessageParams params = new SendMessagesHelper.SendMessageParams();
+                                params.message = controlCarrier;
+                                params.peer = dialogId;
+                                SendMessagesHelper.getInstance(currentAccount).sendMessage(params);
+                            }
+                        } catch (Exception e) {
+                            FileLog.e(e);
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+        });
     }
 
     public void revertWelcomeEphemeralMessage(MessageObject ephemeralMessage) {

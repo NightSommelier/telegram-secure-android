@@ -20967,8 +20967,13 @@ public class ChatActivity extends BaseFragment implements
                         message.forkSecureVerified = true;
                         applyForkSecureServiceStyle(
                                 message,
-                                SecureChatEngine.isPairingStatusDisplay(localText));
-                        if (SecureChatEngine.isStaticStickerDisplay(localText)) {
+                                SecureChatEngine.isPairingStatusDisplay(localText)
+                                        || SecureChatEngine.isControlDeleteDisplay(localText));
+                        if (SecureChatEngine.isControlDeleteDisplay(localText)) {
+                            getMessagesController().deleteMessages(
+                                    new ArrayList<>(java.util.Collections.singletonList(message.getId())),
+                                    null, null, dialog_id, 0, false, 0, true);
+                        } else if (SecureChatEngine.isStaticStickerDisplay(localText)) {
                             applySecureStickerMedia(message, secureChat, carrier);
                         } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
                             applySecureAttachmentMedia(
@@ -20976,6 +20981,10 @@ public class ChatActivity extends BaseFragment implements
                                     secureChat,
                                     carrier,
                                     SecureChatEngine.isPhotoDisplay(localText));
+                        } else if (SecureChatEngine.isContactDisplay(localText)) {
+                            applySecureContactMedia(message, secureChat, carrier);
+                        } else if (SecureChatEngine.isLocationDisplay(localText)) {
+                            applySecureLocationMedia(message, secureChat, carrier);
                         }
                     } else {
                         // Never feed our own outbound message into the inbound ratchet.
@@ -20988,21 +20997,32 @@ public class ChatActivity extends BaseFragment implements
                     message.forkSecureVerified = true;
                     applyForkSecureServiceStyle(
                             message,
-                            SecureChatEngine.isPairingStatusDisplay(localText));
-                    if (secureChat.shouldAcknowledgeSessionReady(
-                            localText, message.getId())) {
-                        pairingAcknowledgementMessageId = Math.max(
-                                pairingAcknowledgementMessageId,
-                                message.getId());
-                    }
-                    if (SecureChatEngine.isStaticStickerDisplay(localText)) {
-                        applySecureStickerMedia(message, secureChat, carrier);
-                    } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
-                        applySecureAttachmentMedia(
-                                message,
-                                secureChat,
-                                carrier,
-                                SecureChatEngine.isPhotoDisplay(localText));
+                            SecureChatEngine.isPairingStatusDisplay(localText)
+                                    || SecureChatEngine.isControlDeleteDisplay(localText));
+                    if (SecureChatEngine.isControlDeleteDisplay(localText)) {
+                        getMessagesController().deleteMessages(
+                                new ArrayList<>(java.util.Collections.singletonList(message.getId())),
+                                null, null, dialog_id, 0, false, 0, true);
+                    } else {
+                        if (secureChat.shouldAcknowledgeSessionReady(
+                                localText, message.getId())) {
+                            pairingAcknowledgementMessageId = Math.max(
+                                    pairingAcknowledgementMessageId,
+                                    message.getId());
+                        }
+                        if (SecureChatEngine.isStaticStickerDisplay(localText)) {
+                            applySecureStickerMedia(message, secureChat, carrier);
+                        } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
+                            applySecureAttachmentMedia(
+                                    message,
+                                    secureChat,
+                                    carrier,
+                                    SecureChatEngine.isPhotoDisplay(localText));
+                        } else if (SecureChatEngine.isContactDisplay(localText)) {
+                            applySecureContactMedia(message, secureChat, carrier);
+                        } else if (SecureChatEngine.isLocationDisplay(localText)) {
+                            applySecureLocationMedia(message, secureChat, carrier);
+                        }
                     }
                 }
             } catch (RuntimeException e) {
@@ -21251,6 +21271,10 @@ public class ChatActivity extends BaseFragment implements
                                 secureChat,
                                 carrier,
                                 SecureChatEngine.isPhotoDisplay(localText));
+                    } else if (SecureChatEngine.isContactDisplay(localText)) {
+                        applySecureContactMedia(message, secureChat, carrier);
+                    } else if (SecureChatEngine.isLocationDisplay(localText)) {
+                        applySecureLocationMedia(message, secureChat, carrier);
                     }
                 }
             } else {
@@ -21275,6 +21299,10 @@ public class ChatActivity extends BaseFragment implements
                                 secureChat,
                                 carrier,
                                 SecureChatEngine.isPhotoDisplay(localText));
+                    } else if (SecureChatEngine.isContactDisplay(localText)) {
+                        applySecureContactMedia(message, secureChat, carrier);
+                    } else if (SecureChatEngine.isLocationDisplay(localText)) {
+                        applySecureLocationMedia(message, secureChat, carrier);
                     }
                 }
             }
@@ -21333,6 +21361,67 @@ public class ChatActivity extends BaseFragment implements
             // secure document, but its authenticated media kind is not available yet. Never
             // copy the temporary status into the ordinary Telegram caption field.
             message.caption = null;
+        }
+    }
+
+    private void applySecureContactMedia(
+            MessageObject message,
+            SecureChatEngine secureChat,
+            String carrier) {
+        if (message == null || secureChat == null || TextUtils.isEmpty(carrier)) {
+            return;
+        }
+        try {
+            SecureContentCodec.Contact contact = message.isOutOwner()
+                    ? secureChat.getOutgoingContact(carrier)
+                    : secureChat.getIncomingContact(carrier);
+            if (contact == null) {
+                return;
+            }
+            TLRPC.TL_messageMediaContact media = new TLRPC.TL_messageMediaContact();
+            media.phone_number = contact.phoneNumber;
+            media.first_name = contact.firstName;
+            media.last_name = contact.lastName;
+            media.vcard = contact.vcard;
+            message.messageOwner.media = media;
+            message.type = MessageObject.TYPE_CONTACT;
+            String name = (contact.firstName + " " + contact.lastName).trim();
+            if (name.isEmpty()) {
+                name = contact.phoneNumber;
+            }
+            message.applyNewText(name + (contact.phoneNumber.isEmpty() ? "" : "\n" + contact.phoneNumber));
+            message.resetLayout();
+        } catch (Exception error) {
+            FileLog.e(error);
+        }
+    }
+
+    private void applySecureLocationMedia(
+            MessageObject message,
+            SecureChatEngine secureChat,
+            String carrier) {
+        if (message == null || secureChat == null || TextUtils.isEmpty(carrier)) {
+            return;
+        }
+        try {
+            SecureContentCodec.GeoLocation location = message.isOutOwner()
+                    ? secureChat.getOutgoingLocation(carrier)
+                    : secureChat.getIncomingLocation(carrier);
+            if (location == null) {
+                return;
+            }
+            TLRPC.TL_messageMediaGeo media = new TLRPC.TL_messageMediaGeo();
+            media.geo = new TLRPC.TL_geoPoint();
+            media.geo.lat = location.latitude;
+            media.geo._long = location.longitude;
+            media.geo.accuracy_radius = location.accuracy;
+            media.period = location.period;
+            message.messageOwner.media = media;
+            message.type = MessageObject.TYPE_GEO;
+            message.applyNewText(String.format(java.util.Locale.US, "%.6f, %.6f", location.latitude, location.longitude));
+            message.resetLayout();
+        } catch (Exception error) {
+            FileLog.e(error);
         }
     }
 
@@ -44191,7 +44280,8 @@ public class ChatActivity extends BaseFragment implements
                     fragment.setMessageObject(message);
                     presentFragment(fragment);
                 } else {
-                    LocationActivity fragment = new LocationActivity(currentEncryptedChat == null ? 3 : 0);
+                    LocationActivity fragment = new LocationActivity(
+                            (currentEncryptedChat == null && !message.forkSecureVerified) ? 3 : 0);
                     fragment.setDelegate(ChatActivity.this);
                     fragment.setMessageObject(message);
                     presentFragment(fragment);

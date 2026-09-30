@@ -9604,9 +9604,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         drawable.setColorKey(messageObject.isOutOwner() ? Theme.key_chat_outLocationIcon : Theme.key_chat_inLocationIcon, resourcesProvider);
                     }
                     photoImage.setCrossfadeDuration(2 * ImageReceiver.DEFAULT_CROSSFADE_DURATION);
-                    photoImage.setCrossfadeByScale(.05f);
+                    if (messageObject.forkSecureVerified) {
+                        currentMapProvider = -1;
+                    }
                     if (currentMapProvider == -1) {
-                        photoImage.setImage(null, null, null, null, messageObject, 0);
+                        photoImage.setImage(null, null, locationLoadingThumb, null, messageObject, 0);
                     } else if (currentMapProvider == 2) {
                         if (currentWebFile != null) {
                             ImageLocation lastLocation;
