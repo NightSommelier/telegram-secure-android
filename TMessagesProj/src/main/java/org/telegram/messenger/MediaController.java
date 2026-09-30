@@ -82,6 +82,7 @@ import androidx.media3.extractor.jpeg.MotionPhotoDescription;
 import androidx.media3.extractor.jpeg.XmpMotionPhotoDescriptionParser;
 
 import org.telegram.ui.AspectRatioFrameLayout;
+import org.telegram.secureoverlay.SecureMediaIndex;
 import com.google.android.gms.cast.MediaMetadata;
 import com.google.android.gms.common.images.WebImage;
 
@@ -3078,6 +3079,19 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             return;
         }
         MessageObject nextAudio = voiceMessagesPlaylist.get(1);
+        if (nextAudio.isForkSecureCarrier() && TextUtils.isEmpty(nextAudio.forkSecureMediaPath)) {
+            try {
+                SecureMediaIndex.Entry entry = new SecureMediaIndex(
+                        ApplicationLoader.applicationContext,
+                        currentAccount,
+                        nextAudio.getDialogId())
+                        .find(nextAudio.getId(), nextAudio.messageOwner != null ? nextAudio.messageOwner.message : null);
+                if (entry != null) {
+                    nextAudio.applyForkSecureMediaIndex(entry);
+                }
+            } catch (Throwable ignore) {
+            }
+        }
         File file = null;
         if (!TextUtils.isEmpty(nextAudio.forkSecureMediaPath)) {
             file = new File(nextAudio.forkSecureMediaPath);
@@ -3085,15 +3099,18 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 file = null;
             }
         }
-        if (file == null && nextAudio.messageOwner.attachPath != null && nextAudio.messageOwner.attachPath.length() > 0) {
+        if (!nextAudio.isForkSecureCarrier() && file == null && nextAudio.messageOwner.attachPath != null && nextAudio.messageOwner.attachPath.length() > 0) {
             file = new File(nextAudio.messageOwner.attachPath);
             if (!file.exists()) {
                 file = null;
             }
         }
         final File cacheFile = file != null ? file : FileLoader.getInstance(currentAccount).getPathToMessage(nextAudio.messageOwner);
-        boolean exist = cacheFile.exists();
-        if (cacheFile != file && !cacheFile.exists()) {
+        if (nextAudio.isForkSecureCarrier()) {
+            if (file == null && !cacheFile.exists()) {
+                FileLoader.getInstance(currentAccount).loadFile(nextAudio.getDocument(), nextAudio, FileLoader.PRIORITY_LOW, 0);
+            }
+        } else if (cacheFile != file && !cacheFile.exists()) {
             FileLoader.getInstance(currentAccount).loadFile(nextAudio.getDocument(), nextAudio, FileLoader.PRIORITY_LOW, nextAudio.shouldEncryptPhotoOrVideo() ? 2 : 0);
         }
     }
@@ -3123,6 +3140,19 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
 
         MessageObject nextAudio = currentPlayList.get(nextIndex);
+        if (nextAudio.isForkSecureCarrier() && TextUtils.isEmpty(nextAudio.forkSecureMediaPath)) {
+            try {
+                SecureMediaIndex.Entry entry = new SecureMediaIndex(
+                        ApplicationLoader.applicationContext,
+                        currentAccount,
+                        nextAudio.getDialogId())
+                        .find(nextAudio.getId(), nextAudio.messageOwner != null ? nextAudio.messageOwner.message : null);
+                if (entry != null) {
+                    nextAudio.applyForkSecureMediaIndex(entry);
+                }
+            } catch (Throwable ignore) {
+            }
+        }
         File file = null;
         if (!TextUtils.isEmpty(nextAudio.forkSecureMediaPath)) {
             file = new File(nextAudio.forkSecureMediaPath);
@@ -3130,15 +3160,18 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 file = null;
             }
         }
-        if (file == null && !TextUtils.isEmpty(nextAudio.messageOwner.attachPath)) {
+        if (!nextAudio.isForkSecureCarrier() && file == null && !TextUtils.isEmpty(nextAudio.messageOwner.attachPath)) {
             file = new File(nextAudio.messageOwner.attachPath);
             if (!file.exists()) {
                 file = null;
             }
         }
         final File cacheFile = file != null ? file : FileLoader.getInstance(currentAccount).getPathToMessage(nextAudio.messageOwner);
-        boolean exist = cacheFile.exists();
-        if (cacheFile != file && !cacheFile.exists() && nextAudio.isMusic()) {
+        if (nextAudio.isForkSecureCarrier()) {
+            if (file == null && !cacheFile.exists() && nextAudio.isMusic()) {
+                FileLoader.getInstance(currentAccount).loadFile(nextAudio.getDocument(), nextAudio, FileLoader.PRIORITY_LOW, 0);
+            }
+        } else if (cacheFile != file && !cacheFile.exists() && nextAudio.isMusic()) {
             FileLoader.getInstance(currentAccount).loadFile(nextAudio.getDocument(), nextAudio, FileLoader.PRIORITY_LOW, nextAudio.shouldEncryptPhotoOrVideo() ? 2 : 0);
         }
     }
@@ -3668,23 +3701,74 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         seekToProgressPending = 0;
         File file = null;
         boolean exists = false;
-        if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
-            file = new File(messageObject.forkSecureMediaPath);
-            exists = file.exists();
-            if (!exists) {
-                file = null;
+        if (messageObject.isForkSecureCarrier()) {
+            if (TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+                try {
+                    SecureMediaIndex.Entry entry = new SecureMediaIndex(
+                            ApplicationLoader.applicationContext,
+                            messageObject.currentAccount,
+                            messageObject.getDialogId())
+                            .find(messageObject.getId(), messageObject.messageOwner != null ? messageObject.messageOwner.message : null);
+                    if (entry != null) {
+                        messageObject.applyForkSecureMediaIndex(entry);
+                    }
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
             }
-        }
-        if (file == null && messageObject.messageOwner.attachPath != null && messageObject.messageOwner.attachPath.length() > 0) {
-            file = new File(messageObject.messageOwner.attachPath);
-            exists = file.exists();
-            if (!exists) {
-                file = null;
+            if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+                file = new File(messageObject.forkSecureMediaPath);
+                exists = file.exists();
+                if (!exists) {
+                    file = null;
+                }
+            }
+        } else {
+            if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+                file = new File(messageObject.forkSecureMediaPath);
+                exists = file.exists();
+                if (!exists) {
+                    file = null;
+                }
+            }
+            if (file == null && messageObject.messageOwner.attachPath != null && messageObject.messageOwner.attachPath.length() > 0) {
+                file = new File(messageObject.messageOwner.attachPath);
+                exists = file.exists();
+                if (!exists) {
+                    file = null;
+                }
             }
         }
         final File cacheFile = file != null ? file : FileLoader.getInstance(messageObject.currentAccount).getPathToMessage(messageObject.messageOwner);
-        boolean canStream = SharedConfig.streamMedia && (messageObject.isMusic() || messageObject.isRoundVideo() || messageObject.isVideo() && messageObject.canStreamVideo()) && !messageObject.shouldEncryptPhotoOrVideo() && !DialogObject.isEncryptedDialog(messageObject.getDialogId());
-        if (cacheFile != file && !(exists = cacheFile.exists()) && !canStream) {
+        boolean canStream = !messageObject.isForkSecureCarrier() && SharedConfig.streamMedia && (messageObject.isMusic() || messageObject.isRoundVideo() || messageObject.isVideo() && messageObject.canStreamVideo()) && !messageObject.shouldEncryptPhotoOrVideo() && !DialogObject.isEncryptedDialog(messageObject.getDialogId());
+        if (messageObject.isForkSecureCarrier()) {
+            exists = (file != null && file.exists());
+            if (!exists) {
+                if (!cacheFile.exists()) {
+                    FileLoader.getInstance(messageObject.currentAccount).loadFile(messageObject.getDocument(), messageObject, FileLoader.PRIORITY_LOW, 0);
+                }
+                downloadingCurrentMessage = true;
+                isPaused = false;
+                lastProgress = 0;
+                audioInfo = null;
+                playingMessageObject = messageObject;
+                if (canStartMusicPlayerService()) {
+                    Intent intent = new Intent(ApplicationLoader.applicationContext, MusicPlayerService.class);
+                    try {
+                        ApplicationLoader.applicationContext.startService(intent);
+                    } catch (Throwable e) {
+                        FileLog.e(e);
+                    }
+                } else {
+                    Intent intent = new Intent(ApplicationLoader.applicationContext, MusicPlayerService.class);
+                    ApplicationLoader.applicationContext.stopService(intent);
+                }
+                NotificationCenter.getInstance(playingMessageObject.currentAccount).postNotificationName(NotificationCenter.messagePlayingPlayStateChanged, playingMessageObject.getId());
+                return true;
+            } else {
+                downloadingCurrentMessage = false;
+            }
+        } else if (cacheFile != file && !(exists = cacheFile.exists()) && !canStream) {
             FileLoader.getInstance(messageObject.currentAccount).loadFile(messageObject.getDocument(), messageObject, FileLoader.PRIORITY_LOW, messageObject.shouldEncryptPhotoOrVideo() ? 2 : 0);
             downloadingCurrentMessage = true;
             isPaused = false;
@@ -4836,6 +4920,27 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     }
 
     public void generateWaveform(MessageObject messageObject) {
+        if (messageObject == null) {
+            return;
+        }
+        if (messageObject.isForkSecureCarrier() && TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+            try {
+                SecureMediaIndex.Entry entry = new SecureMediaIndex(
+                        ApplicationLoader.applicationContext,
+                        messageObject.currentAccount,
+                        messageObject.getDialogId())
+                        .find(messageObject.getId(), messageObject.messageOwner != null ? messageObject.messageOwner.message : null);
+                if (entry != null) {
+                    messageObject.applyForkSecureMediaIndex(entry);
+                }
+            } catch (Throwable ignore) {
+            }
+        }
+        if (messageObject.isForkSecureCarrier()) {
+            if (TextUtils.isEmpty(messageObject.forkSecureMediaPath) || !new File(messageObject.forkSecureMediaPath).exists()) {
+                return;
+            }
+        }
         final String id = messageObject.getId() + "_" + messageObject.getDialogId();
         final String path = !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
                 ? messageObject.forkSecureMediaPath

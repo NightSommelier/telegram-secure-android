@@ -488,6 +488,101 @@ public class MessageObject {
             type = TYPE_VIDEO;
             mediaExists = plaintext.isFile();
             attachPathExists = plaintext.isFile();
+        } else if (entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO && getDocument() != null) {
+            TLRPC.Document document = getDocument();
+            document.mime_type = TextUtils.isEmpty(entry.mimeType)
+                    ? "video/mp4" : entry.mimeType;
+            for (int i = document.attributes.size() - 1; i >= 0; i--) {
+                TLRPC.DocumentAttribute attribute = document.attributes.get(i);
+                if (attribute instanceof TLRPC.TL_documentAttributeSticker
+                        || attribute instanceof TLRPC.TL_documentAttributeImageSize
+                        || attribute instanceof TLRPC.TL_documentAttributeVideo
+                        || attribute instanceof TLRPC.TL_documentAttributeFilename) {
+                    document.attributes.remove(i);
+                }
+            }
+            TLRPC.TL_documentAttributeFilename fileName =
+                    new TLRPC.TL_documentAttributeFilename();
+            fileName.file_name = "file";
+            document.attributes.add(fileName);
+            TLRPC.TL_documentAttributeVideo video =
+                    new TLRPC.TL_documentAttributeVideo();
+            video.w = entry.width > 0 ? entry.width : 1;
+            video.h = entry.height > 0 ? entry.height : 1;
+            video.round_message = true;
+            video.supports_streaming = false;
+            if (plaintext.isFile()) {
+                SendMessagesHelper.fillVideoAttribute(plaintext.getAbsolutePath(), video, null);
+                if (video.w > 0 && video.h > 0) {
+                    forkSecureMediaWidth = video.w;
+                    forkSecureMediaHeight = video.h;
+                }
+            }
+            document.attributes.add(video);
+            TLRPC.TL_photoSize localVideo = new TLRPC.TL_photoSize();
+            localVideo.type = "x";
+            localVideo.w = video.w;
+            localVideo.h = video.h;
+            localVideo.size = plaintext.isFile()
+                    ? (int) Math.min(Integer.MAX_VALUE, plaintext.length()) : 0;
+            localVideo.location = new TLRPC.TL_fileLocationUnavailable();
+            photoThumbs = new ArrayList<>();
+            photoThumbs.add(localVideo);
+            photoThumbsObject = document;
+            applyNewText(getString(R.string.ForkSecureEncryptedFile));
+            type = TYPE_ROUND_VIDEO;
+            mediaExists = plaintext.isFile();
+            attachPathExists = plaintext.isFile();
+        } else if (entry.kind == SecureMediaIndex.KIND_VOICE && getDocument() != null) {
+            TLRPC.Document document = getDocument();
+            document.mime_type = TextUtils.isEmpty(entry.mimeType)
+                    ? "audio/ogg" : entry.mimeType;
+            for (int i = document.attributes.size() - 1; i >= 0; i--) {
+                TLRPC.DocumentAttribute attribute = document.attributes.get(i);
+                if (attribute instanceof TLRPC.TL_documentAttributeAudio
+                        || attribute instanceof TLRPC.TL_documentAttributeFilename) {
+                    document.attributes.remove(i);
+                }
+            }
+            TLRPC.TL_documentAttributeFilename fileName =
+                    new TLRPC.TL_documentAttributeFilename();
+            fileName.file_name = "file";
+            document.attributes.add(fileName);
+            TLRPC.TL_documentAttributeAudio audio =
+                    new TLRPC.TL_documentAttributeAudio();
+            audio.voice = true;
+            document.attributes.add(audio);
+            applyNewText(getString(R.string.ForkSecureEncryptedFile));
+            type = TYPE_VOICE;
+            mediaExists = plaintext.isFile();
+            attachPathExists = plaintext.isFile();
+            if (plaintext.isFile()) {
+                MediaController.getInstance().generateWaveform(this);
+            }
+        } else if (entry.kind == SecureMediaIndex.KIND_MUSIC && getDocument() != null) {
+            TLRPC.Document document = getDocument();
+            document.mime_type = TextUtils.isEmpty(entry.mimeType)
+                    ? "audio/mp3" : entry.mimeType;
+            for (int i = document.attributes.size() - 1; i >= 0; i--) {
+                TLRPC.DocumentAttribute attribute = document.attributes.get(i);
+                if (attribute instanceof TLRPC.TL_documentAttributeAudio
+                        || attribute instanceof TLRPC.TL_documentAttributeFilename) {
+                    document.attributes.remove(i);
+                }
+            }
+            TLRPC.TL_documentAttributeFilename fileName =
+                    new TLRPC.TL_documentAttributeFilename();
+            fileName.file_name = !TextUtils.isEmpty(entry.fileName) ? entry.fileName : "file";
+            document.attributes.add(fileName);
+            TLRPC.TL_documentAttributeAudio audio =
+                    new TLRPC.TL_documentAttributeAudio();
+            audio.voice = false;
+            audio.title = !TextUtils.isEmpty(entry.fileName) ? entry.fileName : "";
+            document.attributes.add(audio);
+            applyNewText(getString(R.string.ForkSecureEncryptedFile));
+            type = TYPE_MUSIC;
+            mediaExists = plaintext.isFile();
+            attachPathExists = plaintext.isFile();
         }
         return true;
     }
@@ -12455,6 +12550,11 @@ public class MessageObject {
     }
 
     public void checkMediaExistance(boolean useFileDatabaseQueue) {
+        if (isForkSecureCarrier()) {
+            mediaExists = !TextUtils.isEmpty(forkSecureMediaPath) && new File(forkSecureMediaPath).exists();
+            attachPathExists = mediaExists;
+            return;
+        }
         File cacheFile = null;
         attachPathExists = false;
         mediaExists = false;

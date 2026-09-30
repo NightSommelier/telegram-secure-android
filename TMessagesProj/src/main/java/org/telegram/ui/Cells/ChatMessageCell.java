@@ -101,6 +101,7 @@ import androidx.core.math.MathUtils;
 
 import org.telegram.PhoneFormat.PhoneFormat;
 import org.telegram.messenger.AccountInstance;
+import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.AppGlobalConfig;
 import org.telegram.messenger.ApplicationLoader;
@@ -10547,14 +10548,27 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         }
                     } else if (messageObject.type == MessageObject.TYPE_GIF || messageObject.type == MessageObject.TYPE_ROUND_VIDEO) {
                         String fileName = FileLoader.getAttachFileName(messageObject.getDocument());
+                        if (messageObject.isForkSecureCarrier() && TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+                            try {
+                                SecureMediaIndex.Entry entry = new SecureMediaIndex(
+                                        ApplicationLoader.applicationContext,
+                                        currentAccount,
+                                        messageObject.getDialogId())
+                                        .find(messageObject.getId(), messageObject.messageOwner != null ? messageObject.messageOwner.message : null);
+                                if (entry != null) {
+                                    messageObject.applyForkSecureMediaIndex(entry);
+                                }
+                            } catch (Throwable ignore) {
+                            }
+                        }
                         int localFile = 0;
                         if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath) && new File(messageObject.forkSecureMediaPath).exists()) {
                             DownloadController.getInstance(currentAccount).removeLoadingFileObserver(this);
                             localFile = 3;
-                        } else if (messageObject.attachPathExists) {
+                        } else if (messageObject.attachPathExists && !messageObject.isForkSecureCarrier()) {
                             DownloadController.getInstance(currentAccount).removeLoadingFileObserver(this);
                             localFile = 1;
-                        } else if (messageObject.mediaExists) {
+                        } else if (messageObject.mediaExists && !messageObject.isForkSecureCarrier()) {
                             localFile = 2;
                         }
                         boolean autoDownload = false;
@@ -10566,31 +10580,33 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                             autoDownload = false;
                         }
                         TLRPC.VideoSize videoSize = MessageObject.getDocumentVideoThumb(document);
+                        boolean canStream = !messageObject.isForkSecureCarrier() && messageObject.canStreamVideo() && autoDownload;
                         if (((MessageObject.isGifDocument(document, messageObject.hasValidGroupId()) && messageObject.videoEditedInfo == null) || (!messageObject.isSending() && !messageObject.isEditing())) && (localFile != 0 || FileLoader.getInstance(currentAccount).isLoadingFile(fileName) || autoDownload)) {
-                            if (localFile != 1 && !messageObject.needDrawBluredPreview() && (localFile != 0 || messageObject.canStreamVideo() && autoDownload)) {
+                            ImageLocation imageLocation = localFile == 3 ? ImageLocation.getForPath(messageObject.forkSecureMediaPath) : ImageLocation.getForDocument(document);
+                            if (localFile != 1 && !messageObject.needDrawBluredPreview() && (localFile != 0 || canStream)) {
                                 autoPlayingMedia = true;
                                 if (!messageIdChanged) {
                                     photoImage.setCrossfadeWithOldImage(true);
                                     photoImage.setCrossfadeDuration(250);
                                 }
                                 if (localFile == 0 && videoSize != null && (currentPhotoObject == null || currentPhotoObjectThumb == null)) {
-                                    photoImage.setImage(ImageLocation.getForDocument(document), ImageLoader.AUTOPLAY_FILTER, ImageLocation.getForDocument(videoSize, documentAttach), null, ImageLocation.getForDocument(currentPhotoObject != null ? currentPhotoObject : currentPhotoObjectThumb, documentAttach), currentPhotoObject != null ? currentPhotoFilter : currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, cacheType);
+                                    photoImage.setImage(imageLocation, ImageLoader.AUTOPLAY_FILTER, ImageLocation.getForDocument(videoSize, documentAttach), null, ImageLocation.getForDocument(currentPhotoObject != null ? currentPhotoObject : currentPhotoObjectThumb, documentAttach), currentPhotoObject != null ? currentPhotoFilter : currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, cacheType);
                                 } else {
                                     if (isRoundVideo && !messageIdChanged && photoImage.hasStaticThumb()) {
-                                        photoImage.setImage(ImageLocation.getForDocument(document), ImageLoader.AUTOPLAY_FILTER, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, null, null, photoImage.getStaticThumb(), document.size, null, messageObject, messageObject.isRoundOnce() ? cacheType : 0);
+                                        photoImage.setImage(imageLocation, ImageLoader.AUTOPLAY_FILTER, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, null, null, photoImage.getStaticThumb(), document.size, null, messageObject, messageObject.isRoundOnce() ? cacheType : 0);
                                     } else {
-                                        photoImage.setImage(ImageLocation.getForDocument(document), ImageLoader.AUTOPLAY_FILTER, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, cacheType);
+                                        photoImage.setImage(imageLocation, ImageLoader.AUTOPLAY_FILTER, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, cacheType);
                                     }
                                 }
                             } else if (localFile == 3) {
-                                photoImage.setImage(ImageLocation.getForPath(messageObject.forkSecureMediaPath), null, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, 0, null, messageObject, cacheType);
+                                photoImage.setImage(imageLocation, null, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, 0, null, messageObject, cacheType);
                             } else if (localFile == 1) {
                                 photoImage.setImage(ImageLocation.getForPath(messageObject.isSendError() ? null : messageObject.messageOwner.attachPath), null, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, 0, null, messageObject, cacheType);
                             } else {
                                 if (videoSize != null && (currentPhotoObject == null || currentPhotoObjectThumb == null)) {
-                                    photoImage.setImage(ImageLocation.getForDocument(document), null, ImageLocation.getForDocument(videoSize, documentAttach), null, ImageLocation.getForDocument(currentPhotoObject != null ? currentPhotoObject : currentPhotoObjectThumb, documentAttach), currentPhotoObject != null ? currentPhotoFilter : currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, cacheType);
+                                    photoImage.setImage(imageLocation, null, ImageLocation.getForDocument(videoSize, documentAttach), null, ImageLocation.getForDocument(currentPhotoObject != null ? currentPhotoObject : currentPhotoObjectThumb, documentAttach), currentPhotoObject != null ? currentPhotoFilter : currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, cacheType);
                                 } else {
-                                    photoImage.setImage(ImageLocation.getForDocument(document), null, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, messageObject.isRoundOnce() ? cacheType : 0);
+                                    photoImage.setImage(imageLocation, null, ImageLocation.getForObject(currentPhotoObject, photoParentObject), currentPhotoFilter, ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), currentPhotoFilterThumb, currentPhotoObjectThumbStripped, document.size, null, messageObject, messageObject.isRoundOnce() ? cacheType : 0);
                                 }
                             }
                         } else {

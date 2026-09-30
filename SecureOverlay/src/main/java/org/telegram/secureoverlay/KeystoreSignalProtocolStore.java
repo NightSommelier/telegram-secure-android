@@ -121,7 +121,14 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
             List<Integer> existing = index("prekey");
             int preKeyId;
             if (!existing.isEmpty()) {
-                preKeyId = existing.get(0);
+                byte[] b = blobs.get("counter/prekey_offer_offset");
+                int offset = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 0;
+                if (offset < 0 || offset >= existing.size()) {
+                    offset = 0;
+                }
+                preKeyId = existing.get(offset);
+                int nextOffset = (offset + 1) % existing.size();
+                blobs.put("counter/prekey_offer_offset", ByteBuffer.allocate(4).putInt(nextOffset).array());
             } else {
                 preKeyId = getNextPreKeyId();
                 storePreKey(preKeyId, new PreKeyRecord(preKeyId, ECKeyPair.generate()));

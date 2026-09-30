@@ -22190,10 +22190,20 @@ public class ChatActivity extends BaseFragment implements
         }
         boolean secureVideo = message.forkSecureMediaMime != null
                 && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/");
-        int indexKind = message.forkSecureMediaKind
-                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
-                ? SecureMediaIndex.KIND_PHOTO
-                : secureVideo ? SecureMediaIndex.KIND_VIDEO : SecureMediaIndex.KIND_FILE;
+        int indexKind;
+        if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+            indexKind = SecureMediaIndex.KIND_PHOTO;
+        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+            indexKind = SecureMediaIndex.KIND_ROUND_VIDEO;
+        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+            indexKind = SecureMediaIndex.KIND_VOICE;
+        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
+            indexKind = SecureMediaIndex.KIND_MUSIC;
+        } else if (secureVideo) {
+            indexKind = SecureMediaIndex.KIND_VIDEO;
+        } else {
+            indexKind = SecureMediaIndex.KIND_FILE;
+        }
         SecureMediaIndex secureMediaIndex =
                 new SecureMediaIndex(
                         ApplicationLoader.applicationContext,
@@ -22214,12 +22224,17 @@ public class ChatActivity extends BaseFragment implements
                                 ? null : message.forkSecureAlbumId),
                 message.forkSecureMediaWidth,
                 message.forkSecureMediaHeight));
+        int mediaDataType = MediaDataController.MEDIA_FILE;
+        if (indexKind == SecureMediaIndex.KIND_PHOTO || indexKind == SecureMediaIndex.KIND_VIDEO || indexKind == SecureMediaIndex.KIND_ROUND_VIDEO) {
+            mediaDataType = MediaDataController.MEDIA_PHOTOVIDEO;
+        } else if (indexKind == SecureMediaIndex.KIND_VOICE) {
+            mediaDataType = MediaDataController.MEDIA_AUDIO;
+        } else if (indexKind == SecureMediaIndex.KIND_MUSIC) {
+            mediaDataType = MediaDataController.MEDIA_MUSIC;
+        }
         getMediaDataController().indexForkSecureMedia(
                 message.messageOwner,
-                indexKind == SecureMediaIndex.KIND_PHOTO
-                        || indexKind == SecureMediaIndex.KIND_VIDEO
-                        ? MediaDataController.MEDIA_PHOTOVIDEO
-                        : MediaDataController.MEDIA_FILE);
+                mediaDataType);
     }
 
     private void applyPreparedSecureAttachmentPresentation(MessageObject message) {
@@ -44352,6 +44367,10 @@ public class ChatActivity extends BaseFragment implements
                 File verifiedFile = new File(message.forkSecureMediaPath);
                 if (!verifiedFile.isFile()) {
                     alertUserOpenError(message);
+                    return;
+                }
+                if (message.isRoundVideo() || message.isVoice() || message.isMusic()) {
+                    needPlayMessage(cell, message, false);
                     return;
                 }
                 if (message.forkSecureMediaKind
