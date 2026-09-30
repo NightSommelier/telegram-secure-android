@@ -393,11 +393,27 @@ public class MessageObject {
             return false;
         }
         int mediaKind;
+        int presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
         if (entry.kind == SecureMediaIndex.KIND_PHOTO) {
             mediaKind = FORK_SECURE_MEDIA_KIND_PHOTO;
+            presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
+        } else if (entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO) {
+            mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
+            presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
+        } else if (entry.kind == SecureMediaIndex.KIND_VOICE) {
+            mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
+            presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
+        } else if (entry.kind == SecureMediaIndex.KIND_MUSIC) {
+            mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
+            presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO;
+        } else if (entry.kind == SecureMediaIndex.KIND_VIDEO) {
+            mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
+            presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO;
         } else {
             mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
+            presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
         }
+        forkSecureMediaPresentation = presentation;
         File plaintext = new File(entry.plaintextPath);
         String albumId = "";
         String displayCaption = entry.caption;

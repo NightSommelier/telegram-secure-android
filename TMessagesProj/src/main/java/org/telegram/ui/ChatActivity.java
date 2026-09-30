@@ -14610,57 +14610,26 @@ public class ChatActivity extends BaseFragment implements
                         String caption = hideCaption ? "" : (sourceMessage.forkSecureMediaCaption != null
                                 ? sourceMessage.forkSecureMediaCaption : "");
                         String mime = sourceMessage.forkSecureMediaMime;
-                        if (sourceMessage.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
-                            SendMessagesHelper.prepareSendingPhoto(
-                                    getAccountInstance(),
-                                    mediaPath,
-                                    null,
-                                    null,
-                                    dialog_id,
-                                    getThreadMessage(),
-                                    null,
-                                    null,
-                                    null,
-                                    null,
-                                    null,
-                                    null,
-                                    0,
-                                    null,
-                                    null,
-                                    notify,
-                                    scheduleDate,
-                                    0,
-                                    false,
-                                    caption,
-                                    getMessageChatSendParams(),
-                                    0,
-                                    0);
-                        } else {
-                            ArrayList<String> paths = new ArrayList<>();
-                            paths.add(mediaPath);
-                            ArrayList<String> originalPaths = new ArrayList<>();
-                            originalPaths.add(mediaPath);
-                            SendMessagesHelper.prepareSendingDocuments(
-                                    getAccountInstance(),
-                                    paths,
-                                    originalPaths,
-                                    null,
-                                    caption,
-                                    mime,
-                                    dialog_id,
-                                    getThreadMessage(),
-                                    null,
-                                    null,
-                                    null,
-                                    null,
-                                    notify,
-                                    scheduleDate,
-                                    null,
-                                    getMessageChatSendParams(),
-                                    0,
-                                    false,
-                                    0);
+                        boolean isPhoto = sourceMessage.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO;
+                        int presentation = sourceMessage.forkSecureMediaPresentation;
+                        if (presentation < 0) {
+                            presentation = isPhoto ? SecureContentCodec.ATTACHMENT_PRESENTATION_FILE : -1;
                         }
+                        SendMessagesHelper.prepareSendingForkSecureMedia(
+                                getAccountInstance(),
+                                mediaPath,
+                                mime,
+                                caption,
+                                isPhoto,
+                                presentation,
+                                sourceMessage.forkSecureMediaDurationSeconds,
+                                sourceMessage.forkSecureMediaTitle,
+                                sourceMessage.forkSecureMediaPerformer,
+                                dialog_id,
+                                getThreadMessage(),
+                                notify,
+                                scheduleDate,
+                                getMessageChatSendParams());
                     } else {
                         SecureContentCodec.Contact contact = null;
                         SecureContentCodec.GeoLocation location = null;
@@ -14747,30 +14716,21 @@ public class ChatActivity extends BaseFragment implements
                             if (file != null && file.exists()) {
                                 String caption = hideCaption ? "" : (sourceMessage.messageOwner.message != null ? sourceMessage.messageOwner.message : "");
                                 String mime = sourceMessage.getDocument() != null ? sourceMessage.getDocument().mime_type : "application/octet-stream";
-                                ArrayList<String> paths = new ArrayList<>();
-                                paths.add(file.getAbsolutePath());
-                                ArrayList<String> originalPaths = new ArrayList<>();
-                                originalPaths.add(file.getAbsolutePath());
-                                SendMessagesHelper.prepareSendingDocuments(
+                                SendMessagesHelper.prepareSendingForkSecureMedia(
                                         getAccountInstance(),
-                                        paths,
-                                        originalPaths,
-                                        null,
-                                        caption,
+                                        file.getAbsolutePath(),
                                         mime,
+                                        caption,
+                                        false,
+                                        -1,
+                                        0,
+                                        "",
+                                        "",
                                         dialog_id,
                                         getThreadMessage(),
-                                        null,
-                                        null,
-                                        null,
-                                        null,
                                         notify,
                                         scheduleDate,
-                                        null,
-                                        getMessageChatSendParams(),
-                                        0,
-                                        false,
-                                        0);
+                                        getMessageChatSendParams());
                             }
                         } else if (sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaContact) {
                             TLRPC.TL_messageMediaContact c = (TLRPC.TL_messageMediaContact) sourceMessage.messageOwner.media;

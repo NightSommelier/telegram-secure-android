@@ -2903,6 +2903,87 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         return true;
     }
 
+    public static void prepareSendingForkSecureMedia(
+            AccountInstance accountInstance,
+            String mediaPath,
+            String mime,
+            String caption,
+            boolean isPhoto,
+            int presentation,
+            int durationSeconds,
+            String title,
+            String performer,
+            long dialogId,
+            MessageObject replyToMsg,
+            boolean notify,
+            int scheduleDate,
+            SendMessageChatArguments sendMessageChatArguments) {
+        if (TextUtils.isEmpty(mediaPath) || accountInstance == null) {
+            return;
+        }
+        final boolean savedMessages = isForkSecureSavedMessagesDialog(accountInstance, dialogId)
+                && SecureSavedMessagesSettings.isSecureByDefault(
+                        ApplicationLoader.applicationContext, accountInstance.getCurrentAccount());
+        if (!DialogObject.isUserDialog(dialogId) && !savedMessages) {
+            showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+            return;
+        }
+        final SecureChatEngine secureChat;
+        if (savedMessages) {
+            secureChat = null;
+        } else {
+            try {
+                secureChat = new SecureChatEngine(
+                        ApplicationLoader.applicationContext,
+                        accountInstance.getCurrentAccount(),
+                        dialogId);
+                if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                        || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                    showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                    return;
+                }
+                if (secureChat.getMode() != SecureChatEngine.Mode.PROTECTED) {
+                    showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+                    return;
+                }
+            } catch (RuntimeException error) {
+                FileLog.e(error);
+                showForkSecureError(R.string.ForkSecureSetupSendFailed);
+                return;
+            }
+        }
+        ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
+        sources.add(new ForkSecureAttachmentSource(
+                mediaPath,
+                null,
+                caption,
+                mime,
+                isPhoto,
+                presentation,
+                durationSeconds,
+                title != null ? title : "",
+                performer != null ? performer : ""));
+        prepareForkSecureAttachments(
+                accountInstance,
+                secureChat,
+                sources,
+                dialogId,
+                replyToMsg,
+                null,
+                null,
+                null,
+                notify,
+                scheduleDate,
+                0,
+                sendMessageChatArguments != null ? sendMessageChatArguments.quickReplyShortcut : null,
+                sendMessageChatArguments != null ? sendMessageChatArguments.quickReplyShortcutId : 0,
+                0,
+                false,
+                0,
+                0,
+                null);
+    }
+
     private static void prepareForkSecureAttachments(
             AccountInstance accountInstance,
             SecureChatEngine secureChat,
