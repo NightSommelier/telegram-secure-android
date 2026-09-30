@@ -1,6 +1,7 @@
 package org.telegram.secureoverlay;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -80,6 +81,30 @@ public final class SecureMediaIndexTest {
             assertEquals(expected.plaintextPath, restored.plaintextPath);
             assertEquals(1, index.list(SecureMediaIndex.KIND_PHOTO).size());
         } finally {
+            index.forgetPeer();
+        }
+    }
+
+    @Test
+    public void forgetPeerDeletesPlaintextCacheFilesOnDisk() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        SecureMediaIndex index = new SecureMediaIndex(context, 2, peer);
+        java.io.File tempFile = java.io.File.createTempFile("secure-media-test", ".bin", context.getCacheDir());
+        assertTrue(tempFile.exists());
+        try {
+            index.put(entry(
+                    99, 1000, "TGS1:temp-media",
+                    SecureMediaIndex.KIND_PHOTO,
+                    tempFile.getAbsolutePath()));
+            assertEquals(1, index.count(SecureMediaIndex.KIND_PHOTO));
+            index.forgetPeer();
+            assertEquals(0, index.count(SecureMediaIndex.KIND_PHOTO));
+            assertFalse(tempFile.exists());
+        } finally {
+            if (tempFile.exists()) {
+                tempFile.delete();
+            }
             index.forgetPeer();
         }
     }

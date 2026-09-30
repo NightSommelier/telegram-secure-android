@@ -136,6 +136,16 @@ public final class SecureMediaIndex {
 
     public void forgetPeer() {
         try {
+            Map<String, byte[]> records = blobs.snapshotPrefixes(scopedPrefix);
+            for (byte[] encoded : records.values()) {
+                try {
+                    Entry entry = decode(encoded);
+                    if (entry != null && entry.plaintextPath != null && !entry.plaintextPath.isEmpty()) {
+                        new java.io.File(entry.plaintextPath).delete();
+                    }
+                } catch (Exception ignore) {
+                }
+            }
             blobs.deletePrefixes(scopedPrefix);
         } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
             throw new SecureMediaIndexException("cannot clear secure media index", e);

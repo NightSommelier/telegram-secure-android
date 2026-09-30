@@ -38,6 +38,7 @@ import org.telegram.messenger.support.LongSparseIntArray;
 import org.telegram.messenger.utils.EphemeralMessagesHelper;
 import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureLocalMessageCache;
+import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.RequestDelegate;
 import org.telegram.tgnet.TLObject;
@@ -14536,6 +14537,22 @@ public class MessagesStorage extends BaseController {
             // surfaced in logs and must never restore or resend the deleted carrier.
             FileLog.e(error);
         }
+        try {
+            new SecureMediaIndex(
+                    ApplicationLoader.applicationContext,
+                    currentAccount,
+                    dialogId).forget(message.message);
+        } catch (Exception error) {
+            FileLog.e(error);
+        }
+        if (message.attachPath != null && !message.attachPath.isEmpty()) {
+            if (message.attachPath.contains("fork-secure") || message.attachPath.endsWith(".bin")) {
+                try {
+                    new java.io.File(message.attachPath).delete();
+                } catch (Exception ignore) {
+                }
+            }
+        }
     }
 
     private void forgetForkSecureDialogCache(long dialogId) {
@@ -14544,6 +14561,14 @@ public class MessagesStorage extends BaseController {
         }
         try {
             new SecureLocalMessageCache(
+                    ApplicationLoader.applicationContext,
+                    currentAccount,
+                    dialogId).forgetPeer();
+        } catch (Exception error) {
+            FileLog.e(error);
+        }
+        try {
+            new SecureMediaIndex(
                     ApplicationLoader.applicationContext,
                     currentAccount,
                     dialogId).forgetPeer();
@@ -14614,7 +14639,10 @@ public class MessagesStorage extends BaseController {
                             if (data != null) {
                                 TLRPC.Message message = TLRPC.Message.TLdeserialize(
                                         data, data.readInt32(false), false);
-                                forgetForkSecureLocalMessage(did, message);
+                                if (message != null) {
+                                    message.readAttachPath(data, getUserConfig().getClientUserId());
+                                    forgetForkSecureLocalMessage(did, message);
+                                }
                                 data.reuse();
                             }
                         }

@@ -4591,6 +4591,9 @@ public class MessageObject {
     }
 
     public boolean hasReactions() {
+        if (isForkSecureCarrier()) {
+            return false;
+        }
         return messageOwner.reactions != null && !messageOwner.reactions.results.isEmpty();
     }
 
@@ -10754,7 +10757,7 @@ public class MessageObject {
     }
 
     public boolean canSetReaction() {
-        if (isEphemeral()) {
+        if (isEphemeral() || isForkSecureCarrier()) {
             return false;
         }
         if (messageOwner instanceof TLRPC.TL_messageService)
@@ -12838,6 +12841,9 @@ public class MessageObject {
     }
 
     public boolean isReactionsAvailable() {
+        if (isForkSecureCarrier()) {
+            return false;
+        }
         return !isEditing() && !isSponsored() && isSent() && !isEphemeral() && !isExpiredStory() && canSetReaction();
     }
 
