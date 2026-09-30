@@ -107,10 +107,25 @@ public final class SecureMediaIndex {
     }
 
     public boolean forget(String carrier) {
-        String key = key(digest(carrier));
+        return forgetByDigest(digest(carrier));
+    }
+
+    public boolean forgetByDigest(byte[] digest) {
+        if (digest == null || digest.length != DIGEST_BYTES) {
+            return false;
+        }
+        String key = key(digest);
         try {
-            if (blobs.get(key) == null) {
+            byte[] encoded = blobs.get(key);
+            if (encoded == null) {
                 return false;
+            }
+            try {
+                Entry entry = decode(encoded);
+                if (entry != null && entry.plaintextPath != null && !entry.plaintextPath.isEmpty()) {
+                    new java.io.File(entry.plaintextPath).delete();
+                }
+            } catch (Exception ignore) {
             }
             blobs.delete(key);
             return true;

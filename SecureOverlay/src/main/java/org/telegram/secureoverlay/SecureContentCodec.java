@@ -6,7 +6,10 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Versioned application plaintext carried inside a libsignal message.
@@ -35,6 +38,11 @@ public final class SecureContentCodec {
     public static final int TYPE_VIDEO_STICKER = 4;
     public static final int TYPE_FILE = 5;
     public static final int TYPE_PHOTO = 6;
+    public static final int TYPE_CONTROL = 7;
+    public static final int TYPE_CONTACT = 8;
+    public static final int TYPE_GEO_LOCATION = 9;
+
+    public static final int CONTROL_ACTION_DELETE = 1;
 
     public static final int STICKER_FORMAT_WEBP = 1;
     public static final int STICKER_FORMAT_TGS = 2;
@@ -236,6 +244,131 @@ public final class SecureContentCodec {
         return encode(attachment.photo ? TYPE_PHOTO : TYPE_FILE, payload.array());
     }
 
+    public static byte[] encodeDeleteControl(List<byte[]> carrierDigests) {
+        Control control = new Control(CONTROL_ACTION_DELETE, carrierDigests);
+        ByteBuffer payload = ByteBuffer.allocate(1 + 4 + control.carrierDigests.size() * 32)
+                .order(ByteOrder.BIG_ENDIAN);
+        payload.put((byte) control.action);
+        payload.putInt(control.carrierDigests.size());
+        for (byte[] digest : control.carrierDigests) {
+            payload.put(digest);
+        }
+        return encode(TYPE_CONTROL, payload.array());
+    }
+
+    private static Control decodeControl(byte[] payload) {
+        if (payload == null || payload.length < 5) {
+            throw new IllegalArgumentException("truncated control payload");
+        }
+        ByteBuffer input = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
+        int action = input.get() & 0xff;
+        int count = input.getInt();
+        if (action != CONTROL_ACTION_DELETE || count <= 0 || count > 100) {
+            throw new IllegalArgumentException("invalid control payload header");
+        }
+        if (input.remaining() != count * 32) {
+            throw new IllegalArgumentException("control payload size mismatch");
+        }
+        ArrayList<byte[]> digests = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            byte[] digest = new byte[32];
+            input.get(digest);
+            digests.add(digest);
+        }
+        return new Control(action, digests);
+    }
+
+    public static byte[] encodeContact(Contact contact) {
+        if (contact == null) {
+            throw new IllegalArgumentException("secure contact is missing");
+        }
+        byte[] phone = contact.phoneNumber.getBytes(StandardCharsets.UTF_8);
+        byte[] first = contact.firstName.getBytes(StandardCharsets.UTF_8);
+        byte[] last = contact.lastName.getBytes(StandardCharsets.UTF_8);
+        byte[] vcard = contact.vcard.getBytes(StandardCharsets.UTF_8);
+        if (phone.length > 64 || first.length > 256 || last.length > 256 || vcard.length > 8192) {
+            throw new IllegalArgumentException("contact fields exceed maximum bounds");
+        }
+        ByteBuffer payload = ByteBuffer.allocate(
+                2 + phone.length + 2 + first.length + 2 + last.length + 4 + vcard.length)
+                .order(ByteOrder.BIG_ENDIAN);
+        payload.putShort((short) phone.length);
+        payload.put(phone);
+        payload.putShort((short) first.length);
+        payload.put(first);
+        payload.putShort((short) last.length);
+        payload.put(last);
+        payload.putInt(vcard.length);
+        payload.put(vcard);
+        return encode(TYPE_CONTACT, payload.array());
+    }
+
+    private static Contact decodeContact(byte[] payload) {
+        if (payload == null || payload.length < 10) {
+            throw new IllegalArgumentException("truncated contact payload");
+        }
+        ByteBuffer input = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
+        int phoneLen = input.getShort() & 0xffff;
+        if (phoneLen > 64 || input.remaining() < phoneLen) {
+            throw new IllegalArgumentException("invalid contact phone length");
+        }
+        byte[] phoneBytes = new byte[phoneLen];
+        input.get(phoneBytes);
+
+        int firstLen = input.getShort() & 0xffff;
+        if (firstLen > 256 || input.remaining() < firstLen) {
+            throw new IllegalArgumentException("invalid contact first name length");
+        }
+        byte[] firstBytes = new byte[firstLen];
+        input.get(firstBytes);
+
+        int lastLen = input.getShort() & 0xffff;
+        if (lastLen > 256 || input.remaining() < lastLen) {
+            throw new IllegalArgumentException("invalid contact last name length");
+        }
+        byte[] lastBytes = new byte[lastLen];
+        input.get(lastBytes);
+
+        int vcardLen = input.getInt();
+        if (vcardLen < 0 || vcardLen > 8192 || input.remaining() != vcardLen) {
+            throw new IllegalArgumentException("invalid contact vcard length");
+        }
+        byte[] vcardBytes = new byte[vcardLen];
+        input.get(vcardBytes);
+
+        String phone = strictUtf8AllowEmpty(phoneBytes);
+        String first = strictUtf8AllowEmpty(firstBytes);
+        String last = strictUtf8AllowEmpty(lastBytes);
+        String vcard = strictUtf8AllowEmpty(vcardBytes);
+        return new Contact(phone, first, last, vcard);
+    }
+
+    public static byte[] encodeLocation(GeoLocation location) {
+        if (location == null) {
+            throw new IllegalArgumentException("secure location is missing");
+        }
+        ByteBuffer payload = ByteBuffer.allocate(8 + 8 + 4 + 4)
+                .order(ByteOrder.BIG_ENDIAN);
+        payload.putDouble(location.latitude);
+        payload.putDouble(location.longitude);
+        payload.putInt(location.accuracy);
+        payload.putInt(location.period);
+        return encode(TYPE_GEO_LOCATION, payload.array());
+    }
+
+    private static GeoLocation decodeLocation(byte[] payload) {
+        if (payload == null || payload.length != 24) {
+            throw new IllegalArgumentException(
+                    "invalid location payload length: " + (payload == null ? 0 : payload.length));
+        }
+        ByteBuffer input = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
+        double lat = input.getDouble();
+        double lon = input.getDouble();
+        int accuracy = input.getInt();
+        int period = input.getInt();
+        return new GeoLocation(lat, lon, accuracy, period);
+    }
+
     public static Decoded decode(byte[] encoded) {
         if (encoded == null || encoded.length < HEADER_BYTES) {
             throw new IllegalArgumentException("truncated secure content");
@@ -261,6 +394,15 @@ public final class SecureContentCodec {
         }
         if (isStickerType(type)) {
             return Decoded.sticker(decodeSticker(payload, stickerFormatForContentType(type)));
+        }
+        if (type == TYPE_CONTROL) {
+            return Decoded.control(decodeControl(payload));
+        }
+        if (type == TYPE_CONTACT) {
+            return Decoded.contact(decodeContact(payload));
+        }
+        if (type == TYPE_GEO_LOCATION) {
+            return Decoded.location(decodeLocation(payload));
         }
         return Decoded.attachment(decodeAttachment(payload, type == TYPE_PHOTO));
     }
@@ -296,7 +438,10 @@ public final class SecureContentCodec {
                 || type == TYPE_ANIMATED_STICKER
                 || type == TYPE_VIDEO_STICKER
                 || type == TYPE_FILE
-                || type == TYPE_PHOTO;
+                || type == TYPE_PHOTO
+                || type == TYPE_CONTROL
+                || type == TYPE_CONTACT
+                || type == TYPE_GEO_LOCATION;
     }
 
     private static boolean isStickerType(int type) {
@@ -691,22 +836,40 @@ public final class SecureContentCodec {
         public final String text;
         public final StaticSticker staticSticker;
         public final Attachment attachment;
+        public final Control control;
+        public final Contact contact;
+        public final GeoLocation location;
 
         private Decoded(
-                int type, String text, StaticSticker staticSticker, Attachment attachment) {
+                int type,
+                String text,
+                StaticSticker staticSticker,
+                Attachment attachment,
+                Control control,
+                Contact contact,
+                GeoLocation location) {
             this.type = type;
             this.text = text;
             this.staticSticker = staticSticker;
             this.attachment = attachment;
+            this.control = control;
+            this.contact = contact;
+            this.location = location;
         }
 
         private static Decoded text(String text) {
-            return new Decoded(TYPE_TEXT, text, null, null);
+            return new Decoded(TYPE_TEXT, text, null, null, null, null, null);
         }
 
         private static Decoded sticker(StaticSticker sticker) {
             return new Decoded(
-                    contentTypeForStickerFormat(sticker.format), null, sticker, null);
+                    contentTypeForStickerFormat(sticker.format),
+                    null,
+                    sticker,
+                    null,
+                    null,
+                    null,
+                    null);
         }
 
         private static Decoded attachment(Attachment attachment) {
@@ -714,7 +877,22 @@ public final class SecureContentCodec {
                     attachment.photo ? TYPE_PHOTO : TYPE_FILE,
                     null,
                     null,
-                    attachment);
+                    attachment,
+                    null,
+                    null,
+                    null);
+        }
+
+        private static Decoded control(Control control) {
+            return new Decoded(TYPE_CONTROL, null, null, null, control, null, null);
+        }
+
+        private static Decoded contact(Contact contact) {
+            return new Decoded(TYPE_CONTACT, null, null, null, null, contact, null);
+        }
+
+        private static Decoded location(GeoLocation location) {
+            return new Decoded(TYPE_GEO_LOCATION, null, null, null, null, null, location);
         }
     }
 
@@ -867,4 +1045,84 @@ public final class SecureContentCodec {
             this.performer = performer == null ? "" : performer;
         }
     }
+
+    public static final class Control {
+        public final int action;
+        public final List<byte[]> carrierDigests;
+
+        public Control(int action, List<byte[]> carrierDigests) {
+            if (action != CONTROL_ACTION_DELETE) {
+                throw new IllegalArgumentException("unsupported control action: " + action);
+            }
+            if (carrierDigests == null || carrierDigests.isEmpty()) {
+                throw new IllegalArgumentException("carrier digests required");
+            }
+            if (carrierDigests.size() > 100) {
+                throw new IllegalArgumentException(
+                        "too many carrier digests: " + carrierDigests.size());
+            }
+            ArrayList<byte[]> copies = new ArrayList<>(carrierDigests.size());
+            for (byte[] digest : carrierDigests) {
+                if (digest == null || digest.length != 32) {
+                    throw new IllegalArgumentException("invalid carrier digest");
+                }
+                copies.add(digest.clone());
+            }
+            this.action = action;
+            this.carrierDigests = Collections.unmodifiableList(copies);
+        }
+    }
+
+    public static final class Contact {
+        public final String phoneNumber;
+        public final String firstName;
+        public final String lastName;
+        public final String vcard;
+
+        public Contact(String phoneNumber, String firstName, String lastName, String vcard) {
+            this.phoneNumber = phoneNumber == null ? "" : phoneNumber.trim();
+            this.firstName = firstName == null ? "" : firstName.trim();
+            this.lastName = lastName == null ? "" : lastName.trim();
+            this.vcard = vcard == null ? "" : vcard;
+            if (this.phoneNumber.isEmpty()
+                    && this.firstName.isEmpty()
+                    && this.lastName.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "contact requires at least a phone number or name");
+            }
+        }
+    }
+
+    public static final class GeoLocation {
+        public final double latitude;
+        public final double longitude;
+        public final int accuracy;
+        public final int period;
+
+        public GeoLocation(double latitude, double longitude, int accuracy, int period) {
+            if (latitude < -90.0
+                    || latitude > 90.0
+                    || Double.isNaN(latitude)
+                    || Double.isInfinite(latitude)) {
+                throw new IllegalArgumentException("invalid latitude: " + latitude);
+            }
+            if (longitude < -180.0
+                    || longitude > 180.0
+                    || Double.isNaN(longitude)
+                    || Double.isInfinite(longitude)) {
+                throw new IllegalArgumentException("invalid longitude: " + longitude);
+            }
+            if (accuracy < 0 || accuracy > 100000) {
+                throw new IllegalArgumentException("invalid accuracy: " + accuracy);
+            }
+            if (period < 0 || period > 86400 * 30) {
+                throw new IllegalArgumentException("invalid period: " + period);
+            }
+            this.latitude = latitude;
+            this.longitude = longitude;
+            this.accuracy = accuracy;
+            this.period = period;
+        }
+    }
 }
+

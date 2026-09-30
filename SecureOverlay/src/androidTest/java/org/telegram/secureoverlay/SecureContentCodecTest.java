@@ -312,6 +312,89 @@ public final class SecureContentCodecTest {
         assertMalformed(java.util.Arrays.copyOf(trailing, trailing.length + 1));
     }
 
+    @Test
+    public void deleteControlRoundTripsAndValidates() {
+        byte[] digest1 = new byte[32];
+        java.util.Arrays.fill(digest1, (byte) 0x11);
+        byte[] digest2 = new byte[32];
+        java.util.Arrays.fill(digest2, (byte) 0x22);
+
+        java.util.List<byte[]> digests = java.util.Arrays.asList(digest1, digest2);
+        byte[] encoded = SecureContentCodec.encodeDeleteControl(digests);
+
+        assertTrue(SecureContentCodec.isVersioned(encoded));
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(encoded);
+
+        assertEquals(SecureContentCodec.TYPE_CONTROL, decoded.type);
+        assertNotNull(decoded.control);
+        assertEquals(SecureContentCodec.CONTROL_ACTION_DELETE, decoded.control.action);
+        assertEquals(2, decoded.control.carrierDigests.size());
+        assertArrayEquals(digest1, decoded.control.carrierDigests.get(0));
+        assertArrayEquals(digest2, decoded.control.carrierDigests.get(1));
+
+        // Truncation fails closed
+        assertMalformed(java.util.Arrays.copyOf(encoded, encoded.length - 1));
+    }
+
+    @Test
+    public void contactRoundTripsAndValidates() {
+        SecureContentCodec.Contact contact = new SecureContentCodec.Contact(
+                "+380501234567",
+                "Тарас",
+                "Шевченко",
+                "BEGIN:VCARD\nVERSION:3.0\nFN:Тарас Шевченко\nTEL:+380501234567\nEND:VCARD");
+
+        byte[] encoded = SecureContentCodec.encodeContact(contact);
+        assertTrue(SecureContentCodec.isVersioned(encoded));
+
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(encoded);
+        assertEquals(SecureContentCodec.TYPE_CONTACT, decoded.type);
+        assertNotNull(decoded.contact);
+        assertEquals("+380501234567", decoded.contact.phoneNumber);
+        assertEquals("Тарас", decoded.contact.firstName);
+        assertEquals("Шевченко", decoded.contact.lastName);
+        assertEquals(contact.vcard, decoded.contact.vcard);
+
+        // Truncation fails closed
+        assertMalformed(java.util.Arrays.copyOf(encoded, encoded.length - 1));
+    }
+
+    @Test
+    public void geoLocationRoundTripsAndValidates() {
+        SecureContentCodec.GeoLocation location = new SecureContentCodec.GeoLocation(
+                50.4501, 30.5234, 15, 3600);
+
+        byte[] encoded = SecureContentCodec.encodeLocation(location);
+        assertTrue(SecureContentCodec.isVersioned(encoded));
+
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(encoded);
+        assertEquals(SecureContentCodec.TYPE_GEO_LOCATION, decoded.type);
+        assertNotNull(decoded.location);
+        assertEquals(50.4501, decoded.location.latitude, 0.000001);
+        assertEquals(30.5234, decoded.location.longitude, 0.000001);
+        assertEquals(15, decoded.location.accuracy);
+        assertEquals(3600, decoded.location.period);
+
+        // Bounds checking
+        try {
+            new SecureContentCodec.GeoLocation(91.0, 0, 0, 0);
+            fail("expected invalid latitude");
+        } catch (IllegalArgumentException expected) {
+        }
+        try {
+            new SecureContentCodec.GeoLocation(0, 181.0, 0, 0);
+            fail("expected invalid longitude");
+        } catch (IllegalArgumentException expected) {
+        }
+
+        // Truncation fails closed
+        assertMalformed(java.util.Arrays.copyOf(encoded, encoded.length - 1));
+    }
+
+    private static void assertNotNull(Object value) {
+        assertTrue(value != null);
+    }
+
     private static void assertMalformed(byte[] value) {
         try {
             SecureContentCodec.decode(value);

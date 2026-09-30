@@ -10,6 +10,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
+import java.util.List;
 import org.signal.libsignal.protocol.IdentityKey;
 import org.signal.libsignal.protocol.SignalProtocolAddress;
 import org.signal.libsignal.protocol.state.PreKeyBundle;
@@ -42,6 +43,12 @@ public final class SecureChatEngine {
             "\u0000fork-secure-display:file:v1";
     private static final String PHOTO_DISPLAY =
             "\u0000fork-secure-display:photo:v1";
+    public static final String CONTROL_DELETE_DISPLAY =
+            "\u0000fork-secure-display:control-delete:v1";
+    public static final String CONTACT_DISPLAY =
+            "\u0000fork-secure-display:contact:v1";
+    public static final String LOCATION_DISPLAY =
+            "\u0000fork-secure-display:location:v1";
     private static final Object DECRYPT_LOCK = new Object();
     private static final Object ENCRYPT_LOCK = new Object();
 
@@ -128,6 +135,7 @@ public final class SecureChatEngine {
         }
     }
 
+    private final Context context;
     private final int account;
     private final long peerUserId;
     private final KeystoreSignalProtocolStore store;
@@ -144,6 +152,7 @@ public final class SecureChatEngine {
         this.account = account;
         this.peerUserId = peerUserId;
         Context appContext = context.getApplicationContext();
+        this.context = appContext;
         SecureHistoryBackupManager.resumeInterruptedRestore(appContext);
         SecureIdentityBackupManager.resumeInterruptedImport(appContext);
         state = new SecureChatState(appContext);
@@ -594,6 +603,74 @@ public final class SecureChatEngine {
         }
     }
 
+    public String encryptDeleteControl(List<byte[]> carrierDigests) {
+        if (!isPaired()) {
+            throw new SecureChatException("secure chat is not paired", null);
+        }
+        byte[] content = SecureContentCodec.encodeDeleteControl(carrierDigests);
+        return encryptAndRemember(content, CONTROL_DELETE_DISPLAY);
+    }
+
+    public String encryptContact(SecureContentCodec.Contact contact) {
+        if (!isPaired()) {
+            throw new SecureChatException("secure chat is not paired", null);
+        }
+        byte[] content = SecureContentCodec.encodeContact(contact);
+        String carrier = encryptAndRemember(content, CONTACT_DISPLAY);
+        try {
+            localContent.rememberOutgoing(carrier, content);
+            return carrier;
+        } catch (Exception e) {
+            throw new SecureChatException("cannot cache secure contact", e);
+        }
+    }
+
+    public SecureContentCodec.Contact getOutgoingContact(String carrier) {
+        try {
+            return requireContact(localContent.loadOutgoing(carrier));
+        } catch (Exception e) {
+            throw new SecureChatException("cannot load outgoing secure contact", e);
+        }
+    }
+
+    public SecureContentCodec.Contact getIncomingContact(String carrier) {
+        try {
+            return requireContact(localContent.loadIncoming(carrier));
+        } catch (Exception e) {
+            throw new SecureChatException("cannot load incoming secure contact", e);
+        }
+    }
+
+    public String encryptLocation(SecureContentCodec.GeoLocation location) {
+        if (!isPaired()) {
+            throw new SecureChatException("secure chat is not paired", null);
+        }
+        byte[] content = SecureContentCodec.encodeLocation(location);
+        String carrier = encryptAndRemember(content, LOCATION_DISPLAY);
+        try {
+            localContent.rememberOutgoing(carrier, content);
+            return carrier;
+        } catch (Exception e) {
+            throw new SecureChatException("cannot cache secure location", e);
+        }
+    }
+
+    public SecureContentCodec.GeoLocation getOutgoingLocation(String carrier) {
+        try {
+            return requireLocation(localContent.loadOutgoing(carrier));
+        } catch (Exception e) {
+            throw new SecureChatException("cannot load outgoing secure location", e);
+        }
+    }
+
+    public SecureContentCodec.GeoLocation getIncomingLocation(String carrier) {
+        try {
+            return requireLocation(localContent.loadIncoming(carrier));
+        } catch (Exception e) {
+            throw new SecureChatException("cannot load incoming secure location", e);
+        }
+    }
+
     public SecureContentCodec.Attachment getOutgoingAttachment(String carrier) {
         try {
             return requireAttachment(localContent.loadOutgoing(carrier));
@@ -814,6 +891,27 @@ public final class SecureChatEngine {
                         localContent.rememberIncoming(carrier, plain);
                         result = content.type == SecureContentCodec.TYPE_PHOTO
                                 ? PHOTO_DISPLAY : FILE_DISPLAY;
+                    } else if (content.type == SecureContentCodec.TYPE_CONTROL) {
+                        if (content.control != null
+                                && content.control.action == SecureContentCodec.CONTROL_ACTION_DELETE) {
+                            SecureLocalMessageCache cache =
+                                    new SecureLocalMessageCache(context, account, peerUserId);
+                            for (byte[] digest : content.control.carrierDigests) {
+                                try {
+                                    cache.forgetByDigest(digest);
+                                } catch (Exception error) {
+                                    // Ignore individual digest cleanup failure and proceed with others
+                                }
+                            }
+                        }
+                        localContent.rememberIncoming(carrier, plain);
+                        result = CONTROL_DELETE_DISPLAY;
+                    } else if (content.type == SecureContentCodec.TYPE_CONTACT) {
+                        localContent.rememberIncoming(carrier, plain);
+                        result = CONTACT_DISPLAY;
+                    } else if (content.type == SecureContentCodec.TYPE_GEO_LOCATION) {
+                        localContent.rememberIncoming(carrier, plain);
+                        result = LOCATION_DISPLAY;
                     } else {
                         throw new SecureChatException("unsupported secure content", null);
                     }
@@ -915,12 +1013,27 @@ public final class SecureChatEngine {
         return isFileDisplay(value) || isPhotoDisplay(value);
     }
 
+    public static boolean isControlDeleteDisplay(String value) {
+        return CONTROL_DELETE_DISPLAY.equals(value);
+    }
+
+    public static boolean isContactDisplay(String value) {
+        return CONTACT_DISPLAY.equals(value);
+    }
+
+    public static boolean isLocationDisplay(String value) {
+        return LOCATION_DISPLAY.equals(value);
+    }
+
     private static boolean isControlDisplay(String value) {
         return isPairingAcknowledgementDisplay(value)
                 || isPairingReadyDisplay(value)
                 || isPairingRejectionDisplay(value)
                 || isStaticStickerDisplay(value)
-                || isAttachmentDisplay(value);
+                || isAttachmentDisplay(value)
+                || isControlDeleteDisplay(value)
+                || isContactDisplay(value)
+                || isLocationDisplay(value);
     }
 
     private static DialogPreview.Kind controlPreviewKind(String value) {
@@ -940,6 +1053,15 @@ public final class SecureChatEngine {
         if (isFileDisplay(value)) {
             return DialogPreview.Kind.FILE;
         }
+        if (isControlDeleteDisplay(value)) {
+            return DialogPreview.Kind.CONTROL_DELETE;
+        }
+        if (isContactDisplay(value)) {
+            return DialogPreview.Kind.CONTACT;
+        }
+        if (isLocationDisplay(value)) {
+            return DialogPreview.Kind.LOCATION;
+        }
         return DialogPreview.Kind.PLAINTEXT;
     }
 
@@ -951,6 +1073,9 @@ public final class SecureChatEngine {
             STATIC_STICKER,
             FILE,
             PHOTO,
+            CONTROL_DELETE,
+            CONTACT,
+            LOCATION,
             PAIRING_OFFER_SENT,
             PAIRING_OFFER_RECEIVED,
             OUTGOING_UNAVAILABLE
@@ -990,6 +1115,28 @@ public final class SecureChatEngine {
             throw new SecureChatException("secure content is not an attachment", null);
         }
         return decoded.attachment;
+    }
+
+    private static SecureContentCodec.Contact requireContact(byte[] content) {
+        if (content == null) {
+            return null;
+        }
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(content);
+        if (decoded.type != SecureContentCodec.TYPE_CONTACT || decoded.contact == null) {
+            throw new SecureChatException("secure content is not a contact", null);
+        }
+        return decoded.contact;
+    }
+
+    private static SecureContentCodec.GeoLocation requireLocation(byte[] content) {
+        if (content == null) {
+            return null;
+        }
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(content);
+        if (decoded.type != SecureContentCodec.TYPE_GEO_LOCATION || decoded.location == null) {
+            throw new SecureChatException("secure content is not a location", null);
+        }
+        return decoded.location;
     }
 
     /**

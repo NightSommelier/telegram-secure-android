@@ -1,6 +1,9 @@
 package org.telegram.secureoverlay;
 
 import android.content.Context;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 /**
  * Deletes device-local decrypted display and authenticated content copies for a Telegram carrier.
@@ -36,35 +39,48 @@ public final class SecureLocalMessageCache {
         if (decoded == null || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
             return false;
         }
-        String outgoingText = SecureLocalTextStore.key(
-                SecureLocalTextStore.OUTGOING_PREFIX,
-                account,
-                peerUserId,
-                carrier);
-        String incomingText = SecureLocalTextStore.key(
-                SecureLocalTextStore.INCOMING_PREFIX,
-                account,
-                peerUserId,
-                carrier);
-        String outgoingContent = SecureLocalContentStore.key(
-                SecureLocalContentStore.OUTGOING_PREFIX,
-                account,
-                peerUserId,
-                carrier);
-        String incomingContent = SecureLocalContentStore.key(
-                SecureLocalContentStore.INCOMING_PREFIX,
-                account,
-                peerUserId,
-                carrier);
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(carrier.getBytes(StandardCharsets.UTF_8));
+            return forgetByDigest(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
+    }
+
+    /**
+     * Removes all local copies for a carrier digest (used for remote cryptographic delete).
+     *
+     * @return {@code true} when cleanup was applied
+     */
+    public boolean forgetByDigest(byte[] carrierDigest)
+            throws KeystoreEncryptedBlobStore.StateStoreException {
+        if (carrierDigest == null || carrierDigest.length != 32) {
+            return false;
+        }
+        String hex = hex(carrierDigest);
+        String outgoingText = SecureLocalTextStore.OUTGOING_PREFIX + account + '.' + peerUserId + '.' + hex;
+        String incomingText = SecureLocalTextStore.INCOMING_PREFIX + account + '.' + peerUserId + '.' + hex;
+        String outgoingContent = SecureLocalContentStore.OUTGOING_PREFIX + account + '.' + peerUserId + '.' + hex;
+        String incomingContent = SecureLocalContentStore.INCOMING_PREFIX + account + '.' + peerUserId + '.' + hex;
         blobs.deleteAll(
                 outgoingText,
                 incomingText,
                 outgoingContent,
                 incomingContent);
         new SecureMediaIndex(context, account, peerUserId)
-                .forget(carrier);
+                .forgetByDigest(carrierDigest);
         SecureLocalTextStore.evictDisplayCopies(outgoingText, incomingText);
         return true;
+    }
+
+    private static String hex(byte[] value) {
+        StringBuilder result = new StringBuilder(value.length * 2);
+        for (byte item : value) {
+            result.append(Character.forDigit((item >>> 4) & 0x0f, 16));
+            result.append(Character.forDigit(item & 0x0f, 16));
+        }
+        return result.toString();
     }
 
     /** Removes all local message copies for this account and peer, but preserves protocol state. */
