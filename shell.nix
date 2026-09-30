@@ -8,9 +8,9 @@
 
 let
   androidComposition = pkgs.androidenv.composeAndroidPackages {
-    platformVersions = [ "35" ];
+    platformVersions = [ "35" "36" ];
     # AGP also resolves 34.0.0 while configuring this upstream checkout.
-    buildToolsVersions = [ "34.0.0" "35.0.0" ];
+    buildToolsVersions = [ "34.0.0" "35.0.0" "36.0.0" ];
     includeNDK = true;
     ndkVersions = [ "27.2.12479018" ];
     cmakeVersions = [ "3.22.1" ];
