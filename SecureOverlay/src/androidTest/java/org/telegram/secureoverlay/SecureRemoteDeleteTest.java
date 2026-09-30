@@ -35,7 +35,9 @@ public final class SecureRemoteDeleteTest {
 
     @Test
     public void forgetByDigestPurgesBlobsAndPlaintextFileOnDisk() throws Exception {
-        String carrier = "TGS1:1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+        String carrier = SecureCarrierCodec.encode(
+                SecureCarrierCodec.TYPE_WHISPER,
+                "secret-payload".getBytes(StandardCharsets.UTF_8));
         byte[] carrierDigest = MessageDigest.getInstance("SHA-256")
                 .digest(carrier.getBytes(StandardCharsets.UTF_8));
 
