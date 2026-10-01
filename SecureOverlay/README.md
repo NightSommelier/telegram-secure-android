@@ -1,5 +1,8 @@
 # SecureOverlay
 
+> [!NOTE]
+> [Українська версія документації доступна у файлі README_UK.md](README_UK.md).
+
 This Android library is the isolated boundary for Telegram Secure functionality.
 
 It intentionally has no dependency on `TMessagesProj`, TDLib/MTProto code or

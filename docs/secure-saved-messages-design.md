@@ -1,5 +1,8 @@
 # Fork-Secure Saved Messages design
 
+> [!NOTE]
+> [Українська версія документації доступна у файлі secure-saved-messages-design_UK.md](secure-saved-messages-design_UK.md).
+
 **Status:** implementation contract for the private MVP; no automatic migration
 of existing Telegram Saved Messages is performed.
 
