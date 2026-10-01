@@ -22,3 +22,4 @@ TMessagesProj/jni/ffmpeg/build_android
 .audit/
 *.log
 .env*
+dist/
