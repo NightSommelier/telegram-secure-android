@@ -2,10 +2,10 @@ name: Android production APK
 
 on:
   push:
-    branches: [master]
+    branches: [master, main, dev]
     tags: ['v*']
   pull_request:
-    branches: [master]
+    branches: [master, main, dev]
   workflow_dispatch:
 
 permissions:
