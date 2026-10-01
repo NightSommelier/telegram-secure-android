@@ -230,7 +230,7 @@ jobs:
           > This is a pre-release. The independent security review remains **CHANGES REQUIRED**; do not treat this build as a completed cryptographic audit.
           EOF
             gh release create "$tag" dist/release/*.apk dist/release/*.sha256 \
-              --title "Telegram Fork-Secure $tag" \
+              --title "$tag" \
               --notes-file dist/release/RELEASE-NOTES.md \
               --prerelease
           fi
