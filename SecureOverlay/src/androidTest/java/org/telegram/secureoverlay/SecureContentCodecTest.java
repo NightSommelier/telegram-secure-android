@@ -229,6 +229,98 @@ public final class SecureContentCodecTest {
         assertEquals(37, decoded.attachment.durationSeconds);
         assertEquals("", decoded.attachment.title);
         assertEquals("", decoded.attachment.performer);
+        assertNull(decoded.attachment.waveform);
+    }
+
+    @Test
+    public void voiceAttachmentPresentationWithWaveformRoundTripsInsideAuthenticatedManifest() {
+        byte[] waveform = new byte[] {0, 4, 17, -50, -93, 86, -103, -45, -12, -26, 63, -25, -3};
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "voice.ogg",
+                "audio/ogg",
+                "",
+                0,
+                0,
+                false,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE,
+                37,
+                "",
+                "",
+                waveform);
+
+        byte[] encoded = SecureContentCodec.encodeAttachment(attachment);
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(encoded);
+
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE,
+                decoded.attachment.presentation);
+        assertEquals(37, decoded.attachment.durationSeconds);
+        assertEquals("", decoded.attachment.title);
+        assertEquals("", decoded.attachment.performer);
+        assertArrayEquals(waveform, decoded.attachment.waveform);
+    }
+
+    @Test
+    public void oversizedWaveformFailsClosed() {
+        byte[] oversizedWaveform = new byte[SecureContentCodec.MAX_WAVEFORM_BYTES + 1];
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "voice.ogg",
+                "audio/ogg",
+                "",
+                0,
+                0,
+                false,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE,
+                37,
+                "",
+                "",
+                oversizedWaveform);
+        try {
+            SecureContentCodec.encodeAttachment(attachment);
+            fail("oversized waveform must be rejected");
+        } catch (IllegalArgumentException expected) {
+            // Success
+        }
+    }
+
+    @Test
+    public void waveformOnNonAudioPresentationFailsClosed() {
+        byte[] waveform = new byte[] {1, 2, 3};
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "photo.jpg",
+                "image/jpeg",
+                "",
+                100,
+                100,
+                true,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_FILE,
+                0,
+                "",
+                "",
+                waveform);
+        try {
+            SecureContentCodec.encodeAttachment(attachment);
+            fail("waveform on photo must be rejected");
+        } catch (IllegalArgumentException expected) {
+            // Success
+        }
     }
 
     @Test

@@ -232,6 +232,7 @@ public class MessageObject {
     public int forkSecureMediaDurationSeconds;
     public String forkSecureMediaTitle;
     public String forkSecureMediaPerformer;
+    public byte[] forkSecureMediaWaveform;
     /** Local-only authenticated album identifier carried inside the encrypted manifest. */
     public String forkSecureAlbumId;
     /** Local-only original Telegram grouped id, retained before secure presentation remapping. */
@@ -349,6 +350,34 @@ public class MessageObject {
             int durationSeconds,
             String title,
             String performer) {
+        markForkSecureMediaReady(
+                path,
+                kind,
+                width,
+                height,
+                name,
+                mime,
+                caption,
+                presentation,
+                durationSeconds,
+                title,
+                performer,
+                null);
+    }
+
+    public void markForkSecureMediaReady(
+            String path,
+            int kind,
+            int width,
+            int height,
+            String name,
+            String mime,
+            String caption,
+            int presentation,
+            int durationSeconds,
+            String title,
+            String performer,
+            byte[] waveform) {
         if (!isForkSecureCarrier() || TextUtils.isEmpty(path)) {
             return;
         }
@@ -365,6 +394,7 @@ public class MessageObject {
                         durationSeconds,
                         title,
                         performer,
+                        waveform,
                         false);
         synchronized (forkSecureMediaUiCache) {
             putForkSecureMediaUiState(messageOwner.message, state);
@@ -634,7 +664,18 @@ public class MessageObject {
         forkSecureMediaDurationSeconds = state.durationSeconds;
         forkSecureMediaTitle = state.title;
         forkSecureMediaPerformer = state.performer;
+        forkSecureMediaWaveform = state.waveform != null ? state.waveform.clone() : null;
         forkSecureMediaPending = state.pending;
+        if (forkSecureMediaWaveform != null && getDocument() != null) {
+            for (int a = 0; a < getDocument().attributes.size(); a++) {
+                TLRPC.DocumentAttribute attribute = getDocument().attributes.get(a);
+                if (attribute instanceof TLRPC.TL_documentAttributeAudio) {
+                    attribute.waveform = forkSecureMediaWaveform;
+                    attribute.flags |= 4;
+                    break;
+                }
+            }
+        }
         if (!TextUtils.isEmpty(state.path)) {
             attachPathExists = true;
             if (state.kind == FORK_SECURE_MEDIA_KIND_STICKER
@@ -674,6 +715,7 @@ public class MessageObject {
         final int durationSeconds;
         final String title;
         final String performer;
+        final byte[] waveform;
         final boolean pending;
 
         ForkSecureMediaUiState(
@@ -697,6 +739,7 @@ public class MessageObject {
                     0,
                     "",
                     "",
+                    null,
                     pending);
         }
 
@@ -713,6 +756,36 @@ public class MessageObject {
                 String title,
                 String performer,
                 boolean pending) {
+            this(
+                    path,
+                    kind,
+                    width,
+                    height,
+                    name,
+                    mime,
+                    caption,
+                    presentation,
+                    durationSeconds,
+                    title,
+                    performer,
+                    null,
+                    pending);
+        }
+
+        ForkSecureMediaUiState(
+                String path,
+                int kind,
+                int width,
+                int height,
+                String name,
+                String mime,
+                String caption,
+                int presentation,
+                int durationSeconds,
+                String title,
+                String performer,
+                byte[] waveform,
+                boolean pending) {
             this.path = path;
             this.kind = kind;
             this.width = width;
@@ -724,6 +797,7 @@ public class MessageObject {
             this.durationSeconds = durationSeconds;
             this.title = title;
             this.performer = performer;
+            this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
             this.pending = pending;
         }
     }
@@ -13178,6 +13252,11 @@ public class MessageObject {
             TLRPC.DocumentAttribute attribute = getDocument().attributes.get(a);
             if (attribute instanceof TLRPC.TL_documentAttributeAudio) {
                 if (attribute.waveform == null || attribute.waveform.length == 0) {
+                    if (forkSecureMediaWaveform != null && forkSecureMediaWaveform.length > 0) {
+                        attribute.waveform = forkSecureMediaWaveform;
+                        attribute.flags |= 4;
+                        return attribute.waveform;
+                    }
                     MediaController.getInstance().generateWaveform(this);
                 }
                 return attribute.waveform;

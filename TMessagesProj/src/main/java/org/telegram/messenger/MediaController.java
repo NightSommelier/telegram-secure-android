@@ -4968,6 +4968,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                         if (attribute instanceof TLRPC.TL_documentAttributeAudio) {
                             attribute.waveform = waveform;
                             attribute.flags |= 4;
+                            messageObject1.forkSecureMediaWaveform = waveform;
                             break;
                         }
                     }

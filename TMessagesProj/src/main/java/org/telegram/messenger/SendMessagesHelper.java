@@ -2389,7 +2389,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             }
         }
         ForkSecureAttachmentPresentation presentation =
-                presentationForForkSecureDocument(document);
+                presentationForForkSecureDocument(document, path);
         ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
         sources.add(new ForkSecureAttachmentSource(
                 path,
@@ -2400,7 +2400,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 presentation.kind,
                 presentation.durationSeconds,
                 presentation.title,
-                presentation.performer));
+                presentation.performer,
+                presentation.waveform));
         prepareForkSecureAttachments(
                 getAccountInstance(),
                 secureChat,
@@ -2424,7 +2425,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     private static ForkSecureAttachmentPresentation presentationForForkSecureDocument(
-            TLRPC.Document document) {
+            TLRPC.Document document, String path) {
         int kind = document != null && document.mime_type != null
                 && document.mime_type.startsWith("video/")
                 ? SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
@@ -2435,6 +2436,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         int durationSeconds = 0;
         String title = "";
         String performer = "";
+        byte[] waveform = null;
         if (document != null) {
             for (int i = 0; i < document.attributes.size(); i++) {
                 TLRPC.DocumentAttribute attribute = document.attributes.get(i);
@@ -2442,6 +2444,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     durationSeconds = (int) Math.max(0, Math.ceil(attribute.duration));
                     title = attribute.title;
                     performer = attribute.performer;
+                    waveform = attribute.waveform;
                     if (attribute.voice && durationSeconds > 0) {
                         kind = SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
                         title = "";
@@ -2456,11 +2459,20 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 }
             }
         }
+        if (kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
+                && (waveform == null || waveform.length == 0)
+                && !TextUtils.isEmpty(path)) {
+            try {
+                waveform = MediaController.getWaveform(path);
+            } catch (Throwable ignore) {
+            }
+        }
         return new ForkSecureAttachmentPresentation(
                 kind,
                 durationSeconds,
                 trimForkSecurePresentationText(title),
-                trimForkSecurePresentationText(performer));
+                trimForkSecurePresentationText(performer),
+                waveform);
     }
 
     private static boolean prepareForkSecureDocumentsIfNeeded(
@@ -3077,8 +3089,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                     presentation.kind,
                                     presentation.durationSeconds,
                                     presentation.title,
-                                    presentation.performer);
-                    if (SecureContentCodec.encodeAttachment(manifest).length > 600) {
+                                    presentation.performer,
+                                    presentation.waveform);
+                    if (SecureContentCodec.encodeAttachment(manifest).length > 1024) {
                         encryptedFile.delete();
                         throw new IllegalArgumentException(
                                 "secure attachment metadata is too large");
@@ -3284,7 +3297,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 source.presentation,
                 source.durationSeconds,
                 source.title,
-                source.performer);
+                source.performer,
+                source.waveform);
     }
 
     private static String queryForkSecureFileName(Uri uri) {
@@ -3416,11 +3430,20 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             title = "";
             performer = "";
         }
+        byte[] waveform = source.waveform;
+        if (kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
+                && (waveform == null || waveform.length == 0)) {
+            try {
+                waveform = MediaController.getWaveform(source.file.getAbsolutePath());
+            } catch (Throwable ignore) {
+            }
+        }
         return new ForkSecureAttachmentPresentation(
                 kind,
                 durationSeconds,
                 trimForkSecurePresentationText(title),
-                trimForkSecurePresentationText(performer));
+                trimForkSecurePresentationText(performer),
+                waveform);
     }
 
     private static String trimForkSecurePresentationText(String value) {
@@ -3443,13 +3466,24 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final int durationSeconds;
         final String title;
         final String performer;
+        final byte[] waveform;
 
         ForkSecureAttachmentPresentation(
                 int kind, int durationSeconds, String title, String performer) {
+            this(kind, durationSeconds, title, performer, null);
+        }
+
+        ForkSecureAttachmentPresentation(
+                int kind,
+                int durationSeconds,
+                String title,
+                String performer,
+                byte[] waveform) {
             this.kind = kind;
             this.durationSeconds = durationSeconds;
             this.title = title;
             this.performer = performer;
+            this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
         }
     }
 
@@ -3463,10 +3497,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final int durationSeconds;
         final String title;
         final String performer;
+        final byte[] waveform;
 
         ForkSecureAttachmentSource(
                 String path, Uri uri, String caption, String mimeType, boolean photo) {
-            this(path, uri, caption, mimeType, photo, -1, 0, "", "");
+            this(path, uri, caption, mimeType, photo, -1, 0, "", "", null);
         }
 
         ForkSecureAttachmentSource(
@@ -3479,6 +3514,30 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 int durationSeconds,
                 String title,
                 String performer) {
+            this(
+                    path,
+                    uri,
+                    caption,
+                    mimeType,
+                    photo,
+                    presentation,
+                    durationSeconds,
+                    title,
+                    performer,
+                    null);
+        }
+
+        ForkSecureAttachmentSource(
+                String path,
+                Uri uri,
+                String caption,
+                String mimeType,
+                boolean photo,
+                int presentation,
+                int durationSeconds,
+                String title,
+                String performer,
+                byte[] waveform) {
             this.path = path;
             this.uri = uri;
             this.caption = caption;
@@ -3488,6 +3547,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             this.durationSeconds = durationSeconds;
             this.title = title == null ? "" : title;
             this.performer = performer == null ? "" : performer;
+            this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
         }
     }
 
@@ -3502,6 +3562,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final int durationSeconds;
         final String title;
         final String performer;
+        final byte[] waveform;
 
         ForkSecureResolvedSource(
                 File file,
@@ -3513,7 +3574,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 int presentation,
                 int durationSeconds,
                 String title,
-                String performer) {
+                String performer,
+                byte[] waveform) {
             this.file = file;
             this.temporary = temporary;
             this.fileName = fileName;
@@ -3524,6 +3586,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             this.durationSeconds = durationSeconds;
             this.title = title == null ? "" : title;
             this.performer = performer == null ? "" : performer;
+            this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
         }
     }
 

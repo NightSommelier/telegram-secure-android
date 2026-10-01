@@ -22131,7 +22131,8 @@ public class ChatActivity extends BaseFragment implements
                 manifest.presentation,
                 manifest.durationSeconds,
                 manifest.title,
-                manifest.performer);
+                manifest.performer,
+                manifest.waveform);
         message.forkSecureCipherPath =
                 ciphertext == null ? null : ciphertext.getAbsolutePath();
         indexPreparedSecureMedia(message);
@@ -22230,6 +22231,20 @@ public class ChatActivity extends BaseFragment implements
             audio.flags |= 2;
             audio.voice = message.forkSecureMediaPresentation
                     == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
+            if (message.forkSecureMediaWaveform != null && message.forkSecureMediaWaveform.length > 0) {
+                audio.waveform = message.forkSecureMediaWaveform;
+                audio.flags |= 4;
+            } else if (audio.voice && !TextUtils.isEmpty(message.forkSecureMediaPath)) {
+                try {
+                    byte[] generated = MediaController.getWaveform(message.forkSecureMediaPath);
+                    if (generated != null && generated.length > 0) {
+                        audio.waveform = generated;
+                        audio.flags |= 4;
+                        message.forkSecureMediaWaveform = generated;
+                    }
+                } catch (Throwable ignore) {
+                }
+            }
             document.attributes.add(audio);
         }
         if (!TextUtils.isEmpty(message.forkSecureMediaMime)
