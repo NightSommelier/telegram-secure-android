@@ -12,13 +12,13 @@ The continuous integration and release pipeline is defined at [`.github/workflow
 The workflow implements two distinct trust and privilege boundaries:
 
 ### 1. Verification Job (`verify`)
-- **Triggers**: Pull requests and push events across `dev`, `main`, and `master`.
+- **Triggers**: Pull requests and push events across `dev` and `main`.
 - **Privileges**: Read-only repository access (`permissions: contents: read`).
 - **Action**: Compiles production Java/Kotlin sources and `SecureOverlay` test sources using structurally valid mock Telegram API identifiers (`TELEGRAM_API_ID=1`).
 - **Isolation**: Untrusted pull requests never receive signing keys or production API secrets and do not generate distributable APKs.
 
 ### 2. Multi-Architecture Packaging Job (`package`)
-- **Triggers**: Non-PR push events on `dev`, `main`, `master`, version tags matching `v*`, or manual `workflow_dispatch`.
+- **Triggers**: Push events on `main`, version tags matching `v*`, or manual `workflow_dispatch`.
 - **Privileges**: Release publishing permissions (`permissions: contents: write`).
 - **Compilation**: Compiles and signs five distinct Android package configurations:
   1. `universal`: Contains all four ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`).
