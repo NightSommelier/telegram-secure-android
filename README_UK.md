@@ -19,19 +19,19 @@ Telegram Fork-Secure — це захищений форк офіційного �
 
 ---
 
-## Завантаження останнього релізу (v12.10.5)
+## Завантаження (v12.10.5)
 
-Зібрані та підписані релізним ключем APK доступні для всіх архітектур процесорів Android:
+Підписані пакунки для підтримуваних архітектур:
 
-| Архітектура | Опис пристрою | Пряме посилання | Перевірка цілісності |
-| :--- | :--- | :---: | :---: |
-| 📱 **arm64-v8a** *(Рекомендовано)* | Сучасні 64-бітні смартфони та планшети | [⬇️ Завантажити `arm64-v8a` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-arm64-v8a.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-arm64-v8a.apk.sha256) |
-| 🌐 **universal** | Усі архітектури в одному файлі (найбільший) | [⬇️ Завантажити `universal` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-universal.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-universal.apk.sha256) |
-| 📱 **armeabi-v7a** | 32-бітні моделі смартфонів | [⬇️ Завантажити `armeabi-v7a` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-armeabi-v7a.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-armeabi-v7a.apk.sha256) |
-| 💻 **x86_64** | Chromebooks, ПК та 64-бітні емулятори | [⬇️ Завантажити `x86_64` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86_64.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86_64.apk.sha256) |
-| 💻 **x86** | 32-бітні емулятори | [⬇️ Завантажити `x86` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86.apk.sha256) |
+| Архітектура | Пакунок | Контрольна сума |
+| :--- | :--- | :--- |
+| **arm64-v8a** | [`telegram-fork-secure-12.10.5-arm64-v8a.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-arm64-v8a.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-arm64-v8a.apk.sha256) |
+| **universal** | [`telegram-fork-secure-12.10.5-universal.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-universal.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-universal.apk.sha256) |
+| **armeabi-v7a** | [`telegram-fork-secure-12.10.5-armeabi-v7a.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-armeabi-v7a.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-armeabi-v7a.apk.sha256) |
+| **x86_64** | [`telegram-fork-secure-12.10.5-x86_64.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86_64.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86_64.apk.sha256) |
+| **x86** | [`telegram-fork-secure-12.10.5-x86.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86.apk.sha256) |
 
-Повний опис релізу та список змін: [Releases](https://github.com/NightSommelier/telegram-secure-android/releases/tag/v12.10.5%2B965ecc7).
+Примітки до релізу та параметри верифікації: [Releases](https://github.com/NightSommelier/telegram-secure-android/releases/tag/v12.10.5%2B965ecc7).
 
 ---
 
