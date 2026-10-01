@@ -47,13 +47,13 @@ telegram-secure-android/
 └── .github/workflows/      # Робочі процеси CI/CD для збірки та релізів
 ```
 
-- [**FORK.md**](FORK.md) / [**FORK_UK.md**](FORK_UK.md): Базовий стан форку, взаємодія з апстрімом та межі архітектури.
-- [**CONTRIBUTING.md**](CONTRIBUTING.md) / [**CONTRIBUTING_UK.md**](CONTRIBUTING_UK.md): Модель гілок (`dev`, `feature/*`, `main`), стиль коду та процес Pull Request.
-- [**SECURITY.md**](SECURITY.md) / [**SECURITY_UK.md**](SECURITY_UK.md): Політика безпеки, повідомлення про вразливості та межі довіри.
-- [**docs/LOCAL-MVP.md**](docs/LOCAL-MVP.md) / [**docs/LOCAL-MVP_UK.md**](docs/LOCAL-MVP_UK.md): Швидке налаштування, середовище розробки Nix, команди збірки та перевірка на фізичних пристроях.
-- [**docs/TELEGRAM-ANDROID-FORK-MAP.md**](docs/TELEGRAM-ANDROID-FORK-MAP.md) / [**docs/TELEGRAM-ANDROID-FORK-MAP_UK.md**](docs/TELEGRAM-ANDROID-FORK-MAP_UK.md): Карта навігації по кодовій базі, маршрути проходження повідомлень та ключові точки входу.
-- [**docs/fork-secure-feature-security-audit.md**](docs/fork-secure-feature-security-audit.md) / [**docs/fork-secure-feature-security-audit_UK.md**](docs/fork-secure-feature-security-audit_UK.md): Детальний аудит безпеки функцій месенджера, аналіз метаданих та захисні механізми fail-closed.
-- [**docs/secure-overlay-protocol-v1.md**](docs/secure-overlay-protocol-v1.md) / [**docs/secure-overlay-protocol-v1_UK.md**](docs/secure-overlay-protocol-v1_UK.md): Специфікація бінарного протоколу Canonical Field Sequence (CFS), рукостискання та стан ратчета.
+- [**FORK_UK.md**](FORK_UK.md): Базовий стан форку, взаємодія з апстрімом та межі архітектури.
+- [**CONTRIBUTING_UK.md**](CONTRIBUTING_UK.md): Модель гілок (`dev`, `feature/*`, `main`), стиль коду та процес Pull Request.
+- [**SECURITY_UK.md**](SECURITY_UK.md): Політика безпеки, повідомлення про вразливості та межі довіри.
+- [**docs/LOCAL-MVP_UK.md**](docs/LOCAL-MVP_UK.md): Швидке налаштування, середовище розробки Nix, команди збірки та перевірка на фізичних пристроях.
+- [**docs/TELEGRAM-ANDROID-FORK-MAP_UK.md**](docs/TELEGRAM-ANDROID-FORK-MAP_UK.md): Карта навігації по кодовій базі, маршрути проходження повідомлень та ключові точки входу.
+- [**docs/fork-secure-feature-security-audit_UK.md**](docs/fork-secure-feature-security-audit_UK.md): Детальний аудит безпеки функцій месенджера, аналіз метаданих та захисні механізми fail-closed.
+- [**docs/secure-overlay-protocol-v1_UK.md**](docs/secure-overlay-protocol-v1_UK.md): Специфікація бінарного протоколу Canonical Field Sequence (CFS), рукостискання та стан ратчета.
 
 ---
 

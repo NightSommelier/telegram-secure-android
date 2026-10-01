@@ -47,13 +47,13 @@ telegram-secure-android/
 └── .github/workflows/      # Multi-architecture CI/CD workflows
 ```
 
-- [**FORK.md**](FORK.md) / [**FORK_UK.md**](FORK_UK.md): Fork baseline, upstream relationship, and architectural boundaries.
-- [**CONTRIBUTING.md**](CONTRIBUTING.md) / [**CONTRIBUTING_UK.md**](CONTRIBUTING_UK.md): Branching model (`dev`, `feature/*`, `main`), coding style, and pull request guidelines.
-- [**SECURITY.md**](SECURITY.md) / [**SECURITY_UK.md**](SECURITY_UK.md): Security policy, vulnerability reporting, and trust boundaries.
-- [**docs/LOCAL-MVP.md**](docs/LOCAL-MVP.md) / [**docs/LOCAL-MVP_UK.md**](docs/LOCAL-MVP_UK.md): Quick setup, Nix development environment, build commands, and device smoke-tests.
-- [**docs/TELEGRAM-ANDROID-FORK-MAP.md**](docs/TELEGRAM-ANDROID-FORK-MAP.md) / [**docs/TELEGRAM-ANDROID-FORK-MAP_UK.md**](docs/TELEGRAM-ANDROID-FORK-MAP_UK.md): Code navigation map, message dispatch paths, and key entry points.
-- [**docs/fork-secure-feature-security-audit.md**](docs/fork-secure-feature-security-audit.md) / [**docs/fork-secure-feature-security-audit_UK.md**](docs/fork-secure-feature-security-audit_UK.md): In-depth security audit of all messaging features, metadata leak analysis, and fail-closed defenses.
-- [**docs/secure-overlay-protocol-v1.md**](docs/secure-overlay-protocol-v1.md) / [**docs/secure-overlay-protocol-v1_UK.md**](docs/secure-overlay-protocol-v1_UK.md): Wire protocol specification for Canonical Field Sequence (CFS) envelopes, handshakes, and ratchet state.
+- [**FORK.md**](FORK.md): Fork baseline, upstream relationship, and architectural boundaries.
+- [**CONTRIBUTING.md**](CONTRIBUTING.md): Branching model (`dev`, `feature/*`, `main`), coding style, and pull request guidelines.
+- [**SECURITY.md**](SECURITY.md): Security policy, vulnerability reporting, and trust boundaries.
+- [**docs/LOCAL-MVP.md**](docs/LOCAL-MVP.md): Quick setup, Nix development environment, build commands, and device smoke-tests.
+- [**docs/TELEGRAM-ANDROID-FORK-MAP.md**](docs/TELEGRAM-ANDROID-FORK-MAP.md): Code navigation map, message dispatch paths, and key entry points.
+- [**docs/fork-secure-feature-security-audit.md**](docs/fork-secure-feature-security-audit.md): In-depth security audit of all messaging features, metadata leak analysis, and fail-closed defenses.
+- [**docs/secure-overlay-protocol-v1.md**](docs/secure-overlay-protocol-v1.md): Wire protocol specification for Canonical Field Sequence (CFS) envelopes, handshakes, and ratchet state.
 
 ---
 
