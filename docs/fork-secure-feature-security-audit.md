@@ -1,7 +1,10 @@
 # Fork-Secure Telegram feature security audit
 
-**Audit date:** 2026-07-29
-**Scope:** ordinary one-to-one cloud chats in the private Android fork. Native
+> [!NOTE]
+> [Українська версія документації доступна у файлі fork-secure-feature-security-audit_UK.md](fork-secure-feature-security-audit_UK.md).
+
+**Audit date:** 2026-10-01  
+**Scope:** ordinary one-to-one cloud chats in the private Android fork. Native  
 Secret Chats and group chats are not changed by Fork-Secure.
 
 ## Executive result

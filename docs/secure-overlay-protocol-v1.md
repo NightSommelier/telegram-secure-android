@@ -1,5 +1,8 @@
 # Telegram Secure overlay protocol v1 — review specification
 
+> [!NOTE]
+> [Українська версія документації доступна у файлі secure-overlay-protocol-v1_UK.md](secure-overlay-protocol-v1_UK.md).
+
 **Status:** REVIEW ONLY — `changes required` until a named independent reviewer records written approval in `protocol-review/REVIEW-DECISION.md`.
 
 This is the implementation gate for the narrow MVP: one verified Android device per Telegram user and 1:1 UTF-8 text only. It specifies an application-content overlay; it does not alter MTProto, TDLib semantics, Telegram routing, or ordinary Telegram messages. Files, media, groups, multi-device fanout, history sync, backups and cross-platform clients are out of scope.

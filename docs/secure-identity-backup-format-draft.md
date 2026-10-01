@@ -1,5 +1,8 @@
 # Fork-Secure identity backup format — draft 1
 
+> [!NOTE]
+> [Українська версія документації доступна у файлі secure-identity-backup-format-draft_UK.md](secure-identity-backup-format-draft_UK.md).
+
 **Status:** local identity-only MVP implemented; independent format review,
 cross-implementation fixtures and destructive reinstall/restore testing remain
 required before this is treated as a release recovery mechanism.

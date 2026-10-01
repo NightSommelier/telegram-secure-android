@@ -1,5 +1,8 @@
 # Telegram Secure project history
 
+> [!NOTE]
+> [Українська версія документації доступна у файлі PROJECT-HISTORY_UK.md](PROJECT-HISTORY_UK.md).
+
 This journal records security-relevant project decisions and their evidence.
 Tracked documentation and Git history are the source of truth; this journal
 does not grant implementation authority.

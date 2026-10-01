@@ -1,5 +1,8 @@
 # Secure backup and recovery — future protocol requirements
 
+> [!NOTE]
+> [Українська версія документації доступна у файлі secure-backup-recovery-future_UK.md](secure-backup-recovery-future_UK.md).
+
 **Status:** non-normative future-work boundary. This document is not part of Secure Overlay v1 and does not authorize backup implementation.
 
 ## Product decision

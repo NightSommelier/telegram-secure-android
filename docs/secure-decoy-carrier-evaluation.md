@@ -1,5 +1,8 @@
 # Fork-Secure text-like carrier evaluation
 
+> [!NOTE]
+> [Українська версія документації доступна у файлі secure-decoy-carrier-evaluation_UK.md](secure-decoy-carrier-evaluation_UK.md).
+
 **Status:** design candidate only. The canonical `TGS1:` carrier remains the
 default until this mode passes interoperability, corruption, and UX review.
 
