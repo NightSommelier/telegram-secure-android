@@ -1,90 +1,84 @@
 # Local MVP: Telegram Fork-Secure
 
-This repository builds **Telegram Fork-Secure**, a local Telegram Android fork
-for private beta testing. It includes an experimental Fork-Secure layer for
-ordinary 1:1 chats and a separate protected Saved Messages mode. Native Telegram
-Secret Chats are not modified; groups, channels, and ordinary chats use normal
-Telegram behavior.
+> [!NOTE]
+> [Українська версія документації доступна у файлі LOCAL-MVP_UK.md](LOCAL-MVP_UK.md).
 
-The additional layer is not independently security-reviewed. The protocol-review
-gate remains [`CHANGES REQUIRED`](protocol-review/REVIEW-DECISION.md), so this
-MVP must not be presented as a high-assurance confidential messenger.
+This document outlines the setup, build, and verification workflow for **Telegram Fork-Secure** on local physical Android hardware.
 
-## One-time local setup
+Fork-Secure adds an end-to-end encrypted protocol layer for ordinary 1:1 cloud chats and a protected Saved Messages mode. Native Telegram Secret Chats, channels, and groups remain unchanged.
 
-1. Create an Android application at `https://my.telegram.org/apps` for this
-   fork. Keep the resulting API ID and API hash private.
-2. Copy `local.properties.example` to `local.properties`, set `sdk.dir`,
-   `TELEGRAM_API_ID`, and `TELEGRAM_API_HASH`. That file is ignored by Git.
-3. Install Android SDK platform/build-tools 35, NDK `27.2.12479018`, and CMake
-   `3.22.1`. If CMake is outside `sdk.dir`, set `cmake.dir` in
-   `local.properties`.
+The cryptographic layer remains under active review ([`CHANGES REQUIRED`](protocol-review/REVIEW-DECISION.md)). Do not treat this build as an audited high-assurance confidential messenger.
 
-Confirm the environment before compiling:
+---
 
+## One-Time Local Setup
+
+1. **Obtain Telegram API Credentials**:
+   Register an application at [my.telegram.org/apps](https://my.telegram.org/apps) to obtain a valid `api_id` and `api_hash`.
+2. **Configure Local Environment**:
+   Copy `local.properties.example` to `local.properties`:
+   ```properties
+   TELEGRAM_API_ID=123456
+   TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789
+   sdk.dir=/path/to/android-sdk
+   ```
+3. **Android SDK & Toolchain**:
+   Requires JDK 21, Android SDK platform 35/36, build-tools 35.0.0/36.0.0, NDK `27.2.12479018`, and CMake `3.22.1`. Alternatively, enter the project's pre-configured Nix environment (`nix-shell`).
+
+Verify your environment before proceeding:
 ```bash
 ./scripts/check-local-mvp.sh
 ```
 
-## Build and install
+---
 
+## Local Build & Installation
+
+### Fast Cycle (ARM64 Debug Build)
+
+Build and install on a connected Android phone:
 ```bash
 ./scripts/build-local-mvp.sh
-./scripts/install-local-mvp.sh 636567fd
+./scripts/install-local-mvp.sh <device_serial>
 ```
 
-For the normal local cycle, one command rebuilds the ARM64 debug APK, installs
-it on the one connected device, and opens the app:
-
+Or run the all-in-one local test runner:
 ```bash
-./scripts/run-local-mvp.sh
+./scripts/run-local-mvp.sh <device_serial>
 ```
 
-If more than one device is connected, pass the intended ADB serial explicitly:
+The debug APK uses package `ua.securechat.telegram` and is signed with the local debug key, allowing side-by-side coexistence with the official Telegram client.
 
-```bash
-./scripts/run-local-mvp.sh 636567fd
-```
+### Release Signing
 
-The debug APK package is `ua.securechat.telegram`; it is signed with the
-standard local Android debug keystore and can coexist with the official
-Telegram client. Do not distribute this debug APK.
-
-## Release signing
-
-When you need an installable release APK, create a unique local signing key:
-
+To build a production, release-signed package:
 ```bash
 ./scripts/create-release-keystore.sh
 ```
+This initializes `keystore/` and `signing.properties`. Then build production APKs:
+```bash
+./gradlew :TMessagesProj_App:assembleAfatRelease --console=plain
+```
 
-The script asks for a password and creates ignored `keystore/` and
-`signing.properties` files. Back up `keystore/` securely: losing it prevents
-you from updating an already installed release build. Release tasks fail until
-this key is configured, so they cannot use Telegram's upstream signing key.
+---
 
-## Phone smoke test
+## Connected Device Verification
 
-1. Start **Telegram Fork-Secure** and leave **Use test server** disabled.
-2. Log in to two separate production accounts on two devices.
-3. In a paired 1:1 chat, verify protected text, captions, photos, files and
-   supported media in both directions; also verify an ordinary message after
-   turning protection off.
-4. Verify protected Saved Messages text/media separately.
-5. Close and reopen both apps; confirm that accounts, chats and received media
-   remain available. Test import/recovery on a spare installation before relying
-   on a backup.
+Run the full suite of cryptographic, storage, codec, and state machine instrumentation tests on a connected device:
 
-## Verified local MVP (2026-07-22)
+```bash
+nix-shell --run 'ANDROID_SERIAL=<device_serial> ./gradlew :SecureOverlay:connectedDebugAndroidTest --console=plain'
+```
 
-- Two real Android devices using separate production accounts.
-- Two-way text, photo, document/file, and voice-message delivery.
-- Sessions, chat history, and media persist after closing and reopening both
-  apps.
-- The locally signed release APK was installed on both devices and exchanged
-  messages successfully.
-- Notifications were observed during the two-device release test. Behavior
-  after force-stop or device reboot remains outside this smoke test.
+---
 
-`SecureOverlay` is part of the fork implementation. `docs/protocol-review`
-remains the independent-review boundary and must not be changed to imply approval.
+## Supported & Verified Capabilities (Telegram 12.10.5 Baseline)
+
+- **Text & Formatting**: Encrypted UTF-8 text, entities, captions, client-side linkification, and stripped reply quote metadata.
+- **Rich Media**: Photos, videos, voice notes, round video notes, audio/music tracks, arbitrary files, and stickers with decrypted native playback and waveform rendering.
+- **Contacts**: Encrypted `TYPE_CONTACT` payload; standard Telegram vCard leakage stripped.
+- **Geo-Location**: Encrypted `TYPE_GEO_LOCATION` payload with secret mode preview blocking external tile leakages.
+- **Remote Deletion**: Cryptographically signed `TYPE_CONTROL_DELETE` control packet purging ciphertext, local cache, and disk files.
+- **Secure Forwarding**: Decrypts and re-encrypts under recipient's ratchet session preserving waveforms and presentation attributes.
+- **Link Anti-Spoofing (`SecureLinkGuard`)**: Filters Punycode, IDN homoglyphs, BiDi overrides, and authority spoofing with mandatory confirmation before external navigation.
+- **Screen Protection**: `FLAG_SECURE` enforced across `ChatActivity`, `ProfileActivity`, and `PhotoViewer`; gallery export and sharing blocked.

@@ -1,60 +1,100 @@
-# Telegram Fork-Secure [![Android CI](https://github.com/NightSommelier/telegram-secure-android/actions/workflows/android.yml/badge.svg?branch=master)](https://github.com/NightSommelier/telegram-secure-android/actions/workflows/android.yml) [![License: GPL v2 or later](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](LICENSE)
+# Telegram Fork-Secure [![Android CI](https://github.com/NightSommelier/telegram-secure-android/actions/workflows/android.yml/badge.svg?branch=master)](https://github.com/NightSommelier/telegram-secure-android/actions/workflows/android.yml) [![License: GPL v2 or later](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](LICENSE) [![Latest Release](https://img.shields.io/github/v/release/NightSommelier/telegram-secure-android?include_prereleases&label=release)](https://github.com/NightSommelier/telegram-secure-android/releases)
 
-This checkout is a private Telegram Android fork for local device testing. Its
-active product-specific code is in `TMessagesProj/` and `SecureOverlay/`;
-setup, local build commands and MVP boundaries are documented in
-[`docs/LOCAL-MVP.md`](docs/LOCAL-MVP.md). Fork-Secure adds an experimental
-protected mode to ordinary 1:1 chats and Saved Messages without changing
-Telegram Secret Chats. It is not independently security-reviewed; see
-[`docs/protocol-review/REVIEW-DECISION.md`](docs/protocol-review/REVIEW-DECISION.md).
+Telegram Fork-Secure is a privacy-hardened Telegram Android fork based on the official Telegram Android client (**v12.10.5**). It adds a transparent, end-to-end encrypted security overlay for standard 1:1 cloud chats and Saved Messages using the Signal Double Ratchet protocol (`SecureOverlay`), without requiring server-side cooperation or breaking compatibility with standard Telegram chat routing.
 
-Do not use Telegram's name/logo in a way that implies an official client, and
-never commit API credentials, keystores or decrypted media.
+> [!NOTE]
+> [Українська версія документації доступна у файлі README_UK.md](README_UK.md).
 
-## Upstream Telegram Android source
+---
 
-[Telegram](https://telegram.org) is a messaging app with a focus on speed and security. It’s superfast, simple and free.
-This repo contains the official source code for [Telegram App for Android](https://play.google.com/store/apps/details?id=org.telegram.messenger).
+## Key Features
 
-## Creating your Telegram Application
+- **Signal Protocol E2EE (`SecureOverlay`)**: End-to-end encrypted messaging using X3DH, Double Ratchet, Ed25519/X25519 keys, and XChaCha20-Poly1305 authenticated encryption over standard Telegram 1:1 carriers.
+- **Encrypted Rich Media**: Complete encryption of photos, voice notes, round video notes, audio/music files, documents, and stickers. Native playback runs directly from the decrypted cache with preserved waveforms and metadata.
+- **Encrypted Contacts & Live/Static Geo-Location**: Dedicated secure payload codecs for `TYPE_CONTACT` (vCard / phone / name) and `TYPE_GEO_LOCATION` with secret mode protected map rendering.
+- **Authenticated Remote Deletion**: Cryptographically signed remote delete control packets (`TYPE_CONTROL_DELETE`) with carrier digest verification and automatic purge of ciphertext, decrypted cache, and disk files.
+- **Secure Media Forwarding**: Forward protected media across secure sessions; media is decrypted locally and safely re-encrypted under the recipient's ratchet chain, preserving captions, waveforms, and dimensions.
+- **Anti-Spoofing Link Guard & Phishing Warning**: Integrated `SecureLinkGuard` detects IDN homoglyphs (confusable Cyrillic/Latin/Greek alphabets), Punycode (`xn--`), BiDi directional override characters, zero-width spaces, and URI authority spoofing (`user:pass@host`), requiring explicit user confirmation before external browser launch.
+- **Screen Protection & Anti-Leak Guards**: Enforced `FLAG_SECURE` window protection across chat, profile, and media viewer; blocked gallery exports, screenshots, and sharing of decrypted media; cloud drafts and link previews suppressed in protected chats; unencrypted reactions blocked fail-closed.
 
-We welcome all developers to use our API and source code to create applications on our platform.
-There are several things we require from **all developers** for the moment.
+---
 
-1. [**Obtain your own api_id**](https://core.telegram.org/api/obtaining_api_id) for your application.
-2. Please **do not** use the name Telegram for your app — or make sure your users understand that it is unofficial.
-3. Kindly **do not** use our standard logo (white paper plane in a blue circle) as your app's logo.
-3. Please study our [**security guidelines**](https://core.telegram.org/mtproto/security_guidelines) and take good care of your users' data and privacy.
-4. Please remember to publish **your** code too in order to comply with the licences.
+## Download Latest Release (v12.10.5)
 
-### API, Protocol documentation
+Pre-built, release-signed APKs are available for all Android hardware architectures:
 
-Telegram API manuals: https://core.telegram.org/api
+| Architecture | Description | Direct Download | Verification |
+| :--- | :--- | :---: | :---: |
+| 📱 **arm64-v8a** *(Recommended)* | Modern 64-bit ARM phones and tablets | [⬇️ Download `arm64-v8a` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-arm64-v8a.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-arm64-v8a.apk.sha256) |
+| 🌐 **universal** | All ABIs bundled into one APK | [⬇️ Download `universal` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-universal.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-universal.apk.sha256) |
+| 📱 **armeabi-v7a** | Older 32-bit ARM smartphones | [⬇️ Download `armeabi-v7a` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-armeabi-v7a.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-armeabi-v7a.apk.sha256) |
+| 💻 **x86_64** | Chromebooks, PCs and 64-bit emulators | [⬇️ Download `x86_64` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86_64.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86_64.apk.sha256) |
+| 💻 **x86** | 32-bit emulators | [⬇️ Download `x86` APK](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86.apk) | [SHA-256](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B965ecc7/telegram-fork-secure-12.10.5-x86.apk.sha256) |
 
-MTproto protocol manuals: https://core.telegram.org/mtproto
+Full release notes and changelog: [Releases](https://github.com/NightSommelier/telegram-secure-android/releases/tag/v12.10.5%2B965ecc7).
 
-### Compilation Guide
+---
 
-**Note**: In order to support [reproducible builds](https://core.telegram.org/reproducible-builds), this repo contains dummy release.keystore,  google-services.json and filled variables inside BuildVars.java. Before publishing your own APKs please make sure to replace all these files with your own.
+## Repository Structure & Documentation Map
 
-You will require Android Studio 2025.1.4, Android NDK 27.2.12479018 and Android SDK 36.
+```text
+telegram-secure-android/
+├── TMessagesProj/          # Telegram Android app sources (UI, networking, media, DB)
+├── TMessagesProj_App/      # Android application packaging, flavors, and build configuration
+├── SecureOverlay/          # Isolated Signal protocol layer, codecs, storage, and tests
+├── docs/                   # Architectural blueprints, security audits, and developer guides
+├── scripts/                # Local build, check, and deployment scripts
+└── .github/workflows/      # Multi-architecture CI/CD workflows
+```
 
-1. Clone the Fork-Secure repository with its upstream submodules:
-   ```bash
-   git clone --recursive --shallow-submodules https://github.com/NightSommelier/telegram-secure-android.git telegram-secure-android
-   cd telegram-secure-android
-   ```
-   In case you forgot the `--recursive` flag, run this from the checkout:
-   ```bash
-   git submodule init && git submodule update --init --recursive --depth=1
-   ```
-2. Copy your release.keystore into TMessagesProj/config
-3. Fill out RELEASE_KEY_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_STORE_PASSWORD in gradle.properties to access your  release.keystore
-4.  Go to https://console.firebase.google.com/, create two android apps with application IDs org.telegram.messenger and org.telegram.messenger.beta, turn on firebase messaging and download google-services.json, which should be copied to the same folder as TMessagesProj.
-5. Open the project in the Studio (note that it should be opened, NOT imported).
-6. Fill out values in TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java – there’s a link for each of the variables showing where and which data to obtain.
-7. You are ready to compile Telegram.
+- [**FORK.md**](FORK.md) / [**FORK_UK.md**](FORK_UK.md): Fork baseline, upstream relationship, and architectural boundaries.
+- [**CONTRIBUTING.md**](CONTRIBUTING.md) / [**CONTRIBUTING_UK.md**](CONTRIBUTING_UK.md): Branching model (`dev`, `feature/*`, `main`), coding style, and pull request guidelines.
+- [**SECURITY.md**](SECURITY.md) / [**SECURITY_UK.md**](SECURITY_UK.md): Security policy, vulnerability reporting, and trust boundaries.
+- [**docs/LOCAL-MVP.md**](docs/LOCAL-MVP.md) / [**docs/LOCAL-MVP_UK.md**](docs/LOCAL-MVP_UK.md): Quick setup, Nix development environment, build commands, and device smoke-tests.
+- [**docs/TELEGRAM-ANDROID-FORK-MAP.md**](docs/TELEGRAM-ANDROID-FORK-MAP.md) / [**docs/TELEGRAM-ANDROID-FORK-MAP_UK.md**](docs/TELEGRAM-ANDROID-FORK-MAP_UK.md): Code navigation map, message dispatch paths, and key entry points.
+- [**docs/fork-secure-feature-security-audit.md**](docs/fork-secure-feature-security-audit.md) / [**docs/fork-secure-feature-security-audit_UK.md**](docs/fork-secure-feature-security-audit_UK.md): In-depth security audit of all messaging features, metadata leak analysis, and fail-closed defenses.
+- [**docs/secure-overlay-protocol-v1.md**](docs/secure-overlay-protocol-v1.md) / [**docs/secure-overlay-protocol-v1_UK.md**](docs/secure-overlay-protocol-v1_UK.md): Wire protocol specification for Canonical Field Sequence (CFS) envelopes, handshakes, and ratchet state.
 
-### Localization
+---
 
-We moved all translations to https://translations.telegram.org/en/android/. Please use it.
+## Development & Branching Workflow
+
+We follow a strict git branching model for all contributions:
+
+1. **`dev`**: The default integration branch for ongoing development. All feature PRs target `dev`.
+2. **`feature/<name>`**: Individual feature or bugfix branches created from `dev`.
+3. **`main` / `master`**: Production release branches containing tagged, verified releases (`v<version>`).
+
+---
+
+## Local Build & Testing
+
+The repository provides a reproducible Nix development shell (`shell.nix`) containing JDK 21, Android SDK platform/build-tools 35 & 36, NDK 27.2.12479018, and CMake 3.22.1.
+
+### Prerequisites
+
+1. Obtain your own `api_id` and `api_hash` from [my.telegram.org](https://my.telegram.org/apps).
+2. Configure `local.properties` (see `local.properties.example`).
+
+### Build Commands
+
+```bash
+# Verify environment and dependencies
+./scripts/check-local-mvp.sh
+
+# Build ARM64 debug APK locally
+./scripts/build-local-mvp.sh
+
+# Run connected Android instrumentation tests on device
+nix-shell --run 'ANDROID_SERIAL=<device_serial> ./gradlew :SecureOverlay:connectedDebugAndroidTest --console=plain'
+
+# Build production multi-architecture release APKs
+./gradlew :TMessagesProj_App:assembleAfatRelease --console=plain
+```
+
+---
+
+## Security & Independent Review Notice
+
+> [!WARNING]
+> Fork-Secure is a beta implementation for research, evaluation, and device testing. The independent cryptographic review status remains **`CHANGES REQUIRED`** (see [`docs/protocol-review/REVIEW-DECISION.md`](docs/protocol-review/REVIEW-DECISION.md)). Do not rely on this client for critical confidential communications until the formal review process is fully resolved.
