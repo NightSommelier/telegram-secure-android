@@ -22,12 +22,12 @@ We follow an explicit branch lifecycle for all work:
 
 ```
 feature/<feature-name>  ──┐
-feature/<fix-name>      ──┼──>  [ dev ]  ──>  [ main / master ]  (v12.10.5 tags)
+feature/<fix-name>      ──┼──>  [ dev ]  ──>  [ main ]  (v12.10.5 tags)
 ```
 
 1. **Active Development on `dev`**:
    - The primary integration branch is **`dev`**.
-   - Do not commit directly to `main` or `master`.
+   - Do not commit directly to `main`.
 2. **Feature Branches (`feature/<name>`)**:
    - Create feature or bugfix branches branched off `dev`: `git checkout -b feature/my-feature dev`.
    - Keep commits focused and atomic with Conventional Commit messages (`feat(secure): ...`, `fix(android): ...`, `test(secure): ...`, `docs: ...`).
@@ -35,7 +35,7 @@ feature/<fix-name>      ──┼──>  [ dev ]  ──>  [ main / master ]  (
    - Submit PRs targeting the **`dev`** branch.
    - Merges to `dev` must pass CI and local verification.
 4. **Releases**:
-   - Release versions are merged from `dev` into `main` (and synchronized with `master`).
+   - Release versions are merged from `dev` into `main`.
    - Releases are tagged with version tags (`v<version>`), triggering multi-architecture release packaging in GitHub Actions.
 
 ---

@@ -33,7 +33,7 @@ Telegram Fork-Secure strictly preserves Telegram’s underlying client/server pr
 
 - **`dev`**: Primary branch for daily development. Feature branches are merged here after test verification.
 - **`feature/<name>`**: Scoped branches for new features or bug fixes.
-- **`main` / `master`**: Production release branches containing tagged, verified releases (`v<version>`).
+- **`main`**: Production release branch containing tagged, verified releases (`v<version>`).
 
 ## Local Development Environment
 

@@ -63,7 +63,7 @@ We follow a strict git branching model for all contributions:
 
 1. **`dev`**: The default integration branch for ongoing development. All feature PRs target `dev`.
 2. **`feature/<name>`**: Individual feature or bugfix branches created from `dev`.
-3. **`main` / `master`**: Production release branches containing tagged, verified releases (`v<version>`).
+3. **`main`**: Production release branch containing tagged, verified releases (`v<version>`).
 
 ---
 
