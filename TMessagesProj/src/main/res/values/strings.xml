@@ -11338,6 +11338,12 @@
     <string name="ForkSecureNewIdentityCreatedGlobal">A new global identity was created. Every previous protected chat is disabled; open each contact and pair again.\n\nNew fingerprint:\n%1$s</string>
     <string name="ForkSecureNewFingerprint">New fingerprint:\n%1$s</string>
     <string name="ForkSecureIdentityResetFailed">Fork-Secure identity reset failed</string>
+    <string name="ForkSecureSuspiciousLinkTitle">⚠️ Suspicious link detected</string>
+    <string name="ForkSecureSuspiciousLinkBody">This link may be attempting to deceive you using a spoofed or lookalike domain (homoglyph/punycode attack).\n\nOriginal: %1$s\n\nCanonical / Decoded: %2$s\n\nThreat detail: %3$s\n\nOpening links in an external browser will reveal your IP address.</string>
+    <string name="ForkSecureExternalLinkTitle">Open external link?</string>
+    <string name="ForkSecureExternalLinkBody">You are in an end-to-end encrypted chat. Opening this link will launch an external browser outside the encrypted sandbox and expose your IP address to %1$s.\n\nDestination:\n%2$s</string>
+    <string name="ForkSecureOpenAnyway">Open anyway</string>
+    <string name="ForkSecureCopySafeLink">Copy address</string>
 
     <string name="WelcomeMessage">Welcome Message</string>
     <string name="WelcomeMessageOff">Off</string>

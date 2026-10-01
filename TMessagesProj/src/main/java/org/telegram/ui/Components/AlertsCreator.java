@@ -1741,13 +1741,18 @@ public class AlertsCreator {
     public static void showOpenUrlAlert(Context context, String url, boolean punycode, boolean tryTelegraph, boolean ask, boolean forceNotInternalForApps, long inlineReturn, Browser.Progress progress, @Nullable TLRPC.WebPage webPage, Theme.ResourcesProvider resourcesProvider) {
         if (!AndroidUtilities.isContextSafe(context)) return;
         final String scheme = url == null ? null : Uri.parse(url).getScheme();
-        if (Browser.isInternalUrl(url, null) || !ask || "mailto".equalsIgnoreCase(scheme)) {
+        final org.telegram.secureoverlay.SecureLinkGuard.Analysis linkAnalysis =
+                org.telegram.secureoverlay.SecureLinkGuard.analyze(url);
+        final boolean isSuspicious = linkAnalysis.isSuspicious;
+        if (!isSuspicious && (Browser.isInternalUrl(url, null) || !ask || "mailto".equalsIgnoreCase(scheme))) {
             Browser.openUrl(context, Uri.parse(url), inlineReturn == 0, tryTelegraph, forceNotInternalForApps && checkInternalBotApp(url), progress, null, false, true, false);
             return;
         }
 
         String urlFinal;
-        if (punycode) {
+        if (isSuspicious && linkAnalysis.canonicalDisplayUrl != null) {
+            urlFinal = linkAnalysis.canonicalDisplayUrl;
+        } else if (punycode) {
             try {
                 Uri uri = Uri.parse(url);
                 urlFinal = Browser.replaceHostname(uri, Browser.IDN_toUnicode(uri.getHost()), null);
@@ -1763,7 +1768,11 @@ public class AlertsCreator {
         final AlertDialog[] dialog = new AlertDialog[1];
 
         final AlertDialog.Builder builder = new AlertDialog.Builder(context, resourcesProvider);
-        builder.setTitle(LocaleController.getString(R.string.OpenUrlTitle));
+        if (isSuspicious) {
+            builder.setTitle(LocaleController.getString(R.string.ForkSecureSuspiciousLinkTitle));
+        } else {
+            builder.setTitle(LocaleController.getString(R.string.OpenUrlTitle));
+        }
 
         final TextView urlView = new TextView(context);
         urlView.setText(urlFinal);

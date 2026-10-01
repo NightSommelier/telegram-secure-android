@@ -5506,6 +5506,9 @@ public class AndroidUtilities {
 
     public static boolean shouldShowUrlInAlert(String url) {
         try {
+            if (org.telegram.secureoverlay.SecureLinkGuard.isSuspicious(url)) {
+                return true;
+            }
             Uri uri = Uri.parse(url);
             url = uri.getHost();
             return checkHostForPunycode(url);

@@ -33,6 +33,7 @@ Fork-Secure cannot hide those properties while using Telegram transport.
 | Contacts | Encrypted `TYPE_CONTACT` payload inside carrier; unencrypted contact data stripped | Telegram sees carrier size only |
 | Location | Encrypted `TYPE_GEO_LOCATION` payload; bubble preview blocks external tile requests (`currentMapProvider = -1`), opens in protected secret mode | Telegram sees carrier size only; user must consent to view map |
 | Screen Protection | `FLAG_SECURE` enforced across `ChatActivity`, `ProfileActivity`, `ChatMessageCell`, and `PhotoViewer`; gallery export and sharing blocked | Root/OS-level screen hooks outside Android window security |
+| Links & Anti-Spoofing | Client-side linkification; SecureLinkGuard detects IDN/homoglyphs, Punycode, invisible chars, and authority spoofing; explicit confirmation with canonical URL required before external browser launch | IP address and device metadata visible to destination server once opened |
 | Identity reset and recovery | Reset, identity-only archive, and manual identity-plus-history archive prototype | History restore pauses every recovered chat; automatic backup and safe multi-device protocol remain pending |
 
 ## Closed P0 fallback paths
@@ -133,8 +134,9 @@ the one-to-one secure-chat MVP.
 2. Add proxy health checks and optional proxy rotation as a Telegram transport
    feature. It must remain independent of `SecureOverlay`, preserve the user's
    selected routing policy and never silently enable a direct fallback.
-3. Add a direct, non-reflective spoofed-link check at the URL-opening boundary,
-   including Telegram usernames, link parameters and Unicode/IDN cases.
+3. [Completed] Direct, non-reflective spoofed-link check at the URL-opening
+   boundary via `SecureLinkGuard`, verifying Punycode, homoglyphs, invisible/bidi
+   characters, user-info authority tricks, and high-value target spoofing.
 4. Evaluate encrypted local database storage after history recovery has a
    stable lifecycle. SQLCipher/Keystore designs may be used as references, but
    key loss, reinstall, migration, rollback and interrupted-write behavior need

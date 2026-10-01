@@ -195,6 +195,7 @@ import org.telegram.secureoverlay.SecureMediaCache;
 import org.telegram.secureoverlay.SecureMediaCrypto;
 import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.secureoverlay.SecureSavedMessagesSettings;
+import org.telegram.secureoverlay.SecureLinkGuard;
 import org.telegram.secureoverlay.SecureSavedMessageCrypto;
 import org.telegram.secureoverlay.SecureSavedMessagesKeyStore;
 import org.telegram.messenger.browser.Browser;
@@ -39398,6 +39399,23 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void processExternalUrl(int type, String url, CharacterStyle span, ChatMessageCell cell, boolean forceAlert, boolean forceNoIV) {
+        if (url == null) {
+            return;
+        }
+        final boolean isProtected = isForkSecureContentProtected()
+                || (cell != null && cell.getMessageObject() != null && cell.getMessageObject().isForkSecureCarrier());
+        final SecureLinkGuard.Analysis analysis = SecureLinkGuard.analyze(url);
+
+        if (analysis.isSuspicious) {
+            showForkSecureSuspiciousUrlAlert(analysis, type, span, cell, forceNoIV);
+            return;
+        }
+
+        if (isProtected && !Browser.isInternalUrl(url, null)) {
+            showForkSecureExternalUrlAlert(analysis, type, span, cell, forceNoIV);
+            return;
+        }
+
         try {
             String host = AndroidUtilities.getHostAuthority(url);
             if ((currentEncryptedChat == null || getMessagesController().secretWebpagePreview == 1) && getMessagesController().authDomains.contains(host)) {
@@ -39418,14 +39436,99 @@ public class ChatActivity extends BaseFragment implements
                 AlertsCreator.showOpenUrlAlert(ChatActivity.this, url, true, !forceNoIV, false, makeProgressForLink(cell, span), themeDelegate);
             }
         } else {
-            if (type == 0) {
-                Browser.openUrl(getParentActivity(), Uri.parse(url), true, !forceNoIV, makeProgressForLink(cell, span));
-            } else if (type == 1) {
-                Browser.openUrl(getParentActivity(), Uri.parse(url), inlineReturn == 0, !forceNoIV, makeProgressForLink(cell, span));
-            } else if (type == 2) {
-                Browser.openUrl(getParentActivity(), Uri.parse(url), inlineReturn == 0, !forceNoIV, makeProgressForLink(cell, span));
-            }
+            proceedOpenExternalUrl(type, url, span, cell, forceNoIV);
         }
+    }
+
+    private void proceedOpenExternalUrl(int type, String url, CharacterStyle span, ChatMessageCell cell, boolean forceNoIV) {
+        if (getParentActivity() == null || url == null) {
+            return;
+        }
+        if (type == 0) {
+            Browser.openUrl(getParentActivity(), Uri.parse(url), true, !forceNoIV, makeProgressForLink(cell, span));
+        } else if (type == 1) {
+            Browser.openUrl(getParentActivity(), Uri.parse(url), inlineReturn == 0, !forceNoIV, makeProgressForLink(cell, span));
+        } else if (type == 2) {
+            Browser.openUrl(getParentActivity(), Uri.parse(url), inlineReturn == 0, !forceNoIV, makeProgressForLink(cell, span));
+        }
+    }
+
+    private void showForkSecureSuspiciousUrlAlert(
+            SecureLinkGuard.Analysis analysis,
+            int type,
+            CharacterStyle span,
+            ChatMessageCell cell,
+            boolean forceNoIV) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), themeDelegate);
+        builder.setTitle(LocaleController.getString(R.string.ForkSecureSuspiciousLinkTitle));
+        builder.setMessage(LocaleController.formatString(
+                R.string.ForkSecureSuspiciousLinkBody,
+                analysis.originalUrl,
+                analysis.canonicalDisplayUrl,
+                analysis.warningReason != null ? analysis.warningReason : ""));
+
+        builder.setPositiveButton(
+                LocaleController.getString(R.string.ForkSecureOpenAnyway),
+                (dialog, which) -> proceedOpenExternalUrl(type, analysis.originalUrl, span, cell, forceNoIV));
+        builder.setNeutralButton(
+                LocaleController.getString(R.string.ForkSecureCopySafeLink),
+                (dialog, which) -> {
+                    String copyUrl = analysis.punycodeHost != null && !analysis.punycodeHost.isEmpty() && !analysis.host.isEmpty()
+                            ? analysis.originalUrl.replace(analysis.host, analysis.punycodeHost)
+                            : analysis.originalUrl;
+                    AndroidUtilities.addToClipboard(copyUrl);
+                    createUndoView();
+                    if (undoView != null) {
+                        undoView.showWithAction(0, UndoView.ACTION_LINK_COPIED, null);
+                    }
+                });
+        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
+        builder.setOnDismissListener(di -> {
+            if (cell != null) {
+                cell.resetPressedLink(-1);
+            }
+        });
+        showDialog(builder.create());
+    }
+
+    private void showForkSecureExternalUrlAlert(
+            SecureLinkGuard.Analysis analysis,
+            int type,
+            CharacterStyle span,
+            ChatMessageCell cell,
+            boolean forceNoIV) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), themeDelegate);
+        builder.setTitle(LocaleController.getString(R.string.ForkSecureExternalLinkTitle));
+        builder.setMessage(LocaleController.formatString(
+                R.string.ForkSecureExternalLinkBody,
+                analysis.unicodeHost != null && !analysis.unicodeHost.isEmpty() ? analysis.unicodeHost : analysis.host,
+                analysis.canonicalDisplayUrl));
+
+        builder.setPositiveButton(
+                LocaleController.getString(R.string.Open),
+                (dialog, which) -> proceedOpenExternalUrl(type, analysis.originalUrl, span, cell, forceNoIV));
+        builder.setNeutralButton(
+                LocaleController.getString(R.string.ForkSecureCopySafeLink),
+                (dialog, which) -> {
+                    AndroidUtilities.addToClipboard(analysis.originalUrl);
+                    createUndoView();
+                    if (undoView != null) {
+                        undoView.showWithAction(0, UndoView.ACTION_LINK_COPIED, null);
+                    }
+                });
+        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
+        builder.setOnDismissListener(di -> {
+            if (cell != null) {
+                cell.resetPressedLink(-1);
+            }
+        });
+        showDialog(builder.create());
     }
 
     public void logSponsoredClicked(MessageObject messageObject, boolean media, boolean fullscreen) {

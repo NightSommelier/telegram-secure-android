@@ -418,4 +418,10 @@
     <string name="ForkSecureNewIdentityCreatedGlobal">Нову глобальну ідентичність створено. Усі попередні захищені чати вимкнено; відкрийте кожен контакт і виконайте спарювання знову.\n\nНовий відбиток:\n%1$s</string>
     <string name="ForkSecureNewFingerprint">Новий відбиток:\n%1$s</string>
     <string name="ForkSecureIdentityResetFailed">Не вдалося скинути ідентичність Fork-Secure</string>
+    <string name="ForkSecureSuspiciousLinkTitle">⚠️ Виявлено підозріле посилання</string>
+    <string name="ForkSecureSuspiciousLinkBody">Це посилання може маскуватися під інший сайт за допомогою підміни схожих символів (атака гомогліфів/Punycode).\n\nОригінал: %1$s\n\nКанонічна / декодована: %2$s\n\nДеталі загрози: %3$s\n\nВідкриття посилання у зовнішньому браузері розкриє вашу IP-адресу.</string>
+    <string name="ForkSecureExternalLinkTitle">Відкрити зовнішнє посилання?</string>
+    <string name="ForkSecureExternalLinkBody">Ви перебуваєте в зашифрованому наскрізним шифруванням чаті. Відкриття цього посилання запустить зовнішній браузер за межами захищеної пісочниці та розкриє вашу IP-адресу сайту %1$s.\n\nАдреса призначення:\n%2$s</string>
+    <string name="ForkSecureOpenAnyway">Все одно відкрити</string>
+    <string name="ForkSecureCopySafeLink">Скопіювати адресу</string>
 </resources>
