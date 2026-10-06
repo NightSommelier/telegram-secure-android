@@ -71,7 +71,7 @@ public final class SecureChatEngine {
      * a Signal session. Chat UI uses this to avoid spending work on ordinary conversations.
      */
     public static boolean hasLocalState(Context context, int account, long peerUserId) {
-        if (context == null || account < 0 || peerUserId <= 0) {
+        if (context == null || account < 0 || peerUserId == 0) {
             return false;
         }
         return new SecureChatState(context.getApplicationContext())
@@ -148,7 +148,7 @@ public final class SecureChatEngine {
     private final long identityEpoch;
 
     public SecureChatEngine(Context context, int account, long peerUserId) {
-        if (account < 0 || peerUserId <= 0) throw new IllegalArgumentException("secure chats require an account and user peer");
+        if (account < 0 || peerUserId == 0) throw new IllegalArgumentException("secure chats require an account and valid peer");
         this.account = account;
         this.peerUserId = peerUserId;
         Context appContext = context.getApplicationContext();
@@ -176,9 +176,37 @@ public final class SecureChatEngine {
         String carrier = SecureCarrierCodec.encode(
                 SecureCarrierCodec.TYPE_PREKEY_BUNDLE,
                 SecurePreKeyBundleCodec.encodeRecoveryOffer(
-                        store, recoveryStore.getLocalIdentity()));
+                    store, recoveryStore.getLocalIdentity()));
         state.markWaiting(account, peerUserId);
         return carrier;
+    }
+
+    /** Creates a SenderKey distribution carrier for a group (dialogId < 0) to be delivered to a member over 1:1 pairwise channel. */
+    public String createGroupSenderKeyDistributionCarrier(long groupChatId) {
+        if (groupChatId >= 0) {
+            throw new IllegalArgumentException("group dialog id must be negative");
+        }
+        java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
+                ("telegram-group-" + groupChatId).getBytes(StandardCharsets.UTF_8));
+        byte[] distributionBytes = sessions.createGroupDistributionMessage(distributionId);
+        return SecureCarrierCodec.encode(
+                SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION, distributionBytes);
+    }
+
+    /** Processes a SenderKey distribution message received from a group member. */
+    public void processGroupSenderKeyDistributionCarrier(long senderUserId, String carrier) {
+        if (senderUserId <= 0) {
+            throw new IllegalArgumentException("sender user ID must be positive");
+        }
+        SecureCarrierCodec.Decoded decoded = requireCarrier(
+                carrier, SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION);
+        try {
+            SignalProtocolAddress senderAddress =
+                    new SignalProtocolAddress("telegram-user-" + senderUserId, 1);
+            sessions.processGroupDistributionMessage(senderAddress, decoded.payload);
+        } catch (Exception e) {
+            throw new SecureChatException("cannot process group sender key distribution", e);
+        }
     }
 
     /**
@@ -802,10 +830,22 @@ public final class SecureChatEngine {
             byte[] protocolPlaintext,
             String localDisplayText) {
         try {
-            LibsignalSessionAdapter.EncryptedMessage encrypted = sessionSource.encrypt(
-                    peerAddress, protocolPlaintext);
-            int carrierType = encrypted.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
-                    ? SecureCarrierCodec.TYPE_PREKEY : SecureCarrierCodec.TYPE_WHISPER;
+            LibsignalSessionAdapter.EncryptedMessage encrypted;
+            if (peerUserId < 0) {
+                java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
+                        ("telegram-group-" + peerUserId).getBytes(StandardCharsets.UTF_8));
+                encrypted = sessionSource.encryptGroup(distributionId, protocolPlaintext);
+            } else {
+                encrypted = sessionSource.encrypt(peerAddress, protocolPlaintext);
+            }
+            int carrierType;
+            if (encrypted.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY) {
+                carrierType = SecureCarrierCodec.TYPE_PREKEY;
+            } else if (encrypted.type == LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY) {
+                carrierType = SecureCarrierCodec.TYPE_SENDERKEY;
+            } else {
+                carrierType = SecureCarrierCodec.TYPE_WHISPER;
+            }
             String carrier = SecureCarrierCodec.encode(carrierType, encrypted.serialized);
             // Persist before handing the carrier to Telegram. If this fails, do not send a message
             // that this client cannot render locally after a reload.
@@ -855,6 +895,10 @@ public final class SecureChatEngine {
 
     /** Decrypts a recognized message. Successful first contact activates secure mode for the recipient. */
     public String decryptText(String carrier) {
+        return decryptText(carrier, 0);
+    }
+
+    public String decryptText(String carrier, long senderUserId) {
         synchronized (DECRYPT_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
             if (decoded == null) return null;
@@ -873,9 +917,18 @@ public final class SecureChatEngine {
                     }
                     return cached;
                 }
-                int libsignalType = decoded.type == SecureCarrierCodec.TYPE_PREKEY
-                        ? LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY : LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
-                byte[] plain = sessions.decrypt(peerAddress, new LibsignalSessionAdapter.EncryptedMessage(libsignalType, decoded.payload));
+                int libsignalType;
+                if (decoded.type == SecureCarrierCodec.TYPE_PREKEY) {
+                    libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY;
+                } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
+                    libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY;
+                } else {
+                    libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
+                }
+                SignalProtocolAddress decryptAddress = (senderUserId > 0)
+                        ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
+                        : peerAddress;
+                byte[] plain = sessions.decrypt(decryptAddress, new LibsignalSessionAdapter.EncryptedMessage(libsignalType, decoded.payload));
                 String result;
                 if (SecureContentCodec.isVersioned(plain)) {
                     SecureContentCodec.Decoded content = SecureContentCodec.decode(plain);

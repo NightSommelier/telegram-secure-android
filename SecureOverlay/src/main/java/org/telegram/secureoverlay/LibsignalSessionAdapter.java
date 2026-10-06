@@ -20,6 +20,7 @@ import org.signal.libsignal.protocol.state.SignalProtocolStore;
 public final class LibsignalSessionAdapter {
     public static final int MESSAGE_TYPE_PRE_KEY = CiphertextMessage.PREKEY_TYPE;
     public static final int MESSAGE_TYPE_WHISPER = CiphertextMessage.WHISPER_TYPE;
+    public static final int MESSAGE_TYPE_SENDERKEY = CiphertextMessage.SENDERKEY_TYPE;
 
     private final SignalProtocolStore store;
     private final SignalProtocolAddress localAddress;
@@ -45,6 +46,31 @@ public final class LibsignalSessionAdapter {
         return new EncryptedMessage(type, ciphertext.serialize());
     }
 
+    public byte[] createGroupDistributionMessage(java.util.UUID distributionId) {
+        org.signal.libsignal.protocol.groups.GroupSessionBuilder builder =
+                new org.signal.libsignal.protocol.groups.GroupSessionBuilder(store);
+        return builder.create(localAddress, distributionId).serialize();
+    }
+
+    public void processGroupDistributionMessage(
+            SignalProtocolAddress senderAddress, byte[] serializedDistributionMessage)
+            throws Exception {
+        org.signal.libsignal.protocol.groups.GroupSessionBuilder builder =
+                new org.signal.libsignal.protocol.groups.GroupSessionBuilder(store);
+        builder.process(
+                senderAddress,
+                new org.signal.libsignal.protocol.message.SenderKeyDistributionMessage(
+                        serializedDistributionMessage));
+    }
+
+    public EncryptedMessage encryptGroup(java.util.UUID distributionId, byte[] plaintext)
+            throws Exception {
+        org.signal.libsignal.protocol.groups.GroupCipher groupCipher =
+                new org.signal.libsignal.protocol.groups.GroupCipher(store, localAddress);
+        CiphertextMessage ciphertext = groupCipher.encrypt(distributionId, plaintext);
+        return new EncryptedMessage(MESSAGE_TYPE_SENDERKEY, ciphertext.serialize());
+    }
+
     public byte[] decrypt(SignalProtocolAddress remoteAddress, EncryptedMessage encrypted)
             throws Exception {
         SessionCipher cipher = new SessionCipher(store, remoteAddress);
@@ -53,6 +79,11 @@ public final class LibsignalSessionAdapter {
         }
         if (encrypted.type == MESSAGE_TYPE_WHISPER) {
             return cipher.decrypt(new SignalMessage(encrypted.serialized));
+        }
+        if (encrypted.type == MESSAGE_TYPE_SENDERKEY) {
+            org.signal.libsignal.protocol.groups.GroupCipher groupCipher =
+                    new org.signal.libsignal.protocol.groups.GroupCipher(store, remoteAddress);
+            return groupCipher.decrypt(encrypted.serialized);
         }
         throw new IllegalArgumentException("unsupported secure ciphertext type");
     }

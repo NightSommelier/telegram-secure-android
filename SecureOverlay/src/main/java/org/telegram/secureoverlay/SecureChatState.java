@@ -76,19 +76,19 @@ public final class SecureChatState {
     }
 
     public boolean isPaired(int account, long peerUserId) {
-        return peerUserId > 0 && preferences.getBoolean(key(PAIRED_PREFIX, account, peerUserId), false);
+        return peerUserId != 0 && preferences.getBoolean(key(PAIRED_PREFIX, account, peerUserId), false);
     }
 
     public boolean isWaiting(int account, long peerUserId) {
-        return peerUserId > 0 && preferences.getBoolean(key(WAITING_PREFIX, account, peerUserId), false);
+        return peerUserId != 0 && preferences.getBoolean(key(WAITING_PREFIX, account, peerUserId), false);
     }
 
     public boolean isPaused(int account, long peerUserId) {
-        return peerUserId > 0 && preferences.getBoolean(key(PAUSED_PREFIX, account, peerUserId), false);
+        return peerUserId != 0 && preferences.getBoolean(key(PAUSED_PREFIX, account, peerUserId), false);
     }
 
     public boolean isIdentityPending(int account, long peerUserId) {
-        return peerUserId > 0
+        return peerUserId != 0
                 && preferences.getBoolean(key(IDENTITY_PENDING_PREFIX, account, peerUserId), false);
     }
 
@@ -156,7 +156,7 @@ public final class SecureChatState {
      * or a Signal session while the UI decides whether a background prewarm is useful.
      */
     public boolean hasStateForPeer(int account, long peerUserId) {
-        return peerUserId > 0 && (isPaired(account, peerUserId)
+        return peerUserId != 0 && (isPaired(account, peerUserId)
                 || isWaiting(account, peerUserId)
                 || isPaused(account, peerUserId)
                 || isIdentityPending(account, peerUserId)
@@ -366,8 +366,8 @@ public final class SecureChatState {
     }
 
     private static void requirePeer(long peerUserId) {
-        if (peerUserId <= 0) {
-            throw new IllegalArgumentException("secure chats require a user peer");
+        if (peerUserId == 0) {
+            throw new IllegalArgumentException("secure chats require a valid peer");
         }
     }
 

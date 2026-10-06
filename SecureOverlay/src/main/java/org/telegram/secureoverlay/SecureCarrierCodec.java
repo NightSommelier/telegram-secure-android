@@ -14,6 +14,10 @@ public final class SecureCarrierCodec {
     public static final int TYPE_PREKEY_BUNDLE = 3;
     /** Authenticated self-encrypted Saved Messages record. */
     public static final int TYPE_SAVED_MESSAGE = 4;
+    /** Group SenderKey distribution message sent via 1:1 pairwise secure session. */
+    public static final int TYPE_SENDERKEY_DISTRIBUTION = 5;
+    /** Group encrypted message broadcast via SenderKey. */
+    public static final int TYPE_SENDERKEY = 6;
     public static final int MAX_PAYLOAD_BYTES = 64 * 1024;
 
     private SecureCarrierCodec() {}
@@ -58,7 +62,8 @@ public final class SecureCarrierCodec {
 
     private static boolean isKnownType(int type) {
         return type == TYPE_PREKEY || type == TYPE_WHISPER || type == TYPE_PREKEY_BUNDLE
-                || type == TYPE_SAVED_MESSAGE;
+                || type == TYPE_SAVED_MESSAGE || type == TYPE_SENDERKEY_DISTRIBUTION
+                || type == TYPE_SENDERKEY;
     }
 
     public static final class Decoded {
