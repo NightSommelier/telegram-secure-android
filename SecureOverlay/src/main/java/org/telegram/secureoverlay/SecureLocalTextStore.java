@@ -35,8 +35,8 @@ final class SecureLocalTextStore {
     private final KeystoreEncryptedBlobStore blobs;
 
     SecureLocalTextStore(Context context, int account, long peerUserId) {
-        if (account < 0 || peerUserId <= 0) {
-            throw new IllegalArgumentException("outgoing secure text requires an account and user peer");
+        if (account < 0 || peerUserId == 0) {
+            throw new IllegalArgumentException("outgoing secure text requires an account and peer");
         }
         this.account = account;
         this.peerUserId = peerUserId;

@@ -15,6 +15,9 @@ final class SecureLocalContentStore {
     private final KeystoreEncryptedBlobStore blobs;
 
     SecureLocalContentStore(Context context, int account, long peerUserId) {
+        if (account < 0 || peerUserId == 0) {
+            throw new IllegalArgumentException("secure content requires an account and peer");
+        }
         this.account = account;
         this.peerUserId = peerUserId;
         blobs = new KeystoreEncryptedBlobStore(context.getApplicationContext());
