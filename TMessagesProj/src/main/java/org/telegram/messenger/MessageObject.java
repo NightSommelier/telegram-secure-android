@@ -4654,7 +4654,7 @@ public class MessageObject {
     }
 
     public void applyNewText(CharSequence text) {
-        if (TextUtils.isEmpty(text)) {
+        if (text == null) {
             return;
         }
         if (isForkSecureCarrier() && TextUtils.equals(text, messageOwner.message)) {
@@ -4662,11 +4662,18 @@ public class MessageObject {
             text = getString(R.string.ForkSecureReplyPreview);
             forkSecureVerified = false;
         }
+        messageText = text;
+        if (TextUtils.isEmpty(messageText)) {
+            textLayoutBlocks = null;
+            textWidth = 0;
+            resetLayout();
+            setType();
+            return;
+        }
         TLRPC.User fromUser = null;
         if (isFromUser()) {
             fromUser = MessagesController.getInstance(currentAccount).getUser(messageOwner.from_id.user_id);
         }
-        messageText = text;
         final ArrayList<TLRPC.MessageEntity> entities = getEntities();
         final TextPaint paint;
         if (getMedia(messageOwner) instanceof TLRPC.TL_messageMediaGame) {

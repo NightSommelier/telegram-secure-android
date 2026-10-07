@@ -26398,10 +26398,10 @@ public class ChatActivity extends BaseFragment implements
             long did = (long) args[0];
             final ArrayList<MessageObject> messageObjects = (ArrayList<MessageObject>) args[1];
             if (did == dialog_id) {
-                // Reaction and other metadata updates can replace MessageObject with a fresh
-                // instance whose messageText is the raw carrier. Restore only authenticated
+                // Message edits or replacements can replace MessageObject with a fresh
+                // instance. Decrypt any newly edited carrier and restore authenticated
                 // local display copies before reply/composer previews observe the replacement.
-                applyCachedSecureTextOverlay(messageObjects);
+                applySecureTextOverlay(messageObjects);
             }
             if (replyingMessageObject != null) {
                 for (int i = 0; i < messageObjects.size(); ++i) {
@@ -29702,7 +29702,7 @@ public class ChatActivity extends BaseFragment implements
 
     private void replaceMessageObjects(ArrayList<MessageObject> messageObjects, int loadIndex, boolean remove, boolean ignoreDateCheckBeforeRemove) {
         if (loadIndex == 0) {
-            applyCachedSecureTextOverlay(messageObjects);
+            applySecureTextOverlay(messageObjects);
         }
         LongSparseArray<MessageObject.GroupedMessages> newGroups = null;
         for (int a = 0; a < messageObjects.size(); a++) {

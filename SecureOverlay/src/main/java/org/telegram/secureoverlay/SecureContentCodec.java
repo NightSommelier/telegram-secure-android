@@ -114,7 +114,8 @@ public final class SecureContentCodec {
                 attachment.presentation,
                 attachment.durationSeconds,
                 attachment.title,
-                attachment.performer);
+                attachment.performer,
+                attachment.waveform);
     }
 
     /** Returns the authenticated album identifier, or an empty string for a standalone item. */

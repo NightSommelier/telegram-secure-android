@@ -5324,6 +5324,18 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     }
                     messageObject.forkSecureTextEditTransport = null;
                 }
+                if (messageObject.forkSecureAttachmentEditTransport != null) {
+                    try {
+                        SecureChatEngine secureChat = new SecureChatEngine(
+                                ApplicationLoader.applicationContext,
+                                currentAccount,
+                                messageObject.getDialogId());
+                        secureChat.rollbackAttachmentEdit(messageObject.forkSecureAttachmentEditTransport);
+                    } catch (Exception rollbackError) {
+                        FileLog.e(rollbackError);
+                    }
+                    messageObject.forkSecureAttachmentEditTransport = null;
+                }
                 AndroidUtilities.runOnUIThread(() -> AlertsCreator.processError(currentAccount, error, fragment, req));
             }
         });

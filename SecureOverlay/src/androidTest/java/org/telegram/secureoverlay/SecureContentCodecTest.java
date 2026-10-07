@@ -202,6 +202,39 @@ public final class SecureContentCodecTest {
     }
 
     @Test
+    public void withCaptionPreservesPresentationMetadataAndWaveform() {
+        byte[] waveform = new byte[] {1, 2, 3, 4, 5};
+        SecureContentCodec.Attachment original = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "audio.ogg",
+                "audio/ogg",
+                "старий опис",
+                0,
+                0,
+                false,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO,
+                42,
+                "Трек",
+                "Виконавець",
+                waveform);
+
+        SecureContentCodec.Attachment edited = SecureContentCodec.withCaption(
+                original, "новий опис", false);
+
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO, edited.presentation);
+        assertEquals(42, edited.durationSeconds);
+        assertEquals("Трек", edited.title);
+        assertEquals("Виконавець", edited.performer);
+        assertArrayEquals(waveform, edited.waveform);
+        assertEquals("новий опис", SecureContentCodec.displayCaption(edited.caption));
+    }
+
+    @Test
     public void voiceAttachmentPresentationRoundTripsInsideAuthenticatedManifest() {
         SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
                 new byte[16],
