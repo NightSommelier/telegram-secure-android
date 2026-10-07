@@ -16053,6 +16053,15 @@ public class MessagesController extends BaseController implements NotificationCe
             if (isChannel && !UserObject.isUserSelf(user)) {
                 AndroidUtilities.runOnUIThread(() -> loadFullChat(chatId, 0, true), 1000);
             }
+            if (!UserObject.isUserSelf(user)) {
+                try {
+                    SecureChatEngine secureChat = new SecureChatEngine(
+                            ApplicationLoader.applicationContext, currentAccount, -chatId);
+                    if (secureChat.isPaired()) {
+                        secureChat.rotateGroupSenderKey();
+                    }
+                } catch (Exception ignore) {}
+            }
         }, ConnectionsManager.RequestFlagInvokeAfter);
     }
 

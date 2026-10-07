@@ -1828,6 +1828,16 @@ public class NotificationsController extends BaseController implements Notificat
                         ? R.string.ForkSecurePairingOfferSent
                         : R.string.ForkSecurePairingOfferReceived);
             } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
+                if (!messageObject.isOutOwner() && messageObject.getFromChatId() > 0) {
+                    try {
+                        SecureChatEngine secureChat = new SecureChatEngine(
+                                ApplicationLoader.applicationContext, currentAccount, peerId);
+                        secureChat.processGroupSenderKeyDistributionCarrier(
+                                messageObject.getFromChatId(), messageObject.messageOwner.message);
+                    } catch (Throwable t) {
+                        FileLog.e(t);
+                    }
+                }
                 result = LocaleController.getString(messageObject.isOutOwner()
                         ? R.string.ForkSecureGroupKeyDistributed
                         : R.string.ForkSecureGroupKeyReceived);

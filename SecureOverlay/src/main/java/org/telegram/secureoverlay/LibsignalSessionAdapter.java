@@ -65,6 +65,11 @@ public final class LibsignalSessionAdapter {
 
     public EncryptedMessage encryptGroup(java.util.UUID distributionId, byte[] plaintext)
             throws Exception {
+        if (store.loadSenderKey(localAddress, distributionId) == null) {
+            org.signal.libsignal.protocol.groups.GroupSessionBuilder builder =
+                    new org.signal.libsignal.protocol.groups.GroupSessionBuilder(store);
+            builder.create(localAddress, distributionId);
+        }
         org.signal.libsignal.protocol.groups.GroupCipher groupCipher =
                 new org.signal.libsignal.protocol.groups.GroupCipher(store, localAddress);
         CiphertextMessage ciphertext = groupCipher.encrypt(distributionId, plaintext);

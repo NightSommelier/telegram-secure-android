@@ -210,6 +210,9 @@ public final class SecureChatEngine {
             SignalProtocolAddress senderAddress =
                     new SignalProtocolAddress("telegram-user-" + senderUserId, 1);
             sessions.processGroupDistributionMessage(senderAddress, decoded.payload);
+            if (peerUserId < 0 && !isPaired()) {
+                enableGroup();
+            }
         } catch (Exception e) {
             throw new SecureChatException("cannot process group sender key distribution", e);
         }
