@@ -424,4 +424,6 @@
     <string name="ForkSecureExternalLinkBody">Ви перебуваєте в зашифрованому наскрізним шифруванням чаті. Відкриття цього посилання запустить зовнішній браузер за межами захищеної пісочниці та розкриє вашу IP-адресу сайту %1$s.\n\nАдреса призначення:\n%2$s</string>
     <string name="ForkSecureOpenAnyway">Все одно відкрити</string>
     <string name="ForkSecureCopySafeLink">Скопіювати адресу</string>
+    <string name="ForkSecureGroupKeyDistributed">Ключ групового шифрування надіслано</string>
+    <string name="ForkSecureGroupKeyReceived">Отримано ключ групового шифрування</string>
 </resources>

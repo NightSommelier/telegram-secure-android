@@ -14522,7 +14522,7 @@ public class MessagesStorage extends BaseController {
     }
 
     private void forgetForkSecureLocalMessage(long dialogId, TLRPC.Message message) {
-        if (!DialogObject.isUserDialog(dialogId)
+        if ((!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId))
                 || message == null
                 || !SecureCarrierCodec.isMarked(message.message)) {
             return;
@@ -14556,7 +14556,7 @@ public class MessagesStorage extends BaseController {
     }
 
     private void forgetForkSecureDialogCache(long dialogId) {
-        if (!DialogObject.isUserDialog(dialogId)) {
+        if (!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId)) {
             return;
         }
         try {
@@ -14634,7 +14634,7 @@ public class MessagesStorage extends BaseController {
                         if (!dialogsToUpdate.contains(did)) {
                             dialogsToUpdate.add(did);
                         }
-                        if (DialogObject.isUserDialog(did)) {
+                        if (DialogObject.isUserDialog(did) || DialogObject.isChatDialog(did)) {
                             NativeByteBuffer data = cursor.byteBufferValue(1);
                             if (data != null) {
                                 TLRPC.Message message = TLRPC.Message.TLdeserialize(
@@ -14706,7 +14706,7 @@ public class MessagesStorage extends BaseController {
                                 }
                             }
                         }
-                        boolean needsSecureCacheData = DialogObject.isUserDialog(did);
+                        boolean needsSecureCacheData = DialogObject.isUserDialog(did) || DialogObject.isChatDialog(did);
                         boolean needsTelegramFileData =
                                 DialogObject.isEncryptedDialog(did)
                                         || deleteFiles

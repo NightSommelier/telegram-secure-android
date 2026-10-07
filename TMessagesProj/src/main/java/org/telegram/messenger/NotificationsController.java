@@ -1811,7 +1811,7 @@ public class NotificationsController extends BaseController implements Notificat
             return null;
         }
         long peerId = messageObject.getDialogId();
-        if (!DialogObject.isUserDialog(peerId)
+        if ((!DialogObject.isUserDialog(peerId) && !DialogObject.isChatDialog(peerId))
                 || peerId == getUserConfig().getClientUserId()) {
             return LocaleController.getString(R.string.ForkSecureMessageFailed);
         }
@@ -1827,12 +1827,16 @@ public class NotificationsController extends BaseController implements Notificat
                 result = LocaleController.getString(messageObject.isOutOwner()
                         ? R.string.ForkSecurePairingOfferSent
                         : R.string.ForkSecurePairingOfferReceived);
+            } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
+                result = LocaleController.getString(messageObject.isOutOwner()
+                        ? R.string.ForkSecureGroupKeyDistributed
+                        : R.string.ForkSecureGroupKeyReceived);
             } else {
                 SecureChatEngine secureChat = new SecureChatEngine(
                         ApplicationLoader.applicationContext, currentAccount, peerId);
                 result = messageObject.isOutOwner()
                         ? secureChat.getOutgoingText(messageObject.messageOwner.message)
-                        : secureChat.decryptText(messageObject.messageOwner.message);
+                        : secureChat.decryptText(messageObject.messageOwner.message, messageObject.getFromChatId());
                 if (result == null) {
                     result = LocaleController.getString(
                             R.string.ForkSecureOutgoingUnavailable);

@@ -1950,10 +1950,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (document == null) {
             return;
         }
-        if (DialogObject.isUserDialog(peer)
+        if ((DialogObject.isUserDialog(peer) || DialogObject.isChatDialog(peer))
                 && sendForkSecureStickerIfNeeded(
                         document,
                         peer,
+                        caption,
                         replyToMsg,
                         replyToTopMsg,
                         storyItem,
@@ -2127,6 +2128,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     private boolean sendForkSecureStickerIfNeeded(
             TLRPC.Document document,
             long peer,
+            CharSequence caption,
             MessageObject replyToMsg,
             MessageObject replyToTopMsg,
             TL_stories.StoryItem storyItem,
@@ -2156,15 +2158,110 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             return true;
         }
 
+        if (MessageObject.isGifDocument(document) || "image/gif".equalsIgnoreCase(document.mime_type)) {
+            String docExt;
+            String mediaLocationKey = null;
+            try {
+                mediaLocationKey = ImageLocation.getForDocument(document).getKey(null, null, false);
+            } catch (Throwable ignore) {
+            }
+
+            if ("video/mp4".equalsIgnoreCase(document.mime_type)) {
+                docExt = ".mp4";
+            } else if ("video/x-matroska".equalsIgnoreCase(document.mime_type)) {
+                docExt = ".mkv";
+            } else if ("image/gif".equalsIgnoreCase(document.mime_type)) {
+                docExt = ".gif";
+            } else {
+                docExt = "";
+            }
+
+            File docFile = null;
+            if (mediaLocationKey != null) {
+                File candidate = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_DOCUMENT), mediaLocationKey + docExt);
+                if (candidate.exists()) {
+                    docFile = candidate;
+                } else {
+                    candidate = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_VIDEO), mediaLocationKey + docExt);
+                    if (candidate.exists()) {
+                        docFile = candidate;
+                    }
+                }
+            }
+            if (docFile == null || !docFile.isFile()) {
+                File candidate = FileLoader.getInstance(currentAccount).getPathToAttach(document, true);
+                if (candidate.isFile()) {
+                    docFile = candidate;
+                } else {
+                    candidate = FileLoader.getInstance(currentAccount).getPathToAttach(document);
+                    if (candidate.isFile()) {
+                        docFile = candidate;
+                    }
+                }
+            }
+            if (docFile == null || !docFile.isFile()) {
+                String attachName = FileLoader.getAttachFileName(document);
+                if (!TextUtils.isEmpty(attachName)) {
+                    File candidate = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_DOCUMENT), attachName);
+                    if (candidate.isFile()) {
+                        docFile = candidate;
+                    } else {
+                        candidate = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), attachName);
+                        if (candidate.isFile()) {
+                            docFile = candidate;
+                        }
+                    }
+                }
+            }
+
+            if (docFile == null || !docFile.isFile()) {
+                FileLoader.getInstance(currentAccount).loadFile(document, document, FileLoader.PRIORITY_HIGH, 1);
+                showForkSecureError(R.string.ForkSecureStickerDownloadFirst);
+                return true;
+            }
+
+            ForkSecureAttachmentPresentation presentation = presentationForForkSecureDocument(document, docFile.getAbsolutePath());
+            ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
+            sources.add(new ForkSecureAttachmentSource(
+                    docFile.getAbsolutePath(),
+                    null,
+                    caption != null ? caption.toString() : null,
+                    document.mime_type,
+                    false,
+                    presentation.kind,
+                    presentation.durationSeconds,
+                    presentation.title,
+                    presentation.performer,
+                    presentation.waveform));
+            prepareForkSecureAttachments(
+                    getAccountInstance(),
+                    secureChat,
+                    sources,
+                    peer,
+                    replyToMsg,
+                    replyToTopMsg,
+                    storyItem,
+                    quote,
+                    notify,
+                    scheduleDate,
+                    scheduleRepeatPeriod,
+                    quickReplyShortcut,
+                    quickReplyShortcutId,
+                    0,
+                    invertMedia,
+                    stars,
+                    monoForumPeerId,
+                    suggestionParams);
+            return true;
+        }
+
         final int secureStickerFormat;
-        if ("image/webp".equalsIgnoreCase(document.mime_type)
-                && MessageObject.isStickerDocument(document)) {
+        if ("image/webp".equalsIgnoreCase(document.mime_type)) {
             secureStickerFormat = SecureContentCodec.STICKER_FORMAT_WEBP;
         } else if ("application/x-tgsticker".equalsIgnoreCase(document.mime_type)
-                && MessageObject.isAnimatedStickerDocument(document, true)) {
+                || "application/x-tgsdice".equalsIgnoreCase(document.mime_type)) {
             secureStickerFormat = SecureContentCodec.STICKER_FORMAT_TGS;
-        } else if ("video/webm".equalsIgnoreCase(document.mime_type)
-                && MessageObject.isVideoSticker(document)) {
+        } else if ("video/webm".equalsIgnoreCase(document.mime_type)) {
             secureStickerFormat = SecureContentCodec.STICKER_FORMAT_WEBM;
         } else {
             // Unknown future formats remain fail-closed instead of taking native sendSticker.
@@ -2175,6 +2272,20 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         File source = FileLoader.getInstance(currentAccount).getPathToAttach(document, true);
         if (!source.isFile()) {
             source = FileLoader.getInstance(currentAccount).getPathToAttach(document);
+        }
+        if (!source.isFile()) {
+            String attachName = FileLoader.getAttachFileName(document);
+            if (!TextUtils.isEmpty(attachName)) {
+                File candidate = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), attachName);
+                if (candidate.isFile()) {
+                    source = candidate;
+                } else {
+                    candidate = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_DOCUMENT), attachName);
+                    if (candidate.isFile()) {
+                        source = candidate;
+                    }
+                }
+            }
         }
         if (!source.isFile()) {
             FileLoader.getInstance(currentAccount)
@@ -2190,7 +2301,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             if (attribute instanceof TLRPC.TL_documentAttributeImageSize) {
                 width = attribute.w;
                 height = attribute.h;
+            } else if (attribute instanceof TLRPC.TL_documentAttributeVideo) {
+                if (attribute.w > 0 && attribute.h > 0) {
+                    width = attribute.w;
+                    height = attribute.h;
+                }
             } else if (attribute instanceof TLRPC.TL_documentAttributeSticker
+                    && attribute.alt != null) {
+                emoji = attribute.alt;
+            } else if (attribute instanceof TLRPC.TL_documentAttributeCustomEmoji
                     && attribute.alt != null) {
                 emoji = attribute.alt;
             }
@@ -2312,7 +2431,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     private boolean isForkSecureProtectedPeer(long peer) {
-        if (!DialogObject.isUserDialog(peer)) {
+        if (!DialogObject.isUserDialog(peer) && !DialogObject.isChatDialog(peer)) {
             return false;
         }
         if (peer == getUserConfig().getClientUserId()) {
@@ -2360,13 +2479,41 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             long monoForumPeerId,
             MessageSuggestionParams suggestionParams,
             int ttl) {
-        if (document == null || TextUtils.isEmpty(path) || ttl != 0) {
+        return prepareForkSecureDirectDocumentIfNeeded(
+                document, path, caption, dialogId, replyToMsg, replyToTopMsg,
+                storyItem, quote, notify, scheduleDate, scheduleRepeatPeriod,
+                quickReplyShortcut, quickReplyShortcutId, effectId, invertMedia,
+                payStars, monoForumPeerId, suggestionParams, ttl, null);
+    }
+
+    private boolean prepareForkSecureDirectDocumentIfNeeded(
+            TLRPC.TL_document document,
+            String path,
+            String caption,
+            long dialogId,
+            MessageObject replyToMsg,
+            MessageObject replyToTopMsg,
+            TL_stories.StoryItem storyItem,
+            ChatActivity.ReplyQuote quote,
+            boolean notify,
+            int scheduleDate,
+            int scheduleRepeatPeriod,
+            String quickReplyShortcut,
+            int quickReplyShortcutId,
+            long effectId,
+            boolean invertMedia,
+            long payStars,
+            long monoForumPeerId,
+            MessageSuggestionParams suggestionParams,
+            int ttl,
+            VideoEditedInfo videoEditedInfo) {
+        if (TextUtils.isEmpty(path) || ttl != 0) {
             return false;
         }
         boolean savedMessages = isForkSecureSavedMessagesDialog(getAccountInstance(), dialogId)
                 && SecureSavedMessagesSettings.isSecureByDefault(
                         ApplicationLoader.applicationContext, currentAccount);
-        if (!DialogObject.isUserDialog(dialogId) && !savedMessages) {
+        if (!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId) && !savedMessages) {
             return false;
         }
         SecureChatEngine secureChat = null;
@@ -2388,14 +2535,20 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 return true;
             }
         }
+        String mimeType = document != null && !TextUtils.isEmpty(document.mime_type)
+                ? document.mime_type
+                : getForkSecureMimeTypeForPath(path);
+        if (TextUtils.isEmpty(mimeType)) {
+            mimeType = "application/octet-stream";
+        }
         ForkSecureAttachmentPresentation presentation =
-                presentationForForkSecureDocument(document, path);
+                presentationForForkSecureDocument(document, path, videoEditedInfo);
         ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
         sources.add(new ForkSecureAttachmentSource(
                 path,
                 null,
                 caption,
-                document.mime_type,
+                mimeType,
                 false,
                 presentation.kind,
                 presentation.durationSeconds,
@@ -2426,13 +2579,22 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
 
     private static ForkSecureAttachmentPresentation presentationForForkSecureDocument(
             TLRPC.Document document, String path) {
-        int kind = document != null && document.mime_type != null
-                && document.mime_type.startsWith("video/")
+        return presentationForForkSecureDocument(document, path, null);
+    }
+
+    private static ForkSecureAttachmentPresentation presentationForForkSecureDocument(
+            TLRPC.Document document, String path, VideoEditedInfo videoEditedInfo) {
+        String mimeType = document != null && !TextUtils.isEmpty(document.mime_type)
+                ? document.mime_type
+                : getForkSecureMimeTypeForPath(path);
+        int kind = mimeType != null && mimeType.startsWith("video/")
                 ? SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
-                : document != null && document.mime_type != null
-                        && document.mime_type.startsWith("audio/")
+                : mimeType != null && mimeType.startsWith("audio/")
                         ? SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
                         : SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
+        if (videoEditedInfo != null && videoEditedInfo.roundVideo) {
+            kind = SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
+        }
         int durationSeconds = 0;
         String title = "";
         String performer = "";
@@ -2457,6 +2619,17 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         kind = SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
                     }
                 }
+            }
+        }
+        if ((kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
+                || kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO)
+                && durationSeconds == 0
+                && !TextUtils.isEmpty(path)) {
+            try {
+                TLRPC.TL_documentAttributeVideo video = new TLRPC.TL_documentAttributeVideo();
+                fillVideoAttribute(path, video, null);
+                durationSeconds = (int) Math.round(video.duration);
+            } catch (Throwable ignore) {
             }
         }
         if (kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
@@ -2501,7 +2674,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final boolean savedMessages = isForkSecureSavedMessagesDialog(accountInstance, dialogId)
                 && SecureSavedMessagesSettings.isSecureByDefault(
                         ApplicationLoader.applicationContext, accountInstance.getCurrentAccount());
-        if ((!DialogObject.isUserDialog(dialogId) && !savedMessages)
+        if ((!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId) && !savedMessages)
                 || (FORK_SECURE_TRANSPORT_MIME.equals(mime)
                         && SecureCarrierCodec.isMarked(caption))) {
             return false;
@@ -2627,7 +2800,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final boolean savedMessages = isForkSecureSavedMessagesDialog(accountInstance, dialogId)
                 && SecureSavedMessagesSettings.isSecureByDefault(
                         ApplicationLoader.applicationContext, accountInstance.getCurrentAccount());
-        if (!DialogObject.isUserDialog(dialogId) && !savedMessages) {
+        if (!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId) && !savedMessages) {
             return false;
         }
         if (editingMessageObject != null
@@ -2936,7 +3109,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final boolean savedMessages = isForkSecureSavedMessagesDialog(accountInstance, dialogId)
                 && SecureSavedMessagesSettings.isSecureByDefault(
                         ApplicationLoader.applicationContext, accountInstance.getCurrentAccount());
-        if (!DialogObject.isUserDialog(dialogId) && !savedMessages) {
+        if (!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId) && !savedMessages) {
             showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
             return;
         }
@@ -3337,6 +3510,21 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             safe.setLength(safe.length() - 1);
         }
         return safe.toString();
+    }
+
+    private static String getForkSecureMimeTypeForPath(String path) {
+        if (TextUtils.isEmpty(path)) {
+            return null;
+        }
+        int lastDot = path.lastIndexOf('.');
+        String extension = lastDot >= 0 && lastDot + 1 < path.length()
+                ? path.substring(lastDot + 1)
+                : MimeTypeMap.getFileExtensionFromUrl(Uri.encode(path));
+        if (TextUtils.isEmpty(extension)) {
+            return null;
+        }
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(
+                extension.toLowerCase(java.util.Locale.ROOT));
     }
 
     private static boolean isForkSecureImagePath(String path) {
@@ -6055,6 +6243,35 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         carrier = secureChat.encryptLocation(secureLocation);
                     }
                     sendMessageParams.location = null;
+                    sendMessageParams.message = carrier;
+                    sendMessage(sendMessageParams);
+                    return;
+                } catch (Exception error) {
+                    FileLog.e(error);
+                    showForkSecureError(R.string.ForkSecureSetupSendFailed);
+                    return;
+                }
+            } else if (!TextUtils.isEmpty(message) && ttl == 0) {
+                try {
+                    String carrier;
+                    if (savedMessages) {
+                        SecureSavedMessagesKeyStore.KeyMaterial key =
+                                new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
+                        carrier = SecureSavedMessageCrypto.encryptTextCarrier(message, key);
+                    } else {
+                        SecureChatEngine secureChat = new SecureChatEngine(
+                                ApplicationLoader.applicationContext, currentAccount, peer);
+                        if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                                || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                            showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                            return;
+                        }
+                        if (!secureChat.isPaired()) {
+                            showForkSecureError(R.string.ForkSecureActionUnsupported);
+                            return;
+                        }
+                        carrier = secureChat.encryptText(message);
+                    }
                     sendMessageParams.message = carrier;
                     sendMessage(sendMessageParams);
                     return;

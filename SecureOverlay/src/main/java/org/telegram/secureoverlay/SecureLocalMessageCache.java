@@ -18,7 +18,7 @@ public final class SecureLocalMessageCache {
     private final KeystoreEncryptedBlobStore blobs;
 
     public SecureLocalMessageCache(Context context, int account, long peerUserId) {
-        if (context == null || account < 0 || peerUserId <= 0) {
+        if (context == null || account < 0 || peerUserId == 0) {
             throw new IllegalArgumentException(
                     "local secure cache requires an account and user peer");
         }

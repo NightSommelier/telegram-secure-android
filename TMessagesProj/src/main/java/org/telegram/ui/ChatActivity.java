@@ -4274,7 +4274,18 @@ public class ChatActivity extends BaseFragment implements
             secureModeItem = menu.addItem(
                     secure_chat_toggle, R.drawable.outline_shield_plain_24);
             secureModeItem.setOnLongClickListener(view -> {
-                showSecureIdentityDialog();
+                if (DialogObject.isChatDialog(dialog_id)) {
+                    if (chatActivityEnterView != null) {
+                        chatActivityEnterView.processSendingText("/secure-group-key", false, 0, 0, 0);
+                        BulletinFactory.of(this)
+                                .createSimpleBulletin(
+                                        R.raw.chats_infotip,
+                                        getString(R.string.ForkSecureGroupKeyDistributed))
+                                .show();
+                    }
+                } else {
+                    showSecureIdentityDialog();
+                }
                 return true;
             });
             updateSecureModeUi();
@@ -14523,7 +14534,7 @@ public class ChatActivity extends BaseFragment implements
             }
             targetChat = null;
         } else {
-            if (!DialogObject.isUserDialog(dialog_id)) {
+            if (!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) {
                 showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
                 return;
             }
@@ -21011,7 +21022,7 @@ public class ChatActivity extends BaseFragment implements
      */
     private void prewarmSecureChatEngine() {
         if (forkSecureEnginePrewarmQueued
-                || !DialogObject.isUserDialog(dialog_id)
+                || (!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id))
                 || isForkSecureSavedMessagesChat()
                 || !SecureChatEngine.hasLocalState(getContext(), currentAccount, dialog_id)) {
             return;
@@ -21052,7 +21063,7 @@ public class ChatActivity extends BaseFragment implements
 
     private void applySecureTextOverlayInternal(ArrayList<MessageObject> candidates) {
         // Telegram Secret Chats keep their native protocol and never enter this overlay.
-        if (!DialogObject.isUserDialog(dialog_id) || candidates == null || candidates.isEmpty()) {
+        if ((!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) || candidates == null || candidates.isEmpty()) {
             return;
         }
         if (isForkSecureSavedMessagesChat()) {
@@ -21138,6 +21149,20 @@ public class ChatActivity extends BaseFragment implements
                         }
                     }
                     applyForkSecureServiceStyle(message, true);
+                } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
+                    if (message.isOutOwner()) {
+                        message.applyNewText(getString(R.string.ForkSecureGroupKeyDistributed));
+                    } else {
+                        long senderId = message.getFromChatId();
+                        try {
+                            secureChat.processGroupSenderKeyDistributionCarrier(senderId, carrier);
+                            message.applyNewText(getString(R.string.ForkSecureGroupKeyReceived));
+                        } catch (Exception e) {
+                            FileLog.e(e);
+                            message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                        }
+                    }
+                    applyForkSecureServiceStyle(message, true);
                 } else if (message.isOutOwner()) {
                     String localText = getForkSecureOutgoingText(secureChat, carrier);
                     if (localText != null) {
@@ -21170,7 +21195,7 @@ public class ChatActivity extends BaseFragment implements
                                 R.string.ForkSecureOutgoingUnavailable));
                     }
                 } else {
-                    String localText = decryptForkSecureText(secureChat, carrier);
+                    String localText = decryptForkSecureText(secureChat, carrier, message.getFromChatId());
                     message.applyNewText(formatForkSecureDisplayText(localText));
                     message.forkSecureVerified = true;
                     applyForkSecureServiceStyle(
@@ -21257,9 +21282,13 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private String decryptForkSecureText(SecureChatEngine secureChat, String carrier) {
+        return decryptForkSecureText(secureChat, carrier, 0);
+    }
+
+    private String decryptForkSecureText(SecureChatEngine secureChat, String carrier, long senderId) {
         Trace.beginSection("ForkSecure#decrypt");
         try {
-            return secureChat.decryptText(carrier);
+            return secureChat.decryptText(carrier, senderId);
         } finally {
             Trace.endSection();
         }
@@ -21483,7 +21512,7 @@ public class ChatActivity extends BaseFragment implements
             } else {
                 String localText = cacheOnly
                         ? secureChat.getIncomingText(carrier)
-                        : decryptForkSecureText(secureChat, carrier);
+                        : decryptForkSecureText(secureChat, carrier, message.getFromChatId());
                 if (localText == null) {
                     // A replacement received before its original bubble is authenticated must
                     // never expose the marked Telegram carrier.
@@ -21683,6 +21712,7 @@ public class ChatActivity extends BaseFragment implements
         final Context applicationContext = getContext().getApplicationContext();
         final int account = currentAccount;
         final long peer = dialog_id;
+        final long senderUserId = message.getFromChatId();
         Utilities.globalQueue.postRunnable(() -> {
             SecureContentCodec.Attachment manifest = null;
             String authenticatedAlbumId = "";
@@ -21698,7 +21728,7 @@ public class ChatActivity extends BaseFragment implements
                             new SecureChatEngine(applicationContext, account, peer);
                     manifest = outgoing
                             ? backgroundEngine.getOutgoingAttachment(carrier)
-                            : backgroundEngine.decryptAttachmentManifest(carrier);
+                            : backgroundEngine.decryptAttachmentManifest(carrier, senderUserId);
                 }
                 if (manifest != null) {
                     // Keep the authenticated album identity separate from the display caption.
@@ -21903,6 +21933,7 @@ public class ChatActivity extends BaseFragment implements
         final Context applicationContext = getContext().getApplicationContext();
         final int account = currentAccount;
         final long peer = dialog_id;
+        final long senderUserId = message.getFromChatId();
         Utilities.globalQueue.postRunnable(() -> {
             SecureContentCodec.StaticSticker manifest = null;
             File destination = null;
@@ -21917,7 +21948,7 @@ public class ChatActivity extends BaseFragment implements
                             new SecureChatEngine(applicationContext, account, peer);
                     manifest = outgoing
                             ? backgroundEngine.getOutgoingStaticSticker(carrier)
-                            : backgroundEngine.decryptStaticStickerManifest(carrier);
+                            : backgroundEngine.decryptStaticStickerManifest(carrier, senderUserId);
                 }
                 if (manifest != null) {
                     destination = new File(
@@ -22064,21 +22095,26 @@ public class ChatActivity extends BaseFragment implements
 
     private MessageObject findCurrentSecureMessage(
             int messageId, String carrier, MessageObject fallback) {
+        MessageObject carrierMatch = null;
         for (int i = 0; i < messages.size(); i++) {
             MessageObject candidate = messages.get(i);
             if (candidate != null
-                    && candidate.getId() == messageId
                     && candidate.messageOwner != null
                     && TextUtils.equals(carrier, candidate.messageOwner.message)) {
-                return candidate;
+                if (candidate.getId() == messageId) {
+                    return candidate;
+                }
+                if (carrierMatch == null) {
+                    carrierMatch = candidate;
+                }
             }
         }
-        return fallback;
+        return carrierMatch != null ? carrierMatch : fallback;
     }
 
     private void updateSecureStickerRow(MessageObject message) {
         if (fragmentView != null && chatAdapter != null) {
-            chatAdapter.updateRowWithMessageObject(message, true, false);
+            chatAdapter.updateRowWithMessageObject(message, true, true);
         }
     }
 
@@ -22166,37 +22202,41 @@ public class ChatActivity extends BaseFragment implements
         } else {
             indexKind = SecureMediaIndex.KIND_FILE;
         }
-        SecureMediaIndex secureMediaIndex =
-                new SecureMediaIndex(
-                        ApplicationLoader.applicationContext,
-                        currentAccount,
-                        dialog_id);
-        secureMediaIndex.put(new SecureMediaIndex.Entry(
-                message.getId(),
-                message.messageOwner.date,
-                message.messageOwner.message,
-                indexKind,
-                message.forkSecureMediaPath,
-                message.forkSecureMediaName,
-                message.forkSecureMediaMime,
-                SecureContentCodec.encodeCaption(
-                        SecureContentCodec.displayCaption(message.forkSecureMediaCaption),
-                        message.messageOwner.invert_media,
-                        TextUtils.isEmpty(message.forkSecureAlbumId)
-                                ? null : message.forkSecureAlbumId),
-                message.forkSecureMediaWidth,
-                message.forkSecureMediaHeight));
-        int mediaDataType = MediaDataController.MEDIA_FILE;
-        if (indexKind == SecureMediaIndex.KIND_PHOTO || indexKind == SecureMediaIndex.KIND_VIDEO || indexKind == SecureMediaIndex.KIND_ROUND_VIDEO) {
-            mediaDataType = MediaDataController.MEDIA_PHOTOVIDEO;
-        } else if (indexKind == SecureMediaIndex.KIND_VOICE) {
-            mediaDataType = MediaDataController.MEDIA_AUDIO;
-        } else if (indexKind == SecureMediaIndex.KIND_MUSIC) {
-            mediaDataType = MediaDataController.MEDIA_MUSIC;
+        try {
+            SecureMediaIndex secureMediaIndex =
+                    new SecureMediaIndex(
+                            ApplicationLoader.applicationContext,
+                            currentAccount,
+                            dialog_id);
+            secureMediaIndex.put(new SecureMediaIndex.Entry(
+                    message.getId(),
+                    message.messageOwner.date,
+                    message.messageOwner.message,
+                    indexKind,
+                    message.forkSecureMediaPath,
+                    message.forkSecureMediaName,
+                    message.forkSecureMediaMime,
+                    SecureContentCodec.encodeCaption(
+                            SecureContentCodec.displayCaption(message.forkSecureMediaCaption),
+                            message.messageOwner.invert_media,
+                            TextUtils.isEmpty(message.forkSecureAlbumId)
+                                    ? null : message.forkSecureAlbumId),
+                    message.forkSecureMediaWidth,
+                    message.forkSecureMediaHeight));
+            int mediaDataType = MediaDataController.MEDIA_FILE;
+            if (indexKind == SecureMediaIndex.KIND_PHOTO || indexKind == SecureMediaIndex.KIND_VIDEO || indexKind == SecureMediaIndex.KIND_ROUND_VIDEO) {
+                mediaDataType = MediaDataController.MEDIA_PHOTOVIDEO;
+            } else if (indexKind == SecureMediaIndex.KIND_VOICE) {
+                mediaDataType = MediaDataController.MEDIA_AUDIO;
+            } else if (indexKind == SecureMediaIndex.KIND_MUSIC) {
+                mediaDataType = MediaDataController.MEDIA_MUSIC;
+            }
+            getMediaDataController().indexForkSecureMedia(
+                    message.messageOwner,
+                    mediaDataType);
+        } catch (Throwable e) {
+            FileLog.e(e);
         }
-        getMediaDataController().indexForkSecureMedia(
-                message.messageOwner,
-                mediaDataType);
     }
 
     private void applyPreparedSecureAttachmentPresentation(MessageObject message) {
@@ -22268,6 +22308,9 @@ public class ChatActivity extends BaseFragment implements
                 }
             }
             document.attributes.add(video);
+            if (video.nosound || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime)) {
+                document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
+            }
             // The encrypted transport has no Telegram thumbnail. Keep an authenticated local
             // aspect-ratio descriptor so mixed photo/video albums use the native layout.
             TLRPC.TL_photoSize localVideo = new TLRPC.TL_photoSize();
@@ -22568,7 +22611,7 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void applyCachedSecureTextOverlayInternal(ArrayList<MessageObject> candidates) {
-        if (!DialogObject.isUserDialog(dialog_id)
+        if ((!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id))
                 || candidates == null
                 || candidates.isEmpty()) {
             return;
@@ -22618,7 +22661,7 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void applyCachedSecureTextOverlayInternal(MessageObject message) {
-        if (!DialogObject.isUserDialog(dialog_id) || !needsCachedSecureTextOverlay(message)) {
+        if ((!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) || !needsCachedSecureTextOverlay(message)) {
             return;
         }
         if (isForkSecureSavedMessagesChat()) {
@@ -22681,8 +22724,36 @@ public class ChatActivity extends BaseFragment implements
                 && SecureCarrierCodec.isMarked(message.messageOwner.reply_to.quote_text)) {
             return true;
         }
-        return message.getDocument() != null
-                && TextUtils.isEmpty(message.forkSecureMediaPath);
+        if (message.getDocument() != null) {
+            if (TextUtils.isEmpty(message.forkSecureMediaPath)) {
+                return true;
+            }
+            if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                    && message.type != MessageObject.TYPE_PHOTO) {
+                return true;
+            }
+            if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_STICKER
+                    && message.type != MessageObject.TYPE_STICKER) {
+                return true;
+            }
+            if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO
+                    && message.type != MessageObject.TYPE_ROUND_VIDEO) {
+                return true;
+            }
+            if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
+                    && message.type != MessageObject.TYPE_VOICE) {
+                return true;
+            }
+            if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
+                    && message.type != MessageObject.TYPE_MUSIC) {
+                return true;
+            }
+            if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
+                    && message.type != MessageObject.TYPE_VIDEO) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -22690,7 +22761,7 @@ public class ChatActivity extends BaseFragment implements
      * receives only the ordinary reply_to message id, never a plaintext quote_text.
      */
     private boolean applySecureComposerReplyOverlay(MessageObject message) {
-        if (!DialogObject.isUserDialog(dialog_id)
+        if ((!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id))
                 || message == null
                 || message.messageOwner == null
                 || !SecureCarrierCodec.isMarked(message.messageOwner.message)) {
@@ -22750,7 +22821,7 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void applySecureReplyOverlay(MessageObject parentMessage) {
-        if (!DialogObject.isUserDialog(dialog_id)) {
+        if (!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) {
             return;
         }
         try {
@@ -22848,19 +22919,34 @@ public class ChatActivity extends BaseFragment implements
         if (SecureChatEngine.isFileDisplay(plaintext)) {
             return getString(R.string.ForkSecureEncryptedFile);
         }
+        if (SecureChatEngine.GROUP_KEY_DISTRIBUTED_DISPLAY.equals(plaintext)) {
+            return getString(R.string.ForkSecureGroupKeyDistributed);
+        }
+        if (SecureChatEngine.GROUP_KEY_RECEIVED_DISPLAY.equals(plaintext)) {
+            return getString(R.string.ForkSecureGroupKeyReceived);
+        }
         return plaintext;
     }
 
     private boolean isSecureModeUiEligible() {
-        return chatMode == MODE_DEFAULT
-                && currentEncryptedChat == null
-                && DialogObject.isUserDialog(dialog_id)
-                && currentUser != null
-                && !UserObject.isUserSelf(currentUser)
-                && !currentUser.bot
-                && !UserObject.isService(currentUser.id)
-                && !isReport()
-                && !inPreviewMode;
+        if (chatMode != MODE_DEFAULT
+                || currentEncryptedChat != null
+                || isReport()
+                || inPreviewMode) {
+            return false;
+        }
+        if (DialogObject.isUserDialog(dialog_id)) {
+            return currentUser != null
+                    && !UserObject.isUserSelf(currentUser)
+                    && !currentUser.bot
+                    && !UserObject.isService(currentUser.id);
+        } else if (DialogObject.isChatDialog(dialog_id)) {
+            TLRPC.Chat chat = currentChat != null
+                    ? currentChat
+                    : (getMessagesController() != null ? getMessagesController().getChat(-dialog_id) : null);
+            return chat != null && !ChatObject.isChannelAndNotMegaGroup(chat);
+        }
+        return false;
     }
 
     private boolean isSavedMessagesSecureUiEligible() {
@@ -22925,7 +23011,7 @@ public class ChatActivity extends BaseFragment implements
             Context context = getContext() != null ? getContext() : ApplicationLoader.applicationContext;
             return SecureSavedMessagesSettings.isSecureByDefault(context, currentAccount);
         }
-        if (!DialogObject.isUserDialog(dialog_id)) {
+        if (!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) {
             return false;
         }
         try {
@@ -23082,7 +23168,9 @@ public class ChatActivity extends BaseFragment implements
                 BulletinFactory.of(this)
                         .createSimpleBulletin(
                                 R.raw.chats_infotip,
-                                getString(R.string.ForkSecureOfferSent))
+                                getString(DialogObject.isChatDialog(dialog_id)
+                                        ? R.string.ForkSecureGroupKeyDistributed
+                                        : R.string.ForkSecureOfferSent))
                         .show();
             }
         } catch (RuntimeException error) {
@@ -25302,7 +25390,7 @@ public class ChatActivity extends BaseFragment implements
                             break;
                         }
                     }
-                    chatAdapter.updateRowWithMessageObject(obj, animateSendingViews.contains(cell), false);
+                    chatAdapter.updateRowWithMessageObject(obj, animateSendingViews.contains(cell), obj.isForkSecureCarrier());
                 }
                 if (chatLayoutManager != null) {
                     if (mediaUpdated && chatLayoutManager.findFirstVisibleItemPosition() == 0) {
@@ -25629,7 +25717,7 @@ public class ChatActivity extends BaseFragment implements
                 }
             }
         } else if (id == NotificationCenter.fileLoaded) {
-            if (DialogObject.isUserDialog(dialog_id)) {
+            if (DialogObject.isUserDialog(dialog_id) || DialogObject.isChatDialog(dialog_id)) {
                 String loadedFileName = (String) args[0];
                 for (int i = 0; i < messages.size(); i++) {
                     MessageObject secureMessage = messages.get(i);

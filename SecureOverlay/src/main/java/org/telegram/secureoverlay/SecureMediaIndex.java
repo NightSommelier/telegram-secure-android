@@ -45,7 +45,7 @@ public final class SecureMediaIndex {
     private final KeystoreEncryptedBlobStore blobs;
 
     public SecureMediaIndex(Context context, int account, long peerUserId) {
-        if (context == null || account < 0 || peerUserId <= 0) {
+        if (context == null || account < 0 || peerUserId == 0) {
             throw new IllegalArgumentException(
                     "secure media index requires an account and user peer");
         }
