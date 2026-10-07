@@ -3,7 +3,10 @@ package org.telegram.secureoverlay;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
+import android.content.Context;
+import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -128,5 +131,62 @@ public final class LibsignalGroupSmokeTest {
         } catch (Exception expected) {
             assertNotNull(expected);
         }
+    }
+
+    @Test
+    public void autoCreatesSenderKeyOnEncrypt() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        KeystoreSignalProtocolStore store = new KeystoreSignalProtocolStore(context);
+        SignalProtocolAddress localAddress = new SignalProtocolAddress("local-account-0", DEVICE_ID);
+        LibsignalSessionAdapter adapter = new LibsignalSessionAdapter(store, localAddress);
+
+        UUID distributionId = UUID.randomUUID();
+        // Ensure no prior sender key exists
+        store.deleteSenderKey(localAddress, distributionId);
+
+        // encryptGroup should auto-create the sender key without throwing NoSessionException
+        byte[] payload = "Auto created sender key test".getBytes(StandardCharsets.UTF_8);
+        LibsignalSessionAdapter.EncryptedMessage encrypted = adapter.encryptGroup(distributionId, payload);
+        assertNotNull(encrypted);
+        assertEquals(LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY, encrypted.type);
+        assertNotNull(encrypted.serialized);
+
+        // Distribution message reflects current ratchet state and allows members to decrypt subsequent messages
+        byte[] distBytes = adapter.createGroupDistributionMessage(distributionId);
+        assertNotNull(distBytes);
+        InMemorySenderKeyStore receiverStore = new InMemorySenderKeyStore();
+        new GroupSessionBuilder(receiverStore).process(localAddress, new SenderKeyDistributionMessage(distBytes));
+
+        byte[] payload2 = "Subsequent message after distribution".getBytes(StandardCharsets.UTF_8);
+        LibsignalSessionAdapter.EncryptedMessage encrypted2 = adapter.encryptGroup(distributionId, payload2);
+        byte[] decrypted2 = new GroupCipher(receiverStore, localAddress).decrypt(encrypted2.serialized);
+        assertArrayEquals(payload2, decrypted2);
+
+        store.deleteSenderKey(localAddress, distributionId);
+    }
+
+    @Test
+    public void autoEnablesGroupWhenSenderKeyReceived() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        long testGroupId = -987654321L;
+        long senderUserId = 12345678L;
+
+        SecureChatEngine engine = new SecureChatEngine(context, 0, testGroupId);
+        engine.disable();
+        org.junit.Assert.assertFalse(engine.isPaired());
+
+        // Create a valid sender key distribution carrier
+        InMemorySenderKeyStore senderStore = new InMemorySenderKeyStore();
+        SignalProtocolAddress senderAddress = new SignalProtocolAddress("telegram-user-" + senderUserId, DEVICE_ID);
+        UUID groupDistributionId = UUID.nameUUIDFromBytes(("telegram-group-" + testGroupId).getBytes(StandardCharsets.UTF_8));
+        GroupSessionBuilder builder = new GroupSessionBuilder(senderStore);
+        byte[] distBytes = builder.create(senderAddress, groupDistributionId).serialize();
+        String carrier = SecureCarrierCodec.encode(SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION, distBytes);
+
+        // Process carrier
+        engine.processGroupSenderKeyDistributionCarrier(senderUserId, carrier);
+
+        // Group mode should now be automatically paired
+        assertTrue(engine.isPaired());
     }
 }
