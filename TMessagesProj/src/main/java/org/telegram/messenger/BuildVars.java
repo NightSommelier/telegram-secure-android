@@ -28,6 +28,8 @@ public class BuildVars {
 
     public static int APP_ID = BuildConfig.TELEGRAM_API_ID;
     public static String APP_HASH = BuildConfig.TELEGRAM_API_HASH;
+    public static String FORK_SECURE_GIT_COMMIT = BuildConfig.FORK_SECURE_GIT_COMMIT;
+    public static String FORK_SECURE_GIT_BRANCH = BuildConfig.FORK_SECURE_GIT_BRANCH;
 
     // SafetyNet key for Google Identity SDK, set it to empty to disable
     public static String SAFETYNET_KEY = "";

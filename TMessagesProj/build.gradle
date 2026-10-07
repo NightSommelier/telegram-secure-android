@@ -28,6 +28,35 @@ if (localMvpAbi && !["armeabi-v7a", "arm64-v8a", "x86", "x86_64"].contains(local
     throw new GradleException("Unsupported LOCAL_MVP_ABI: ${localMvpAbi}")
 }
 
+def getGitCommit = { ->
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'rev-parse', '--short', 'HEAD'
+            standardOutput = stdout
+        }
+        return stdout.toString().trim()
+    } catch (Exception ignored) {
+        return ""
+    }
+}
+
+def getGitBranch = { ->
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'rev-parse', '--abbrev-ref', 'HEAD'
+            standardOutput = stdout
+        }
+        return stdout.toString().trim()
+    } catch (Exception ignored) {
+        return ""
+    }
+}
+
+def forkSecureGitCommit = (project.findProperty("FORK_SECURE_GIT_COMMIT") ?: getGitCommit()).trim()
+def forkSecureGitBranch = (project.findProperty("FORK_SECURE_GIT_BRANCH") ?: getGitBranch()).trim()
+
 repositories {
     mavenCentral()
     google()
@@ -177,6 +206,8 @@ android {
         multiDexEnabled true
         buildConfigField "int", "TELEGRAM_API_ID", telegramApiId
         buildConfigField "String", "TELEGRAM_API_HASH", "\"" + telegramApiHash + "\""
+        buildConfigField "String", "FORK_SECURE_GIT_COMMIT", "\"" + forkSecureGitCommit + "\""
+        buildConfigField "String", "FORK_SECURE_GIT_BRANCH", "\"" + forkSecureGitBranch + "\""
 
         if (localMvpAbi) {
             ndk {

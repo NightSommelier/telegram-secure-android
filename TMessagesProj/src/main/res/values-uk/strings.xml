@@ -429,4 +429,8 @@
     <string name="ForkSecureGroupKeyShareMenu">Поширити ключ групи</string>
     <string name="ForkSecureGroupKeyMissing">Захищене повідомлення (очікування ключа від автора)</string>
     <string name="ForkSecureGroupProtectedDescription">Захищений груповий чат (Signal Sender Keys)</string>
+    <string name="ForkSecureBuildSection">Інформація про збірку</string>
+    <string name="ForkSecureBuildVersionTitle">Збірка Fork-Secure</string>
+    <string name="ForkSecureBuildInfoNotice">Натисніть, щоб скопіювати деталі збірки та середовища для діагностики.</string>
+    <string name="ForkSecureBuildCopied">Інформацію про збірку скопійовано</string>
 </resources>

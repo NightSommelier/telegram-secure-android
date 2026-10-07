@@ -11349,6 +11349,10 @@
     <string name="ForkSecureGroupKeyShareMenu">Share group key</string>
     <string name="ForkSecureGroupKeyMissing">Encrypted message (awaiting author’s key)</string>
     <string name="ForkSecureGroupProtectedDescription">Protected group chat (Signal Sender Keys)</string>
+    <string name="ForkSecureBuildSection">Build information</string>
+    <string name="ForkSecureBuildVersionTitle">Fork-Secure build</string>
+    <string name="ForkSecureBuildInfoNotice">Tap to copy build and environment details for troubleshooting.</string>
+    <string name="ForkSecureBuildCopied">Build details copied to clipboard</string>
 
     <string name="WelcomeMessage">Welcome Message</string>
     <string name="WelcomeMessageOff">Off</string>
