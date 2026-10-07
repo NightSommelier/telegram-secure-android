@@ -2531,7 +2531,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
 
     private boolean isForkSecureProtected() {
         long peerId = dialogId != 0 ? dialogId : userId;
-        if (!DialogObject.isUserDialog(peerId)) {
+        if (!DialogObject.isUserDialog(peerId) && !DialogObject.isChatDialog(peerId)) {
             return false;
         }
         try {

@@ -433,4 +433,6 @@
     <string name="ForkSecureBuildVersionTitle">Збірка Fork-Secure</string>
     <string name="ForkSecureBuildInfoNotice">Натисніть, щоб скопіювати деталі збірки та середовища для діагностики.</string>
     <string name="ForkSecureBuildCopied">Інформацію про збірку скопійовано</string>
+    <string name="ForkSecureGroupKeyRotateMenu">Оновити ключ групи</string>
+    <string name="ForkSecureGroupKeyRotated">Ключ групового шифрування оновлено</string>
 </resources>

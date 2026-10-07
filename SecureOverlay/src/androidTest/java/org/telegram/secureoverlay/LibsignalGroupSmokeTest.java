@@ -83,4 +83,50 @@ public final class LibsignalGroupSmokeTest {
         assertEquals(SecureCarrierCodec.TYPE_SENDERKEY, decodedMsg.type);
         assertArrayEquals(dummySenderKeyCiphertext, decodedMsg.payload);
     }
+
+    @Test
+    public void rotatesSenderKeyAndEnsuresForwardSecrecy() throws Exception {
+        InMemorySenderKeyStore aliceStore = new InMemorySenderKeyStore();
+        InMemorySenderKeyStore bobStore = new InMemorySenderKeyStore();
+        InMemorySenderKeyStore charlieStore = new InMemorySenderKeyStore();
+
+        SignalProtocolAddress aliceAddress = new SignalProtocolAddress("telegram-user-1001", DEVICE_ID);
+        UUID groupDistributionId = UUID.nameUUIDFromBytes("group-chat-5005".getBytes(StandardCharsets.UTF_8));
+
+        // 1. Initial key exchange
+        GroupSessionBuilder aliceBuilder = new GroupSessionBuilder(aliceStore);
+        byte[] dist1 = aliceBuilder.create(aliceAddress, groupDistributionId).serialize();
+
+        new GroupSessionBuilder(bobStore).process(aliceAddress, new SenderKeyDistributionMessage(dist1));
+        new GroupSessionBuilder(charlieStore).process(aliceAddress, new SenderKeyDistributionMessage(dist1));
+
+        // 2. Alice sends message 1 - both Bob and Charlie can decrypt
+        byte[] msg1 = "Message before member leave".getBytes(StandardCharsets.UTF_8);
+        byte[] ciphertext1 = new GroupCipher(aliceStore, aliceAddress).encrypt(groupDistributionId, msg1).serialize();
+        assertArrayEquals(msg1, new GroupCipher(bobStore, aliceAddress).decrypt(ciphertext1));
+        assertArrayEquals(msg1, new GroupCipher(charlieStore, aliceAddress).decrypt(ciphertext1));
+
+        // 3. Charlie leaves group -> Alice rotates SenderKey (re-creates a new store/key)
+        InMemorySenderKeyStore aliceNewStore = new InMemorySenderKeyStore();
+        GroupSessionBuilder aliceNewBuilder = new GroupSessionBuilder(aliceNewStore);
+        byte[] dist2 = aliceNewBuilder.create(aliceAddress, groupDistributionId).serialize();
+
+        // 4. Alice distributes key ONLY to Bob (Charlie does NOT receive dist2)
+        new GroupSessionBuilder(bobStore).process(aliceAddress, new SenderKeyDistributionMessage(dist2));
+
+        // 5. Alice sends message 2 under rotated key
+        byte[] msg2 = "Secret message after Charlie left".getBytes(StandardCharsets.UTF_8);
+        byte[] ciphertext2 = new GroupCipher(aliceNewStore, aliceAddress).encrypt(groupDistributionId, msg2).serialize();
+
+        // Bob can decrypt message 2
+        assertArrayEquals(msg2, new GroupCipher(bobStore, aliceAddress).decrypt(ciphertext2));
+
+        // Charlie CANNOT decrypt message 2 with the old key
+        try {
+            new GroupCipher(charlieStore, aliceAddress).decrypt(ciphertext2);
+            org.junit.Assert.fail("Charlie should not be able to decrypt message encrypted with rotated SenderKey");
+        } catch (Exception expected) {
+            assertNotNull(expected);
+        }
+    }
 }

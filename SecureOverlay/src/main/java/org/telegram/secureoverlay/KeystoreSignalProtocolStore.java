@@ -305,6 +305,9 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
         try { byte[] b = blobs.get(key("sender/" + distribution, sender)); return b == null ? null : new SenderKeyRecord(b); }
         catch (Exception e) { throw failure(e); }
     }
+    public void deleteSenderKey(SignalProtocolAddress sender, UUID distribution) {
+        remove(key("sender/" + distribution, sender));
+    }
 
     private boolean has(String name) { try { return blobs.get(name) != null; } catch (Exception e) { throw failure(e); } }
     private byte[] get(String kind, int id) { try { return blobs.get(kind + "/" + id); } catch (Exception e) { throw failure(e); } }
