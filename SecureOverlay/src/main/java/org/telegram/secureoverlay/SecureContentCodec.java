@@ -815,10 +815,12 @@ public final class SecureContentCodec {
         String decodedMimeType = mimeType == null
                 ? "" : new String(mimeType, StandardCharsets.US_ASCII);
         boolean video = !photo && decodedMimeType.startsWith("video/");
+        boolean animation = !photo && "image/gif".equalsIgnoreCase(decodedMimeType);
+        boolean visualDocument = video || animation;
         boolean dimensionsPresent = width != 0 || height != 0;
         boolean invalidDimensions = photo
                 ? width <= 0 || width > 16384 || height <= 0 || height > 16384
-                : dimensionsPresent && (!video
+                : dimensionsPresent && (!visualDocument
                         || width <= 0 || width > 16384 || height <= 0 || height > 16384);
         if (mediaId == null
                 || mediaId.length != 16
