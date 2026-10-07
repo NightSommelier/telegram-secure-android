@@ -11353,6 +11353,8 @@
     <string name="ForkSecureBuildVersionTitle">Fork-Secure build</string>
     <string name="ForkSecureBuildInfoNotice">Tap to copy build and environment details for troubleshooting.</string>
     <string name="ForkSecureBuildCopied">Build details copied to clipboard</string>
+    <string name="ForkSecureGroupKeyRotateMenu">Rotate group key</string>
+    <string name="ForkSecureGroupKeyRotated">Group encryption key rotated</string>
 
     <string name="WelcomeMessage">Welcome Message</string>
     <string name="WelcomeMessageOff">Off</string>

@@ -7957,6 +7957,10 @@ public class ChatActivityEnterView extends FrameLayout implements
                 } else if ("/secure-group-key".equals(entered) && DialogObject.isChatDialog(dialog_id)) {
                     text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
                     notify = false;
+                } else if ("/secure-group-rotate".equals(entered) && DialogObject.isChatDialog(dialog_id)) {
+                    secureChat.rotateGroupSenderKey();
+                    text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
+                    notify = false;
                 } else if ("/secure-off".equals(entered)) {
                     secureChat.disable();
                     notifySecureModeChanged();

@@ -1711,6 +1711,7 @@ public class ChatActivity extends BaseFragment implements
     private final static int chat_menu_topic_create = 73;
     private final static int secure_chat_toggle = 75;
     private final static int group_share_key = 76;
+    private final static int group_rotate_key = 77;
 
     private final static int id_chat_compose_panel = 1000;
 
@@ -3755,6 +3756,19 @@ public class ChatActivity extends BaseFragment implements
                             toggleSecureMode();
                         }
                     }
+                } else if (id == group_rotate_key) {
+                    if (chatActivityEnterView != null) {
+                        if (isForkSecureActive()) {
+                            chatActivityEnterView.processSendingText("/secure-group-rotate", false, 0, 0, 0);
+                            BulletinFactory.of(ChatActivity.this)
+                                    .createSimpleBulletin(
+                                            R.raw.chats_infotip,
+                                            getString(R.string.ForkSecureGroupKeyRotated))
+                                    .show();
+                        } else {
+                            toggleSecureMode();
+                        }
+                    }
                 } else if (id == view_as_topics) {
                     if (getUserConfig().getClientUserId() == dialog_id) {
                         getMessagesController().setSavedViewAs(true);
@@ -4510,6 +4524,7 @@ public class ChatActivity extends BaseFragment implements
             }
             if (DialogObject.isChatDialog(dialog_id) && isSecureModeUiEligible()) {
                 headerItem.lazilyAddSubItem(group_share_key, R.drawable.msg_secret, LocaleController.getString(R.string.ForkSecureGroupKeyShareMenu));
+                headerItem.lazilyAddSubItem(group_rotate_key, R.drawable.msg_retry, LocaleController.getString(R.string.ForkSecureGroupKeyRotateMenu));
             }
             if (themeDelegate.isThemeChangeAvailable(true)) {
                 headerItem.lazilyAddSubItem(change_colors, R.drawable.msg_background, LocaleController.getString(R.string.SetWallpapers));

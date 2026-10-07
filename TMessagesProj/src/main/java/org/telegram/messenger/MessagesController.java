@@ -9364,7 +9364,7 @@ public class MessagesController extends BaseController implements NotificationCe
                 } else {
                     markDialogMessageAsDeleted(dialogId, messages);
                 }
-                if (forAll && channelId == 0 && DialogObject.isUserDialog(dialogId) && taskId == 0) {
+                if (forAll && channelId == 0 && (DialogObject.isUserDialog(dialogId) || DialogObject.isChatDialog(dialogId)) && taskId == 0) {
                     sendForkSecureDeleteControlIfNeeded(dialogId, toSend != null ? toSend : messages);
                 }
                 getMessagesStorage().markMessagesAsDeleted(dialogId, messages, true, forAll, 0, topicId);
@@ -9516,7 +9516,7 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     private void sendForkSecureDeleteControlIfNeeded(final long dialogId, final ArrayList<Integer> messages) {
-        if (!DialogObject.isUserDialog(dialogId) || messages == null || messages.isEmpty()) {
+        if ((!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId)) || messages == null || messages.isEmpty()) {
             return;
         }
         final Context context = ApplicationLoader.applicationContext;
@@ -15957,6 +15957,15 @@ public class MessagesController extends BaseController implements NotificationCe
             processUpdates(updates, false);
             if (isChannel && !self) {
                 AndroidUtilities.runOnUIThread(() -> loadFullChat(chatId, 0, true), 1000);
+            }
+            if (!self) {
+                try {
+                    SecureChatEngine secureChat = new SecureChatEngine(
+                            ApplicationLoader.applicationContext, currentAccount, -chatId);
+                    if (secureChat.isPaired()) {
+                        secureChat.rotateGroupSenderKey();
+                    }
+                } catch (Exception ignore) {}
             }
             if (whenDone != null) {
                 AndroidUtilities.runOnUIThread(whenDone);

@@ -149,6 +149,7 @@ public final class SecureChatEngine {
     private final SecureLocalTextStore localText;
     private final SecureLocalContentStore localContent;
     private final SignalProtocolAddress peerAddress;
+    private final SignalProtocolAddress localAddress;
     private final long identityEpoch;
 
     public SecureChatEngine(Context context, int account, long peerUserId) {
@@ -164,7 +165,8 @@ public final class SecureChatEngine {
         recoveryStore.ensureLocalIdentity(generationForEpoch(state.getIdentityEpoch()));
         store = new KeystoreSignalProtocolStore(appContext);
         peerAddress = new SignalProtocolAddress("telegram-user-" + peerUserId, 1);
-        sessions = new LibsignalSessionAdapter(store, new SignalProtocolAddress("local-account-" + account, 1));
+        localAddress = new SignalProtocolAddress("local-account-" + account, 1);
+        sessions = new LibsignalSessionAdapter(store, localAddress);
         localText = new SecureLocalTextStore(appContext, account, peerUserId);
         localContent =
                 new SecureLocalContentStore(appContext, account, peerUserId);
@@ -219,6 +221,16 @@ public final class SecureChatEngine {
             throw new IllegalArgumentException("peer dialog id must be negative for groups");
         }
         state.markPaired(account, peerUserId);
+    }
+
+    /** Rotates local SenderKey for this group chat, forcing generation of a new key upon next distribution. */
+    public void rotateGroupSenderKey() {
+        if (peerUserId >= 0) {
+            throw new IllegalArgumentException("peer dialog id must be negative for groups");
+        }
+        java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
+                ("telegram-group-" + peerUserId).getBytes(StandardCharsets.UTF_8));
+        store.deleteSenderKey(localAddress, distributionId);
     }
 
     /**
