@@ -1710,6 +1710,7 @@ public class ChatActivity extends BaseFragment implements
 
     private final static int chat_menu_topic_create = 73;
     private final static int secure_chat_toggle = 75;
+    private final static int group_share_key = 76;
 
     private final static int id_chat_compose_panel = 1000;
 
@@ -3741,6 +3742,19 @@ public class ChatActivity extends BaseFragment implements
                     } else {
                         toggleSecureMode();
                     }
+                } else if (id == group_share_key) {
+                    if (chatActivityEnterView != null) {
+                        if (isForkSecureActive()) {
+                            chatActivityEnterView.processSendingText("/secure-group-key", false, 0, 0, 0);
+                            BulletinFactory.of(ChatActivity.this)
+                                    .createSimpleBulletin(
+                                            R.raw.chats_infotip,
+                                            getString(R.string.ForkSecureGroupKeyDistributed))
+                                    .show();
+                        } else {
+                            toggleSecureMode();
+                        }
+                    }
                 } else if (id == view_as_topics) {
                     if (getUserConfig().getClientUserId() == dialog_id) {
                         getMessagesController().setSavedViewAs(true);
@@ -4493,6 +4507,9 @@ public class ChatActivity extends BaseFragment implements
             }
             if (currentChat != null && !isTopic) {
                 viewAsTopics = headerItem.lazilyAddSubItem(view_as_topics, R.drawable.msg_topics, LocaleController.getString(R.string.TopicViewAsTopics));
+            }
+            if (DialogObject.isChatDialog(dialog_id) && isSecureModeUiEligible()) {
+                headerItem.lazilyAddSubItem(group_share_key, R.drawable.msg_secret, LocaleController.getString(R.string.ForkSecureGroupKeyShareMenu));
             }
             if (themeDelegate.isThemeChangeAvailable(true)) {
                 headerItem.lazilyAddSubItem(change_colors, R.drawable.msg_background, LocaleController.getString(R.string.SetWallpapers));
@@ -20131,7 +20148,7 @@ public class ChatActivity extends BaseFragment implements
             rightIcon = getThemedDrawable(Theme.key_drawable_muteIconDrawable);
         }
         Drawable leftIcon = null;
-        if (currentEncryptedChat != null) {
+        if (currentEncryptedChat != null || isForkSecureActive()) {
             leftIcon = getThemedDrawable(Theme.key_drawable_lockIconDrawable);
         } else if (currentChat != null) {
             leftIcon = avatarContainer.getBotVerificationDrawable(DialogObject.getBotVerificationIcon(currentChat), false);
@@ -21091,10 +21108,10 @@ public class ChatActivity extends BaseFragment implements
             }
             applyForkSecureReplyOverlay(message, secureChat);
             String carrier = message.messageOwner.message;
+            SecureCarrierCodec.Decoded decoded = null;
             try {
                 message.forkSecureVerified = false;
                 message.forkSecureService = false;
-                SecureCarrierCodec.Decoded decoded;
                 try {
                     decoded = SecureCarrierCodec.decode(carrier);
                 } catch (IllegalArgumentException malformedCarrier) {
@@ -21157,6 +21174,22 @@ public class ChatActivity extends BaseFragment implements
                         try {
                             secureChat.processGroupSenderKeyDistributionCarrier(senderId, carrier);
                             message.applyNewText(getString(R.string.ForkSecureGroupKeyReceived));
+                            if (!forkSecureDeferredMessages.isEmpty()) {
+                                ArrayList<MessageObject> retry = new ArrayList<>();
+                                for (int retryIdx = 0; retryIdx < messages.size(); retryIdx++) {
+                                    MessageObject m = messages.get(retryIdx);
+                                    if (m != null && forkSecureDeferredMessages.contains(m.getId())) {
+                                        retry.add(m);
+                                    }
+                                }
+                                if (!retry.isEmpty()) {
+                                    forkSecureDeferredMessages.clear();
+                                    applySecureTextOverlay(retry);
+                                    if (chatAdapter != null) {
+                                        chatAdapter.notifyDataSetChanged();
+                                    }
+                                }
+                            }
                         } catch (Exception e) {
                             FileLog.e(e);
                             message.applyNewText(getString(R.string.ForkSecureMessageFailed));
@@ -21233,6 +21266,10 @@ public class ChatActivity extends BaseFragment implements
                 if (SecureChatEngine.isStateTemporarilyUnavailable(getContext())) {
                     forkSecureDeferredMessages.add(message.getId());
                     message.applyNewText(getString(R.string.ForkSecureReplyPreview));
+                } else if (decoded != null && decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
+                    forkSecureDeferredMessages.add(message.getId());
+                    FileLog.e(e);
+                    message.applyNewText(getString(R.string.ForkSecureGroupKeyMissing));
                 } else {
                     FileLog.e(e);
                     message.applyNewText(getString(R.string.ForkSecureMessageFailed));
@@ -22928,6 +22965,17 @@ public class ChatActivity extends BaseFragment implements
         return plaintext;
     }
 
+    public boolean isForkSecureActive() {
+        if (!isSecureModeUiEligible()) {
+            return false;
+        }
+        try {
+            return getSecureChatEngine().isPaired();
+        } catch (Throwable ignore) {
+            return false;
+        }
+    }
+
     private boolean isSecureModeUiEligible() {
         if (chatMode != MODE_DEFAULT
                 || currentEncryptedChat != null
@@ -23080,6 +23128,7 @@ public class ChatActivity extends BaseFragment implements
     }
 
     public void updateSecureModeUi() {
+        updateTitleIcons();
         if (secureModeItem == null) {
             return;
         }
@@ -23090,7 +23139,9 @@ public class ChatActivity extends BaseFragment implements
                 clearForkSecureCloudDraft();
                 secureModeItem.setIcon(R.drawable.outline_shield_check, true);
                 secureModeItem.setContentDescription(
-                        getString(R.string.ForkSecureProtectedDescription));
+                        getString(DialogObject.isChatDialog(dialog_id)
+                                ? R.string.ForkSecureGroupProtectedDescription
+                                : R.string.ForkSecureProtectedDescription));
             } else if (mode == SecureChatEngine.Mode.WAITING) {
                 restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
