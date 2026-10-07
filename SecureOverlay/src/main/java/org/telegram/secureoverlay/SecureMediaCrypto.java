@@ -88,7 +88,9 @@ public final class SecureMediaCrypto {
             int height,
             String emoji,
             int format) {
-        if (source == null || destination == null || !source.isFile()) {
+        source = requireSafeFile(source, "source");
+        destination = requireSafeFile(destination, "destination");
+        if (!source.isFile()) {
             throw new IllegalArgumentException("secure sticker source is unavailable");
         }
         long sourceSize = source.length();
@@ -111,11 +113,7 @@ public final class SecureMediaCrypto {
                 height,
                 emoji,
                 format));
-        File parent = destination.getParentFile();
-        if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
-            throw new SecureMediaException("cannot create secure media directory", null);
-        }
-        File temporary = new File(destination.getAbsolutePath() + ".tmp");
+        File temporary = createSafeTemporaryFile(destination);
         MessageDigest digest = newSha256();
         long plaintextBytes = 0;
         long ciphertextBytes = 0;
@@ -205,7 +203,9 @@ public final class SecureMediaCrypto {
             File ciphertextFile,
             File destination,
             SecureContentCodec.StaticSticker manifest) {
-        if (ciphertextFile == null || destination == null || !ciphertextFile.isFile()) {
+        ciphertextFile = requireSafeFile(ciphertextFile, "ciphertextFile");
+        destination = requireSafeFile(destination, "destination");
+        if (!ciphertextFile.isFile()) {
             throw new IllegalArgumentException("secure sticker ciphertext is unavailable");
         }
         if (manifest == null
@@ -215,11 +215,7 @@ public final class SecureMediaCrypto {
                         manifest.ciphertextSha256)) {
             throw new IllegalArgumentException("secure sticker ciphertext does not match manifest");
         }
-        File parent = destination.getParentFile();
-        if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
-            throw new SecureMediaException("cannot create decrypted media directory", null);
-        }
-        File temporary = new File(destination.getAbsolutePath() + ".tmp");
+        File temporary = createSafeTemporaryFile(destination);
         long plaintextBytes = 0;
         try (FileInputStream input = new FileInputStream(ciphertextFile);
                 FileOutputStream output = new FileOutputStream(temporary, false)) {
@@ -340,7 +336,9 @@ public final class SecureMediaCrypto {
             String title,
             String performer,
             byte[] waveform) {
-        if (source == null || destination == null || !source.isFile()) {
+        source = requireSafeFile(source, "source");
+        destination = requireSafeFile(destination, "destination");
+        if (!source.isFile()) {
             throw new IllegalArgumentException("secure attachment source is unavailable");
         }
         long sourceSize = source.length();
@@ -368,11 +366,7 @@ public final class SecureMediaCrypto {
                 title,
                 performer,
                 waveform));
-        File parent = destination.getParentFile();
-        if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
-            throw new SecureMediaException("cannot create secure attachment directory", null);
-        }
-        File temporary = new File(destination.getAbsolutePath() + ".tmp");
+        File temporary = createSafeTemporaryFile(destination);
         MessageDigest digest = newSha256();
         long plaintextBytes = 0;
         long ciphertextBytes = 0;
@@ -445,9 +439,9 @@ public final class SecureMediaCrypto {
             File ciphertextFile,
             File destination,
             SecureContentCodec.Attachment manifest) {
-        if (ciphertextFile == null
-                || destination == null
-                || manifest == null
+        ciphertextFile = requireSafeFile(ciphertextFile, "ciphertextFile");
+        destination = requireSafeFile(destination, "destination");
+        if (manifest == null
                 || !ciphertextFile.isFile()
                 || ciphertextFile.length() != manifest.ciphertextSize
                 || !MessageDigest.isEqual(
@@ -458,11 +452,7 @@ public final class SecureMediaCrypto {
             throw new IllegalArgumentException(
                     "secure attachment ciphertext does not match manifest");
         }
-        File parent = destination.getParentFile();
-        if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
-            throw new SecureMediaException("cannot create decrypted attachment directory", null);
-        }
-        File temporary = new File(destination.getAbsolutePath() + ".tmp");
+        File temporary = createSafeTemporaryFile(destination);
         long plaintextBytes = 0;
         try (FileInputStream input = new FileInputStream(ciphertextFile);
                 FileOutputStream output = new FileOutputStream(temporary, false)) {
@@ -508,6 +498,40 @@ public final class SecureMediaCrypto {
             temporary.delete();
             throw new SecureMediaException("cannot finalize decrypted attachment", null);
         }
+    }
+
+    private static File requireSafeFile(File file, String label) {
+        if (file == null) {
+            throw new IllegalArgumentException(label + " is null");
+        }
+        try {
+            File canonical = file.getCanonicalFile();
+            String name = canonical.getName();
+            if (name.contains("..") || name.contains("/") || name.contains("\\")) {
+                throw new IllegalArgumentException(label + " contains path traversal sequences");
+            }
+            File parent = canonical.getParentFile();
+            if (parent != null) {
+                String parentCanonicalPath = parent.getCanonicalPath();
+                String canonicalPath = canonical.getPath();
+                if (!canonicalPath.startsWith(parentCanonicalPath + File.separator)
+                        && !canonicalPath.equals(parentCanonicalPath)) {
+                    throw new IllegalArgumentException(label + " escapes parent directory");
+                }
+            }
+            return canonical;
+        } catch (IOException e) {
+            throw new IllegalArgumentException("cannot resolve safe path for " + label, e);
+        }
+    }
+
+    private static File createSafeTemporaryFile(File destination) {
+        File safeDestination = requireSafeFile(destination, "destination");
+        File parent = safeDestination.getParentFile();
+        if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
+            throw new SecureMediaException("cannot create media directory", null);
+        }
+        return requireSafeFile(new File(parent, safeDestination.getName() + ".tmp"), "temporary");
     }
 
     private static byte[] crypt(
@@ -588,6 +612,7 @@ public final class SecureMediaCrypto {
     }
 
     private static boolean matchesStickerFormat(File source, int format) {
+        source = requireSafeFile(source, "source");
         int headerSize = format == SecureContentCodec.STICKER_FORMAT_WEBP ? 12
                 : format == SecureContentCodec.STICKER_FORMAT_TGS ? 2
                 : format == SecureContentCodec.STICKER_FORMAT_WEBM ? 4 : 0;
@@ -621,6 +646,7 @@ public final class SecureMediaCrypto {
     }
 
     private static byte[] sha256File(File source, int maximum) {
+        source = requireSafeFile(source, "source");
         long size = source.length();
         if (size <= 0 || size > maximum) {
             throw new IllegalArgumentException("secure media size is invalid");

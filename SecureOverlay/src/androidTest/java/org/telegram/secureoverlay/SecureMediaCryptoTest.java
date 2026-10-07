@@ -334,4 +334,41 @@ public final class SecureMediaCryptoTest {
                 SecureMediaCrypto.decryptStaticSticker(
                         encrypted.ciphertext, decoded.staticSticker));
     }
+
+    @Test
+    public void rejectsPathTraversalFiles() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        File directory = new File(context.getCacheDir(), "secure-traversal-test");
+        directory.mkdirs();
+        File maliciousFile = new File(directory, "../outside.bin");
+
+        try {
+            SecureMediaCrypto.encryptStickerFile(
+                    maliciousFile,
+                    new File(directory, "dest.bin"),
+                    512,
+                    512,
+                    "",
+                    SecureContentCodec.STICKER_FORMAT_WEBP);
+            fail("expected path traversal rejection for source");
+        } catch (IllegalArgumentException expected) {
+            // Path traversal rejected
+        }
+
+        File validSource = new File(directory, "valid.bin");
+        try {
+            SecureMediaCrypto.encryptStickerFile(
+                    validSource,
+                    maliciousFile,
+                    512,
+                    512,
+                    "",
+                    SecureContentCodec.STICKER_FORMAT_WEBP);
+            fail("expected path traversal rejection for destination");
+        } catch (IllegalArgumentException expected) {
+            // Path traversal rejected
+        }
+
+        directory.delete();
+    }
 }
