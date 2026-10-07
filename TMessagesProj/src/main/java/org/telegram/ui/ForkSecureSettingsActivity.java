@@ -78,10 +78,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
     private TextSettingsCell waitingCountCell;
     private TextSettingsCell verificationCountCell;
     private TextSettingsCell pausedCountCell;
-    private TextSettingsCell passcodeAuditCell;
-    private TextSettingsCell usbAuditCell;
-    private TextSettingsCell screenAuditCell;
-    private TextSettingsCell linkGuardAuditCell;
+    private TextDetailSettingsCell passcodeAuditCell;
+    private TextDetailSettingsCell usbAuditCell;
+    private TextDetailSettingsCell screenAuditCell;
+    private TextDetailSettingsCell linkGuardAuditCell;
     private TextSettingsCell restoreCell;
     private Dialog activePasswordDialog;
     private PasswordField[] activePasswordFields;
@@ -250,23 +250,37 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
         auditHeader.setText(getString(R.string.ForkSecureAuditHeader));
         content.addView(auditHeader);
 
-        passcodeAuditCell = actionCell(
-                context, getString(R.string.ForkSecureAuditPasscode), true);
+        passcodeAuditCell = auditDetailCell(
+                context, getString(R.string.ForkSecureAuditPasscode), true, true);
         passcodeAuditCell.setOnClickListener(
                 view -> presentFragment(PasscodeActivity.determineOpenFragment()));
-        content.addView(passcodeAuditCell);
+        content.addView(passcodeAuditCell, LayoutHelper.createLinear(
+                LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
 
-        usbAuditCell = settingsCell(
-                context, getString(R.string.ForkSecureAuditUsb), true);
-        content.addView(usbAuditCell);
+        usbAuditCell = auditDetailCell(
+                context, getString(R.string.ForkSecureAuditUsb), true, true);
+        usbAuditCell.setOnClickListener(view -> {
+            try {
+                context.startActivity(new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS));
+            } catch (Throwable error) {
+                try {
+                    context.startActivity(new Intent(Settings.ACTION_SETTINGS));
+                } catch (Throwable ignore) {
+                }
+            }
+        });
+        content.addView(usbAuditCell, LayoutHelper.createLinear(
+                LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
 
-        screenAuditCell = settingsCell(
-                context, getString(R.string.ForkSecureAuditScreen), true);
-        content.addView(screenAuditCell);
+        screenAuditCell = auditDetailCell(
+                context, getString(R.string.ForkSecureAuditScreen), false, true);
+        content.addView(screenAuditCell, LayoutHelper.createLinear(
+                LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
 
-        linkGuardAuditCell = settingsCell(
-                context, getString(R.string.ForkSecureAuditLinkGuard), false);
-        content.addView(linkGuardAuditCell);
+        linkGuardAuditCell = auditDetailCell(
+                context, getString(R.string.ForkSecureAuditLinkGuard), false, false);
+        content.addView(linkGuardAuditCell, LayoutHelper.createLinear(
+                LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
 
         TextInfoPrivacyCell auditInfo = new TextInfoPrivacyCell(
                 context, getResourceProvider());
@@ -378,6 +392,19 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
         }
     }
 
+    private TextDetailSettingsCell auditDetailCell(
+            Context context, String text, boolean clickable, boolean divider) {
+        TextDetailSettingsCell cell = new TextDetailSettingsCell(context);
+        cell.setMultilineDetail(true);
+        if (clickable) {
+            cell.setBackground(Theme.createSelectorWithBackgroundDrawable(
+                    Theme.getColor(Theme.key_windowBackgroundWhite, getResourceProvider()),
+                    Theme.getColor(Theme.key_listSelector, getResourceProvider())));
+        }
+        cell.setTextAndValue(text, "", divider);
+        return cell;
+    }
+
     private TextSettingsCell actionCell(Context context, String text, boolean divider) {
         TextSettingsCell cell = settingsCell(context, text, divider);
         cell.setBackground(Theme.createSelectorWithBackgroundDrawable(
@@ -389,7 +416,6 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
     private TextSettingsCell settingsCell(
             Context context, String text, boolean divider) {
         TextSettingsCell cell = new TextSettingsCell(context, getResourceProvider());
-        cell.setBetterLayout(true);
         cell.setText(text, divider);
         return cell;
     }
@@ -448,6 +474,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                                 ? R.string.ForkSecureAuditPasscodeEnabled
                                 : R.string.ForkSecureAuditPasscodeDisabled),
                         true);
+                passcodeAuditCell.getValueTextView().setTextColor(
+                        Theme.getColor(passcodeEnabled
+                                ? Theme.key_windowBackgroundWhiteValueText
+                                : Theme.key_text_RedRegular, getResourceProvider()));
             }
             if (usbAuditCell != null) {
                 boolean adbEnabled = isUsbDebuggingEnabled(context);
@@ -457,18 +487,26 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                                 ? R.string.ForkSecureAuditUsbWarning
                                 : R.string.ForkSecureAuditUsbSafe),
                         true);
+                usbAuditCell.getValueTextView().setTextColor(
+                        Theme.getColor(adbEnabled
+                                ? Theme.key_text_RedRegular
+                                : Theme.key_windowBackgroundWhiteValueText, getResourceProvider()));
             }
             if (screenAuditCell != null) {
                 screenAuditCell.setTextAndValue(
                         getString(R.string.ForkSecureAuditScreen),
                         getString(R.string.ForkSecureAuditScreenProtected),
                         true);
+                screenAuditCell.getValueTextView().setTextColor(
+                        Theme.getColor(Theme.key_windowBackgroundWhiteValueText, getResourceProvider()));
             }
             if (linkGuardAuditCell != null) {
                 linkGuardAuditCell.setTextAndValue(
                         getString(R.string.ForkSecureAuditLinkGuard),
                         getString(R.string.ForkSecureAuditLinkGuardActive),
                         false);
+                linkGuardAuditCell.getValueTextView().setTextColor(
+                        Theme.getColor(Theme.key_windowBackgroundWhiteValueText, getResourceProvider()));
             }
 
             SecureIdentityBackupManager.PreparedImport prepared =
@@ -491,16 +529,16 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             pausedCountCell.setText(
                     getString(R.string.ForkSecurePausedCount), false);
             if (passcodeAuditCell != null) {
-                passcodeAuditCell.setText(getString(R.string.ForkSecureAuditPasscode), true);
+                passcodeAuditCell.setTextAndValue(getString(R.string.ForkSecureAuditPasscode), "", true);
             }
             if (usbAuditCell != null) {
-                usbAuditCell.setText(getString(R.string.ForkSecureAuditUsb), true);
+                usbAuditCell.setTextAndValue(getString(R.string.ForkSecureAuditUsb), "", true);
             }
             if (screenAuditCell != null) {
-                screenAuditCell.setText(getString(R.string.ForkSecureAuditScreen), true);
+                screenAuditCell.setTextAndValue(getString(R.string.ForkSecureAuditScreen), "", true);
             }
             if (linkGuardAuditCell != null) {
-                linkGuardAuditCell.setText(getString(R.string.ForkSecureAuditLinkGuard), false);
+                linkGuardAuditCell.setTextAndValue(getString(R.string.ForkSecureAuditLinkGuard), "", false);
             }
         }
     }

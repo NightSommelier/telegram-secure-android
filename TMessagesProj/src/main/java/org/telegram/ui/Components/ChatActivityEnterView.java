@@ -7722,16 +7722,10 @@ public class ChatActivityEnterView extends FrameLayout implements
                         attachment = SecureContentCodec.decode(
                                 SecureSavedMessageCrypto.decryptRecord(outer.payload, key))
                                 .attachment;
-                        attachment = new SecureContentCodec.Attachment(
-                                attachment.mediaId, attachment.key, attachment.nonce,
-                                attachment.ciphertextSha256, attachment.plaintextSize,
-                                attachment.ciphertextSize, attachment.fileName,
-                                attachment.mimeType,
-                                SecureContentCodec.encodeCaption(
-                                        message[0].toString(),
-                                        editingMessageObject.messageOwner.invert_media),
-                                attachment.width,
-                                attachment.height, attachment.photo);
+                        attachment = SecureContentCodec.withCaption(
+                                attachment,
+                                message[0].toString(),
+                                editingMessageObject.messageOwner.invert_media);
                         message[0] = SecureCarrierCodec.encode(
                                 SecureCarrierCodec.TYPE_SAVED_MESSAGE,
                                 SecureSavedMessageCrypto.encryptRecord(
@@ -7742,16 +7736,10 @@ public class ChatActivityEnterView extends FrameLayout implements
                             return;
                         }
                         attachment = secureChat.getOutgoingAttachment(carrier);
-                        attachment = new SecureContentCodec.Attachment(
-                                attachment.mediaId, attachment.key, attachment.nonce,
-                                attachment.ciphertextSha256, attachment.plaintextSize,
-                                attachment.ciphertextSize, attachment.fileName,
-                                attachment.mimeType,
-                                SecureContentCodec.encodeCaption(
-                                        message[0].toString(),
-                                        editingMessageObject.messageOwner.invert_media),
-                                attachment.width,
-                                attachment.height, attachment.photo);
+                        attachment = SecureContentCodec.withCaption(
+                                attachment,
+                                message[0].toString(),
+                                editingMessageObject.messageOwner.invert_media);
                         SecureChatEngine.AttachmentEditTransport editTransport =
                                 secureChat.encryptAttachmentForEdit(attachment, 1024, 4096);
                         message[0] = editTransport.attachmentCarrier;

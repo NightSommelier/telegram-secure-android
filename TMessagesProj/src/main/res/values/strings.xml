@@ -11358,7 +11358,7 @@
     <string name="ForkSecureAuditHeader">Security &amp; Privacy Audit</string>
     <string name="ForkSecureAuditPasscode">App Passcode Lock</string>
     <string name="ForkSecureAuditPasscodeEnabled">Enabled (Protected)</string>
-    <string name="ForkSecureAuditPasscodeDisabled">Disabled (Recommended)</string>
+    <string name="ForkSecureAuditPasscodeDisabled">Disabled (Passcode recommended)</string>
     <string name="ForkSecureAuditUsb">USB Debugging (ADB)</string>
     <string name="ForkSecureAuditUsbWarning">Active (Risk on physical access)</string>
     <string name="ForkSecureAuditUsbSafe">Disabled (Safe)</string>

@@ -58,6 +58,7 @@ public final class SecureContentCodec {
     public static final int ATTACHMENT_PRESENTATION_AUDIO = 2;
     public static final int ATTACHMENT_PRESENTATION_VOICE = 3;
     public static final int ATTACHMENT_PRESENTATION_ROUND_VIDEO = 4;
+    public static final int ATTACHMENT_PRESENTATION_ANIMATION = 5;
 
     private SecureContentCodec() {}
 
@@ -113,7 +114,8 @@ public final class SecureContentCodec {
                 attachment.presentation,
                 attachment.durationSeconds,
                 attachment.title,
-                attachment.performer);
+                attachment.performer,
+                attachment.waveform);
     }
 
     /** Returns the authenticated album identifier, or an empty string for a standalone item. */
@@ -689,6 +691,9 @@ public final class SecureContentCodec {
         if (photo) {
             return ATTACHMENT_PRESENTATION_FILE;
         }
+        if ("image/gif".equalsIgnoreCase(mimeType)) {
+            return ATTACHMENT_PRESENTATION_ANIMATION;
+        }
         if (mimeType != null && mimeType.startsWith("video/")) {
             return ATTACHMENT_PRESENTATION_VIDEO;
         }
@@ -756,6 +761,11 @@ public final class SecureContentCodec {
                     || width <= 0 || height <= 0 || width != height || waveformPresent) {
                 throw new IllegalArgumentException("invalid secure round-video presentation");
             }
+        } else if (kind == ATTACHMENT_PRESENTATION_ANIMATION) {
+            boolean gifOrVideo = video || "image/gif".equalsIgnoreCase(mimeType);
+            if (!gifOrVideo || textPresent || waveformPresent) {
+                throw new IllegalArgumentException("invalid secure animation presentation");
+            }
         } else {
             throw new IllegalArgumentException("unknown secure attachment presentation");
         }
@@ -806,10 +816,12 @@ public final class SecureContentCodec {
         String decodedMimeType = mimeType == null
                 ? "" : new String(mimeType, StandardCharsets.US_ASCII);
         boolean video = !photo && decodedMimeType.startsWith("video/");
+        boolean animation = !photo && "image/gif".equalsIgnoreCase(decodedMimeType);
+        boolean visualDocument = video || animation;
         boolean dimensionsPresent = width != 0 || height != 0;
         boolean invalidDimensions = photo
                 ? width <= 0 || width > 16384 || height <= 0 || height > 16384
-                : dimensionsPresent && (!video
+                : dimensionsPresent && (!visualDocument
                         || width <= 0 || width > 16384 || height <= 0 || height > 16384);
         if (mediaId == null
                 || mediaId.length != 16
