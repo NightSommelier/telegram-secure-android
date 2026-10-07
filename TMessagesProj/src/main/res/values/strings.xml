@@ -11346,6 +11346,9 @@
     <string name="ForkSecureCopySafeLink">Copy address</string>
     <string name="ForkSecureGroupKeyDistributed">Group encryption key distributed</string>
     <string name="ForkSecureGroupKeyReceived">Received group encryption key</string>
+    <string name="ForkSecureGroupKeyShareMenu">Share group key</string>
+    <string name="ForkSecureGroupKeyMissing">Encrypted message (awaiting author’s key)</string>
+    <string name="ForkSecureGroupProtectedDescription">Protected group chat (Signal Sender Keys)</string>
 
     <string name="WelcomeMessage">Welcome Message</string>
     <string name="WelcomeMessageOff">Off</string>
