@@ -435,4 +435,16 @@
     <string name="ForkSecureBuildCopied">Інформацію про збірку скопійовано</string>
     <string name="ForkSecureGroupKeyRotateMenu">Оновити ключ групи</string>
     <string name="ForkSecureGroupKeyRotated">Ключ групового шифрування оновлено</string>
+    <string name="ForkSecureAuditHeader">Аудит безпеки пристрою та додатку</string>
+    <string name="ForkSecureAuditPasscode">Код блокування додатку</string>
+    <string name="ForkSecureAuditPasscodeEnabled">Увімкнено (захищено)</string>
+    <string name="ForkSecureAuditPasscodeDisabled">Вимкнено (рекомендовано)</string>
+    <string name="ForkSecureAuditUsb">Налагодження по USB (ADB)</string>
+    <string name="ForkSecureAuditUsbWarning">Увімкнено (ризик при фізичному доступі)</string>
+    <string name="ForkSecureAuditUsbSafe">Вимкнено (безпечно)</string>
+    <string name="ForkSecureAuditScreen">Захист від скріншотів (FLAG_SECURE)</string>
+    <string name="ForkSecureAuditScreenProtected">Активний у захищених чатах і медіа</string>
+    <string name="ForkSecureAuditLinkGuard">Захист від фішингу посилань</string>
+    <string name="ForkSecureAuditLinkGuardActive">Активний (детекція Punycode та омогліфів)</string>
+    <string name="ForkSecureAuditInfo">Аудит аналізує ключові налаштування пристрою та клієнта, які можуть впливати на конфіденційність при фізичному або локальному доступі.</string>
 </resources>

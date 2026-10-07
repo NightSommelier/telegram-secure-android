@@ -5625,6 +5625,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             return;
         }
         if (messageObject.isForkSecureCarrier() || isForkSecureProtectedPeer(messageObject.getDialogId())) {
+            showForkSecureError(R.string.ForkSecureActionUnsupported);
             return;
         }
         TLRPC.TL_messages_sendReaction req = new TLRPC.TL_messages_sendReaction();
