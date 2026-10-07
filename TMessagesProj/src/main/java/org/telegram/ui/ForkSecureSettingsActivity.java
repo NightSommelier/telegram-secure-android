@@ -10,6 +10,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -27,6 +28,7 @@ import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.R;
+import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.Utilities;
 import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.secureoverlay.SecureChatState;
@@ -76,6 +78,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
     private TextSettingsCell waitingCountCell;
     private TextSettingsCell verificationCountCell;
     private TextSettingsCell pausedCountCell;
+    private TextSettingsCell passcodeAuditCell;
+    private TextSettingsCell usbAuditCell;
+    private TextSettingsCell screenAuditCell;
+    private TextSettingsCell linkGuardAuditCell;
     private TextSettingsCell restoreCell;
     private Dialog activePasswordDialog;
     private PasswordField[] activePasswordFields;
@@ -240,6 +246,34 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
         content.addView(chatScope, LayoutHelper.createLinear(
                 LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
 
+        HeaderCell auditHeader = new HeaderCell(context, getResourceProvider());
+        auditHeader.setText(getString(R.string.ForkSecureAuditHeader));
+        content.addView(auditHeader);
+
+        passcodeAuditCell = actionCell(
+                context, getString(R.string.ForkSecureAuditPasscode), true);
+        passcodeAuditCell.setOnClickListener(
+                view -> presentFragment(PasscodeActivity.determineOpenFragment()));
+        content.addView(passcodeAuditCell);
+
+        usbAuditCell = settingsCell(
+                context, getString(R.string.ForkSecureAuditUsb), true);
+        content.addView(usbAuditCell);
+
+        screenAuditCell = settingsCell(
+                context, getString(R.string.ForkSecureAuditScreen), true);
+        content.addView(screenAuditCell);
+
+        linkGuardAuditCell = settingsCell(
+                context, getString(R.string.ForkSecureAuditLinkGuard), false);
+        content.addView(linkGuardAuditCell);
+
+        TextInfoPrivacyCell auditInfo = new TextInfoPrivacyCell(
+                context, getResourceProvider());
+        auditInfo.setText(getString(R.string.ForkSecureAuditInfo));
+        content.addView(auditInfo, LayoutHelper.createLinear(
+                LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+
         HeaderCell resetHeader = new HeaderCell(context, getResourceProvider());
         resetHeader.setText(getString(R.string.ForkSecureDangerZone));
         content.addView(resetHeader);
@@ -360,6 +394,16 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
         return cell;
     }
 
+    private boolean isUsbDebuggingEnabled(Context context) {
+        try {
+            return Settings.Global.getInt(
+                    context.getContentResolver(),
+                    Settings.Global.ADB_ENABLED, 0) == 1;
+        } catch (Throwable error) {
+            return false;
+        }
+    }
+
     private void refreshState() {
         Context context = getContext();
         if (context == null || fingerprintCell == null || generationCell == null
@@ -395,6 +439,38 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                     Integer.toString(summary.paused),
                     false);
 
+            if (passcodeAuditCell != null) {
+                boolean passcodeEnabled = SharedConfig.passcodeHash != null
+                        && SharedConfig.passcodeHash.length() > 0;
+                passcodeAuditCell.setTextAndValue(
+                        getString(R.string.ForkSecureAuditPasscode),
+                        getString(passcodeEnabled
+                                ? R.string.ForkSecureAuditPasscodeEnabled
+                                : R.string.ForkSecureAuditPasscodeDisabled),
+                        true);
+            }
+            if (usbAuditCell != null) {
+                boolean adbEnabled = isUsbDebuggingEnabled(context);
+                usbAuditCell.setTextAndValue(
+                        getString(R.string.ForkSecureAuditUsb),
+                        getString(adbEnabled
+                                ? R.string.ForkSecureAuditUsbWarning
+                                : R.string.ForkSecureAuditUsbSafe),
+                        true);
+            }
+            if (screenAuditCell != null) {
+                screenAuditCell.setTextAndValue(
+                        getString(R.string.ForkSecureAuditScreen),
+                        getString(R.string.ForkSecureAuditScreenProtected),
+                        true);
+            }
+            if (linkGuardAuditCell != null) {
+                linkGuardAuditCell.setTextAndValue(
+                        getString(R.string.ForkSecureAuditLinkGuard),
+                        getString(R.string.ForkSecureAuditLinkGuardActive),
+                        false);
+            }
+
             SecureIdentityBackupManager.PreparedImport prepared =
                     SecureIdentityBackupManager.getPreparedImport(context);
             restoreCell.setText(getString(prepared == null
@@ -414,6 +490,18 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                     getString(R.string.ForkSecureVerificationCount), true);
             pausedCountCell.setText(
                     getString(R.string.ForkSecurePausedCount), false);
+            if (passcodeAuditCell != null) {
+                passcodeAuditCell.setText(getString(R.string.ForkSecureAuditPasscode), true);
+            }
+            if (usbAuditCell != null) {
+                usbAuditCell.setText(getString(R.string.ForkSecureAuditUsb), true);
+            }
+            if (screenAuditCell != null) {
+                screenAuditCell.setText(getString(R.string.ForkSecureAuditScreen), true);
+            }
+            if (linkGuardAuditCell != null) {
+                linkGuardAuditCell.setText(getString(R.string.ForkSecureAuditLinkGuard), false);
+            }
         }
     }
 

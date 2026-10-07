@@ -11355,6 +11355,18 @@
     <string name="ForkSecureBuildCopied">Build details copied to clipboard</string>
     <string name="ForkSecureGroupKeyRotateMenu">Rotate group key</string>
     <string name="ForkSecureGroupKeyRotated">Group encryption key rotated</string>
+    <string name="ForkSecureAuditHeader">Security &amp; Privacy Audit</string>
+    <string name="ForkSecureAuditPasscode">App Passcode Lock</string>
+    <string name="ForkSecureAuditPasscodeEnabled">Enabled (Protected)</string>
+    <string name="ForkSecureAuditPasscodeDisabled">Disabled (Recommended)</string>
+    <string name="ForkSecureAuditUsb">USB Debugging (ADB)</string>
+    <string name="ForkSecureAuditUsbWarning">Active (Risk on physical access)</string>
+    <string name="ForkSecureAuditUsbSafe">Disabled (Safe)</string>
+    <string name="ForkSecureAuditScreen">Screen Capture Protection</string>
+    <string name="ForkSecureAuditScreenProtected">Enforced in protected chats &amp; media</string>
+    <string name="ForkSecureAuditLinkGuard">Anti-Phishing Link Guard</string>
+    <string name="ForkSecureAuditLinkGuardActive">Active (Homoglyph &amp; spoofing check)</string>
+    <string name="ForkSecureAuditInfo">Audit reviews key device and app settings that affect privacy under physical or local access.</string>
 
     <string name="WelcomeMessage">Welcome Message</string>
     <string name="WelcomeMessageOff">Off</string>
