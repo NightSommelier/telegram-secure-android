@@ -438,7 +438,7 @@
     <string name="ForkSecureAuditHeader">Аудит безпеки пристрою та додатку</string>
     <string name="ForkSecureAuditPasscode">Код блокування додатку</string>
     <string name="ForkSecureAuditPasscodeEnabled">Увімкнено (захищено)</string>
-    <string name="ForkSecureAuditPasscodeDisabled">Вимкнено (рекомендовано)</string>
+    <string name="ForkSecureAuditPasscodeDisabled">Вимкнено (рекомендовано встановити)</string>
     <string name="ForkSecureAuditUsb">Налагодження по USB (ADB)</string>
     <string name="ForkSecureAuditUsbWarning">Увімкнено (ризик при фізичному доступі)</string>
     <string name="ForkSecureAuditUsbSafe">Вимкнено (безпечно)</string>
