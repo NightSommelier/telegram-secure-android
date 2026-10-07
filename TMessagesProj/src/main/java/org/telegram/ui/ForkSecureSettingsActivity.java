@@ -23,6 +23,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.R;
 import org.telegram.messenger.Utilities;
@@ -253,6 +255,29 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                 context, getResourceProvider());
         resetInfo.setText(getString(R.string.ForkSecureResetAllBody));
         content.addView(resetInfo, LayoutHelper.createLinear(
+                LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+
+        HeaderCell buildHeader = new HeaderCell(context, getResourceProvider());
+        buildHeader.setText(getString(R.string.ForkSecureBuildSection));
+        content.addView(buildHeader);
+
+        TextDetailSettingsCell buildVersionCell = new TextDetailSettingsCell(context);
+        buildVersionCell.setMultilineDetail(true);
+        buildVersionCell.setBackground(Theme.createSelectorWithBackgroundDrawable(
+                Theme.getColor(Theme.key_windowBackgroundWhite, getResourceProvider()),
+                Theme.getColor(Theme.key_listSelector, getResourceProvider())));
+        buildVersionCell.setTextAndValue(
+                getString(R.string.ForkSecureBuildVersionTitle),
+                getBuildVersionShortDisplay(),
+                false);
+        buildVersionCell.setOnClickListener(view -> copyBuildInfo());
+        content.addView(buildVersionCell, LayoutHelper.createLinear(
+                LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+
+        TextInfoPrivacyCell buildInfo = new TextInfoPrivacyCell(
+                context, getResourceProvider());
+        buildInfo.setText(getString(R.string.ForkSecureBuildInfoNotice));
+        content.addView(buildInfo, LayoutHelper.createLinear(
                 LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
 
         refreshState();
@@ -1294,5 +1319,62 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             this.input = input;
             this.visibility = visibility;
         }
+    }
+
+    private String getBuildVersionShortDisplay() {
+        StringBuilder sb = new StringBuilder();
+        String commit = BuildVars.FORK_SECURE_GIT_COMMIT;
+        String branch = BuildVars.FORK_SECURE_GIT_BRANCH;
+        if (!TextUtils.isEmpty(commit)) {
+            sb.append(commit);
+            if (!TextUtils.isEmpty(branch)) {
+                sb.append(" (").append(branch).append(")");
+            }
+        } else {
+            sb.append("dev");
+        }
+        try {
+            android.content.pm.PackageInfo pInfo =
+                    ApplicationLoader.applicationContext.getPackageManager().getPackageInfo(
+                            ApplicationLoader.applicationContext.getPackageName(), 0);
+            sb.append("\nTelegram v").append(pInfo.versionName)
+                    .append(" (").append(pInfo.versionCode).append(")");
+        } catch (Exception ignore) {}
+        return sb.toString();
+    }
+
+    private String getBuildInfoString() {
+        StringBuilder sb = new StringBuilder();
+        String commit = BuildVars.FORK_SECURE_GIT_COMMIT;
+        String branch = BuildVars.FORK_SECURE_GIT_BRANCH;
+        sb.append("Fork-Secure: ");
+        if (!TextUtils.isEmpty(commit)) {
+            sb.append(commit);
+            if (!TextUtils.isEmpty(branch)) {
+                sb.append(" (").append(branch).append(")");
+            }
+        } else {
+            sb.append("dev");
+        }
+        sb.append("\n");
+        try {
+            android.content.pm.PackageInfo pInfo =
+                    ApplicationLoader.applicationContext.getPackageManager().getPackageInfo(
+                            ApplicationLoader.applicationContext.getPackageName(), 0);
+            sb.append("Telegram: v").append(pInfo.versionName)
+                    .append(" (").append(pInfo.versionCode).append(")\n");
+        } catch (Exception ignore) {}
+        sb.append("ABI: ").append(Build.CPU_ABI).append("\n");
+        sb.append("OS: Android ").append(Build.VERSION.RELEASE)
+                .append(" (SDK ").append(Build.VERSION.SDK_INT).append(")\n");
+        sb.append("Crypto: Signal Protocol (Double Ratchet + Sender Keys)");
+        return sb.toString();
+    }
+
+    private void copyBuildInfo() {
+        AndroidUtilities.addToClipboard(getBuildInfoString());
+        BulletinFactory.of(this)
+                .createCopyBulletin(getString(R.string.ForkSecureBuildCopied))
+                .show();
     }
 }

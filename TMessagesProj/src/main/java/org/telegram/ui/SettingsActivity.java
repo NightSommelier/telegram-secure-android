@@ -954,7 +954,11 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
                     }
                     break;
             }
-            return formatString(R.string.TelegramVersion, String.format(Locale.US, "v%s (%d)\n%s", pInfo.versionName, code, abi));
+            String versionText = formatString(R.string.TelegramVersion, String.format(Locale.US, "v%s (%d)\n%s", pInfo.versionName, code, abi));
+            if (!TextUtils.isEmpty(BuildVars.FORK_SECURE_GIT_COMMIT)) {
+                versionText += "\nFork-Secure " + BuildVars.FORK_SECURE_GIT_COMMIT;
+            }
+            return versionText;
         } catch (Exception e) {
             FileLog.e(e);
         }
