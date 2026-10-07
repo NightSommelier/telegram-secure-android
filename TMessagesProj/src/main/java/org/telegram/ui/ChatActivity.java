@@ -22300,7 +22300,8 @@ public class ChatActivity extends BaseFragment implements
         TLRPC.Document document = message.getDocument();
         normalizeSecureTransportDocument(document);
         document.mime_type = TextUtils.isEmpty(message.forkSecureMediaMime)
-                ? "application/octet-stream" : message.forkSecureMediaMime;
+                ? (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO ? "video/mp4" : "application/octet-stream")
+                : message.forkSecureMediaMime;
         TLRPC.TL_documentAttributeFilename fileName =
                 new TLRPC.TL_documentAttributeFilename();
         // Keep the authenticated source name in MessageObject for explicit save/open actions,
@@ -22379,11 +22380,16 @@ public class ChatActivity extends BaseFragment implements
         message.attachPathExists = true;
         // applyNewText() regenerates the upstream layout and calls MessageObject.setType(), which
         // classifies the opaque Telegram transport as a generic Document. Run it before applying
-        // the authenticated process-local photo presentation so TYPE_PHOTO remains authoritative.
-        message.applyNewText(getString(message.forkSecureMediaKind
-                == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
-                        ? R.string.ForkSecureEncryptedPhoto
-                        : R.string.ForkSecureEncryptedFile));
+        // the authenticated process-local presentation so the true type remains authoritative.
+        if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
+                || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+            message.applyNewText("");
+        } else {
+            message.applyNewText(getString(message.forkSecureMediaKind
+                    == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                            ? R.string.ForkSecureEncryptedPhoto
+                            : R.string.ForkSecureEncryptedFile));
+        }
         if (message.forkSecureMediaKind
                 == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
             /*
@@ -22402,6 +22408,15 @@ public class ChatActivity extends BaseFragment implements
             message.photoThumbs.add(localPhoto);
             message.photoThumbsObject = document;
             message.type = MessageObject.TYPE_PHOTO;
+        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+            message.type = MessageObject.TYPE_VOICE;
+        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+            message.type = MessageObject.TYPE_ROUND_VIDEO;
+        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
+            message.type = MessageObject.TYPE_MUSIC;
+        } else if (!TextUtils.isEmpty(message.forkSecureMediaMime)
+                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/")) {
+            message.type = MessageObject.TYPE_VIDEO;
         }
         applySecureAlbumGrouping(message);
         message.forkSecureVerified = true;
