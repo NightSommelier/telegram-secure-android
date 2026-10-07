@@ -58,6 +58,7 @@ public final class SecureContentCodec {
     public static final int ATTACHMENT_PRESENTATION_AUDIO = 2;
     public static final int ATTACHMENT_PRESENTATION_VOICE = 3;
     public static final int ATTACHMENT_PRESENTATION_ROUND_VIDEO = 4;
+    public static final int ATTACHMENT_PRESENTATION_ANIMATION = 5;
 
     private SecureContentCodec() {}
 
@@ -689,6 +690,9 @@ public final class SecureContentCodec {
         if (photo) {
             return ATTACHMENT_PRESENTATION_FILE;
         }
+        if ("image/gif".equalsIgnoreCase(mimeType)) {
+            return ATTACHMENT_PRESENTATION_ANIMATION;
+        }
         if (mimeType != null && mimeType.startsWith("video/")) {
             return ATTACHMENT_PRESENTATION_VIDEO;
         }
@@ -755,6 +759,11 @@ public final class SecureContentCodec {
             if (!video || durationSeconds <= 0 || textPresent
                     || width <= 0 || height <= 0 || width != height || waveformPresent) {
                 throw new IllegalArgumentException("invalid secure round-video presentation");
+            }
+        } else if (kind == ATTACHMENT_PRESENTATION_ANIMATION) {
+            boolean gifOrVideo = video || "image/gif".equalsIgnoreCase(mimeType);
+            if (!gifOrVideo || textPresent || waveformPresent) {
+                throw new IllegalArgumentException("invalid secure animation presentation");
             }
         } else {
             throw new IllegalArgumentException("unknown secure attachment presentation");

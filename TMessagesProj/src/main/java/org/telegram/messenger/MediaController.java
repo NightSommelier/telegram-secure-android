@@ -3683,7 +3683,8 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             String ext = manifest.mimeType != null && manifest.mimeType.toLowerCase(Locale.ROOT).startsWith("video/")
                     ? ".mp4"
                     : (manifest.mimeType != null && manifest.mimeType.toLowerCase(Locale.ROOT).startsWith("audio/")
-                            ? ".ogg" : ".bin");
+                            ? ".ogg"
+                            : ("image/gif".equalsIgnoreCase(manifest.mimeType) ? ".gif" : ".bin"));
             File destinationDir = new File(ApplicationLoader.applicationContext.getCacheDir(), "fork-secure-attachments-in");
             if (!destinationDir.exists()) {
                 destinationDir.mkdirs();
@@ -3704,8 +3705,12 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                             : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO
                                     ? SecureMediaIndex.KIND_ROUND_VIDEO
                                     : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
-                                            ? SecureMediaIndex.KIND_MUSIC : SecureMediaIndex.KIND_FILE));
-                    secureMediaIndex.put(new SecureMediaIndex.Entry(
+                                            ? SecureMediaIndex.KIND_MUSIC
+                                            : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION || "image/gif".equalsIgnoreCase(manifest.mimeType)
+                                                    ? SecureMediaIndex.KIND_GIF
+                                                    : (manifest.mimeType != null && manifest.mimeType.toLowerCase(Locale.ROOT).startsWith("video/")
+                                                            ? SecureMediaIndex.KIND_VIDEO : SecureMediaIndex.KIND_FILE))));
+                    SecureMediaIndex.Entry entry = new SecureMediaIndex.Entry(
                             messageObject.getId(),
                             messageObject.messageOwner.date,
                             carrier,
@@ -3715,7 +3720,9 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                             manifest.mimeType,
                             manifest.caption,
                             manifest.width,
-                            manifest.height));
+                            manifest.height);
+                    secureMediaIndex.put(entry);
+                    messageObject.applyForkSecureMediaIndex(entry);
                 } catch (Throwable ignore) {
                 }
                 return destination;

@@ -22240,6 +22240,8 @@ public class ChatActivity extends BaseFragment implements
         }
         boolean secureVideo = message.forkSecureMediaMime != null
                 && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/");
+        boolean isAnimation = message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime);
         int indexKind;
         if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
             indexKind = SecureMediaIndex.KIND_PHOTO;
@@ -22249,6 +22251,8 @@ public class ChatActivity extends BaseFragment implements
             indexKind = SecureMediaIndex.KIND_VOICE;
         } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
             indexKind = SecureMediaIndex.KIND_MUSIC;
+        } else if (isAnimation) {
+            indexKind = SecureMediaIndex.KIND_GIF;
         } else if (secureVideo) {
             indexKind = SecureMediaIndex.KIND_VIDEO;
         } else {
@@ -22276,7 +22280,7 @@ public class ChatActivity extends BaseFragment implements
                     message.forkSecureMediaWidth,
                     message.forkSecureMediaHeight));
             int mediaDataType = MediaDataController.MEDIA_FILE;
-            if (indexKind == SecureMediaIndex.KIND_PHOTO || indexKind == SecureMediaIndex.KIND_VIDEO || indexKind == SecureMediaIndex.KIND_ROUND_VIDEO) {
+            if (indexKind == SecureMediaIndex.KIND_PHOTO || indexKind == SecureMediaIndex.KIND_VIDEO || indexKind == SecureMediaIndex.KIND_ROUND_VIDEO || indexKind == SecureMediaIndex.KIND_GIF) {
                 mediaDataType = MediaDataController.MEDIA_PHOTOVIDEO;
             } else if (indexKind == SecureMediaIndex.KIND_VOICE) {
                 mediaDataType = MediaDataController.MEDIA_AUDIO;
@@ -22299,15 +22303,18 @@ public class ChatActivity extends BaseFragment implements
         }
         TLRPC.Document document = message.getDocument();
         normalizeSecureTransportDocument(document);
+        boolean isRoundVideo = message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
+        boolean isAnimation = message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime);
         document.mime_type = TextUtils.isEmpty(message.forkSecureMediaMime)
-                ? (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO ? "video/mp4" : "application/octet-stream")
-                : message.forkSecureMediaMime;
+                ? (isRoundVideo ? "video/mp4" : "application/octet-stream")
+                : (isRoundVideo ? "video/mp4" : message.forkSecureMediaMime);
         TLRPC.TL_documentAttributeFilename fileName =
                 new TLRPC.TL_documentAttributeFilename();
         // Keep the authenticated source name in MessageObject for explicit save/open actions,
         // but never expose it in the ordinary chat cell. The transport and local preview both
         // use an opaque display name.
-        fileName.file_name = "file";
+        fileName.file_name = isAnimation ? "animation.gif" : (isRoundVideo ? "round.mp4" : "file");
         document.attributes.add(fileName);
         if (message.forkSecureMediaPresentation
                         == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
@@ -22315,7 +22322,7 @@ public class ChatActivity extends BaseFragment implements
                         == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
             TLRPC.TL_documentAttributeAudio audio =
                     new TLRPC.TL_documentAttributeAudio();
-            audio.duration = message.forkSecureMediaDurationSeconds;
+            audio.duration = Math.max(1, message.forkSecureMediaDurationSeconds);
             audio.title = TextUtils.isEmpty(message.forkSecureMediaTitle)
                     ? "" : message.forkSecureMediaTitle;
             audio.performer = TextUtils.isEmpty(message.forkSecureMediaPerformer)
@@ -22340,28 +22347,45 @@ public class ChatActivity extends BaseFragment implements
             }
             document.attributes.add(audio);
         }
-        if (!TextUtils.isEmpty(message.forkSecureMediaMime)
-                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/")) {
+        if (isRoundVideo
+                || (!TextUtils.isEmpty(message.forkSecureMediaMime)
+                        && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/"))
+                || isAnimation) {
             TLRPC.TL_documentAttributeVideo video =
                     new TLRPC.TL_documentAttributeVideo();
-            video.w = message.forkSecureMediaWidth > 0 ? message.forkSecureMediaWidth : 1;
-            video.h = message.forkSecureMediaHeight > 0 ? message.forkSecureMediaHeight : 1;
-            video.duration = 0;
-            video.round_message = message.forkSecureMediaPresentation
-                    == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
-            video.supports_streaming = true;
+            int width = message.forkSecureMediaWidth > 0 ? message.forkSecureMediaWidth : 1;
+            int height = message.forkSecureMediaHeight > 0 ? message.forkSecureMediaHeight : 1;
+            if (isRoundVideo) {
+                int side = Math.min(width, height);
+                if (side <= 0) side = 360;
+                width = side;
+                height = side;
+                message.forkSecureMediaWidth = side;
+                message.forkSecureMediaHeight = side;
+            }
+            video.w = width;
+            video.h = height;
+            video.duration = Math.max(0, message.forkSecureMediaDurationSeconds);
+            video.round_message = isRoundVideo;
+            video.supports_streaming = !isRoundVideo;
             if (message.forkSecureMediaWidth <= 0
                     || message.forkSecureMediaHeight <= 0
-                    || video.duration <= 0) {
+                    || (!isAnimation && video.duration <= 0)) {
                 SendMessagesHelper.fillVideoAttribute(
                         message.forkSecureMediaPath, video, null);
                 if (video.w > 0 && video.h > 0) {
+                    if (isRoundVideo) {
+                        int side = Math.min(video.w, video.h);
+                        video.w = side;
+                        video.h = side;
+                    }
                     message.forkSecureMediaWidth = video.w;
                     message.forkSecureMediaHeight = video.h;
                 }
+                video.round_message = isRoundVideo;
             }
             document.attributes.add(video);
-            if (video.nosound || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime)) {
+            if (isAnimation || video.nosound || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime)) {
                 document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
             }
             // The encrypted transport has no Telegram thumbnail. Keep an authenticated local
@@ -22376,13 +22400,21 @@ public class ChatActivity extends BaseFragment implements
             message.photoThumbs = new ArrayList<>();
             message.photoThumbs.add(localVideo);
             message.photoThumbsObject = document;
+            if (isRoundVideo || isAnimation) {
+                if (document.thumbs == null) {
+                    document.thumbs = new ArrayList<>();
+                }
+                document.thumbs.clear();
+                document.thumbs.add(localVideo);
+            }
         }
         message.attachPathExists = true;
         // applyNewText() regenerates the upstream layout and calls MessageObject.setType(), which
         // classifies the opaque Telegram transport as a generic Document. Run it before applying
         // the authenticated process-local presentation so the true type remains authoritative.
         if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
-                || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+                || isRoundVideo
+                || isAnimation) {
             message.applyNewText("");
         } else {
             message.applyNewText(getString(message.forkSecureMediaKind
@@ -22410,8 +22442,10 @@ public class ChatActivity extends BaseFragment implements
             message.type = MessageObject.TYPE_PHOTO;
         } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
             message.type = MessageObject.TYPE_VOICE;
-        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+        } else if (isRoundVideo) {
             message.type = MessageObject.TYPE_ROUND_VIDEO;
+        } else if (isAnimation) {
+            message.type = MessageObject.TYPE_GIF;
         } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
             message.type = MessageObject.TYPE_MUSIC;
         } else if (!TextUtils.isEmpty(message.forkSecureMediaMime)
@@ -44621,6 +44655,10 @@ public class ChatActivity extends BaseFragment implements
                 }
                 if (message.isRoundVideo() || message.isVoice() || message.isMusic()) {
                     needPlayMessage(cell, message, false);
+                    return;
+                }
+                if (message.isGif() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
+                    openForkSecurePhotoViewer(cell, message, verifiedFile);
                     return;
                 }
                 if (message.forkSecureMediaKind

@@ -342,6 +342,24 @@ public final class SecureContentCodecTest {
     }
 
     @Test
+    public void animationPresentationRoundTripsCleanly() {
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16], new byte[32], new byte[12], new byte[32],
+                123, 123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "animation.gif", "image/gif", "", 320, 240, false,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION, 0, "", "");
+        byte[] encoded = SecureContentCodec.encodeAttachment(attachment);
+
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(encoded);
+
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION,
+                decoded.attachment.presentation);
+        assertEquals(320, decoded.attachment.width);
+        assertEquals(240, decoded.attachment.height);
+        assertEquals("image/gif", decoded.attachment.mimeType);
+    }
+
+    @Test
     public void malformedAttachmentPresentationFailsClosed() {
         SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
                 new byte[16], new byte[32], new byte[12], new byte[32],

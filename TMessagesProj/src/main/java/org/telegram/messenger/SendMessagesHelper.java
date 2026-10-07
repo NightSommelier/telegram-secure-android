@@ -2587,36 +2587,65 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         String mimeType = document != null && !TextUtils.isEmpty(document.mime_type)
                 ? document.mime_type
                 : getForkSecureMimeTypeForPath(path);
-        int kind = mimeType != null && mimeType.startsWith("video/")
-                ? SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
-                : mimeType != null && mimeType.startsWith("audio/")
-                        ? SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
-                        : SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
-        if (videoEditedInfo != null && videoEditedInfo.roundVideo) {
-            kind = SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
+        boolean isAnimation = "image/gif".equalsIgnoreCase(mimeType);
+        if (videoEditedInfo != null && videoEditedInfo.muted) {
+            isAnimation = true;
         }
+        if (document != null && document.attributes != null) {
+            for (int i = 0; i < document.attributes.size(); i++) {
+                TLRPC.DocumentAttribute attr = document.attributes.get(i);
+                if (attr instanceof TLRPC.TL_documentAttributeAnimated) {
+                    isAnimation = true;
+                    break;
+                }
+            }
+        }
+        int kind = isAnimation
+                ? SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                : (mimeType != null && mimeType.startsWith("video/")
+                        ? SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
+                        : (mimeType != null && mimeType.startsWith("audio/")
+                                ? SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
+                                : SecureContentCodec.ATTACHMENT_PRESENTATION_FILE));
         int durationSeconds = 0;
         String title = "";
         String performer = "";
         byte[] waveform = null;
+        if (videoEditedInfo != null) {
+            if (videoEditedInfo.roundVideo) {
+                kind = SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
+            }
+            if (durationSeconds == 0) {
+                if (videoEditedInfo.estimatedDuration > 0) {
+                    durationSeconds = (int) Math.max(1, Math.ceil(videoEditedInfo.estimatedDuration / 1000.0));
+                } else if (videoEditedInfo.originalDuration > 0) {
+                    durationSeconds = (int) Math.max(1, Math.ceil(videoEditedInfo.originalDuration / 1000.0));
+                } else if (videoEditedInfo.endTime > videoEditedInfo.startTime && videoEditedInfo.startTime >= 0) {
+                    durationSeconds = (int) Math.max(1, Math.ceil((videoEditedInfo.endTime - videoEditedInfo.startTime) / 1000.0));
+                }
+            }
+        }
         if (document != null) {
             for (int i = 0; i < document.attributes.size(); i++) {
                 TLRPC.DocumentAttribute attribute = document.attributes.get(i);
                 if (attribute instanceof TLRPC.TL_documentAttributeAudio) {
-                    durationSeconds = (int) Math.max(0, Math.ceil(attribute.duration));
-                    title = attribute.title;
-                    performer = attribute.performer;
-                    waveform = attribute.waveform;
-                    if (attribute.voice && durationSeconds > 0) {
+                    if (attribute.voice) {
                         kind = SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
+                        durationSeconds = (int) Math.max(1, Math.ceil(attribute.duration));
                         title = "";
                         performer = "";
+                    } else {
+                        durationSeconds = (int) Math.max(0, Math.ceil(attribute.duration));
+                        title = attribute.title;
+                        performer = attribute.performer;
                     }
+                    waveform = attribute.waveform;
                 } else if (attribute instanceof TLRPC.TL_documentAttributeVideo) {
                     durationSeconds = (int) Math.max(0,
                             Math.ceil(attribute.duration));
-                    if (attribute.round_message && durationSeconds > 0) {
+                    if (attribute.round_message) {
                         kind = SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
+                        durationSeconds = Math.max(1, durationSeconds);
                     }
                 }
             }
@@ -2628,9 +2657,18 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             try {
                 TLRPC.TL_documentAttributeVideo video = new TLRPC.TL_documentAttributeVideo();
                 fillVideoAttribute(path, video, null);
-                durationSeconds = (int) Math.round(video.duration);
+                durationSeconds = (int) Math.max(kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO ? 1 : 0, Math.round(video.duration));
             } catch (Throwable ignore) {
             }
+        }
+        if (kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+            durationSeconds = Math.max(1, durationSeconds);
+            title = "";
+            performer = "";
+        } else if (kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
+            title = "";
+            performer = "";
+            waveform = null;
         }
         if (kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
                 && (waveform == null || waveform.length == 0)
@@ -3241,6 +3279,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     ForkSecureAttachmentPresentation presentation =
                             inferForkSecureAttachmentPresentation(
                                     resolved, mimeType, width, height);
+                    if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+                        int side = Math.min(width, height);
+                        if (side <= 0) {
+                            side = 360;
+                        }
+                        width = side;
+                        height = side;
+                        mimeType = "video/mp4";
+                    }
                     SecureContentCodec.Attachment manifest =
                             SecureMediaCrypto.encryptAttachmentFile(
                                     resolved.file,
@@ -3299,6 +3346,38 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     opaqueOriginalPaths.add(encryptedFile.getAbsolutePath() + '.'
                             + Long.toUnsignedString(Utilities.random.nextLong()));
                     carriers.add(carrier);
+                    File localPlaintextFile = resolved.file;
+                    if (resolved.temporary) {
+                        File persistentDir = new File(
+                                ApplicationLoader.applicationContext.getCacheDir(),
+                                "fork-secure-attachments-out");
+                        if (!persistentDir.exists()) {
+                            persistentDir.mkdirs();
+                        }
+                        String ext = mimeType.startsWith("video/") ? ".mp4" : (mimeType.startsWith("audio/") ? ".ogg" : ".bin");
+                        File persistentCopy = new File(persistentDir, Utilities.bytesToHex(manifest.mediaId) + ext);
+                        try {
+                            AndroidUtilities.copyFile(resolved.file, persistentCopy);
+                            if (persistentCopy.isFile()) {
+                                localPlaintextFile = persistentCopy;
+                            }
+                        } catch (Throwable ignore) {
+                        }
+                    }
+                    MessageObject.cacheOutgoingForkSecureMedia(
+                            carrier,
+                            localPlaintextFile.getAbsolutePath(),
+                            resolved.photo ? MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO : MessageObject.FORK_SECURE_MEDIA_KIND_FILE,
+                            width,
+                            height,
+                            resolved.fileName,
+                            mimeType,
+                            SecureContentCodec.displayCaption(resolved.caption),
+                            presentation.kind,
+                            presentation.durationSeconds,
+                            presentation.title,
+                            presentation.performer,
+                            presentation.waveform);
                 } catch (RuntimeException error) {
                     FileLog.e(error);
                     showForkSecureError(error instanceof IllegalArgumentException
@@ -3570,6 +3649,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (kind == -1) {
             if (source.photo) {
                 kind = SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
+            } else if ("image/gif".equalsIgnoreCase(mimeType)) {
+                kind = SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION;
             } else if (mimeType.startsWith("video/")) {
                 kind = SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO;
             } else if (mimeType.startsWith("audio/")) {
@@ -3587,11 +3668,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
                     performer = retriever.extractMetadata(
                             MediaMetadataRetriever.METADATA_KEY_ARTIST);
-                    if (durationSeconds > 0
-                            && ("audio/ogg".equals(mimeType)
-                                    || "audio/opus".equals(mimeType))
+                    if (("audio/ogg".equals(mimeType)
+                            || "audio/opus".equals(mimeType))
                             && MediaController.isOpusFile(source.file.getAbsolutePath()) == 1) {
                         kind = SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
+                        durationSeconds = Math.max(1, durationSeconds);
                         title = "";
                         performer = "";
                     }
@@ -3615,6 +3696,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         }
         if (kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
                 || kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+            durationSeconds = Math.max(1, durationSeconds);
+            title = "";
+            performer = "";
+        } else if (kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
             title = "";
             performer = "";
         }
@@ -6169,7 +6254,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         sendMessageParams.payStars,
                         sendMessageParams.monoForumPeer,
                         sendMessageParams.suggestionParams,
-                        ttl)) {
+                        ttl,
+                        sendMessageParams.videoEditedInfo)) {
             return;
         }
         if (!forkSecureCarrier && isForkSecureProtectedPeer(peer)) {
