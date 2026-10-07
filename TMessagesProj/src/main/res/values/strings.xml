@@ -11344,6 +11344,8 @@
     <string name="ForkSecureExternalLinkBody">You are in an end-to-end encrypted chat. Opening this link will launch an external browser outside the encrypted sandbox and expose your IP address to %1$s.\n\nDestination:\n%2$s</string>
     <string name="ForkSecureOpenAnyway">Open anyway</string>
     <string name="ForkSecureCopySafeLink">Copy address</string>
+    <string name="ForkSecureGroupKeyDistributed">Group encryption key distributed</string>
+    <string name="ForkSecureGroupKeyReceived">Received group encryption key</string>
 
     <string name="WelcomeMessage">Welcome Message</string>
     <string name="WelcomeMessageOff">Off</string>

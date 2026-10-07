@@ -49,6 +49,10 @@ public final class SecureChatEngine {
             "\u0000fork-secure-display:contact:v1";
     public static final String LOCATION_DISPLAY =
             "\u0000fork-secure-display:location:v1";
+    public static final String GROUP_KEY_DISTRIBUTED_DISPLAY =
+            "\u0000fork-secure-display:group-key-distributed:v1";
+    public static final String GROUP_KEY_RECEIVED_DISPLAY =
+            "\u0000fork-secure-display:group-key-received:v1";
     private static final Object DECRYPT_LOCK = new Object();
     private static final Object ENCRYPT_LOCK = new Object();
 
@@ -207,6 +211,14 @@ public final class SecureChatEngine {
         } catch (Exception e) {
             throw new SecureChatException("cannot process group sender key distribution", e);
         }
+    }
+
+    /** Enables encryption for a group dialog (dialogId < 0). */
+    public void enableGroup() {
+        if (peerUserId >= 0) {
+            throw new IllegalArgumentException("peer dialog id must be negative for groups");
+        }
+        state.markPaired(account, peerUserId);
     }
 
     /**
@@ -408,6 +420,10 @@ public final class SecureChatEngine {
     }
 
     public SecureContentCodec.StaticSticker decryptStaticStickerManifest(String carrier) {
+        return decryptStaticStickerManifest(carrier, 0);
+    }
+
+    public SecureContentCodec.StaticSticker decryptStaticStickerManifest(String carrier, long senderUserId) {
         synchronized (DECRYPT_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
             if (decoded == null || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
@@ -416,11 +432,19 @@ public final class SecureChatEngine {
             try {
                 byte[] content = localContent.loadIncoming(carrier);
                 if (content == null) {
-                    int libsignalType = decoded.type == SecureCarrierCodec.TYPE_PREKEY
-                            ? LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
-                            : LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
+                    int libsignalType;
+                    if (decoded.type == SecureCarrierCodec.TYPE_PREKEY) {
+                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY;
+                    } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
+                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY;
+                    } else {
+                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
+                    }
+                    SignalProtocolAddress decryptAddress = (senderUserId > 0)
+                            ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
+                            : peerAddress;
                     content = sessions.decrypt(
-                            peerAddress,
+                            decryptAddress,
                             new LibsignalSessionAdapter.EncryptedMessage(
                                     libsignalType, decoded.payload));
                     SecureContentCodec.StaticSticker sticker = requireStaticSticker(content);
@@ -470,8 +494,10 @@ public final class SecureChatEngine {
             SessionRecord previousSession = null;
             String firstCarrier = null;
             try {
-                previousSession = new SessionRecord(
-                        store.loadSession(peerAddress).serialize());
+                if (peerUserId >= 0) {
+                    previousSession = new SessionRecord(
+                            store.loadSession(peerAddress).serialize());
+                }
                 firstCarrier = encryptAndRemember(content, display);
                 if (firstCarrier.length() > maxCaptionCharacters) {
                     throw new IllegalArgumentException(
@@ -516,14 +542,17 @@ public final class SecureChatEngine {
             byte[] previousSession = null;
             String carrier = null;
             try {
-                previousSession = store.loadSession(peerAddress).serialize();
+                if (peerUserId >= 0) {
+                    previousSession = store.loadSession(peerAddress).serialize();
+                }
                 carrier = encryptAndRemember(content, display);
                 if (carrier.length() > maxCaptionCharacters) {
                     throw new IllegalArgumentException(
                             "secure media session is awaiting its encrypted reply");
                 }
                 localContent.rememberOutgoing(carrier, content);
-                byte[] nextSession = store.loadSession(peerAddress).serialize();
+                byte[] nextSession = (peerUserId >= 0)
+                        ? store.loadSession(peerAddress).serialize() : null;
                 return new AttachmentEditTransport(carrier, previousSession, nextSession);
             } catch (Exception error) {
                 try {
@@ -545,7 +574,7 @@ public final class SecureChatEngine {
 
     /** Rolls back a caption-edit ratchet step only if no later secure send used it. */
     public void rollbackAttachmentEdit(AttachmentEditTransport transport) {
-        if (transport == null) {
+        if (transport == null || peerUserId < 0 || transport.previousSession == null) {
             return;
         }
         synchronized (ENCRYPT_LOCK) {
@@ -585,13 +614,16 @@ public final class SecureChatEngine {
             byte[] previousSession = null;
             String carrier = null;
             try {
-                previousSession = store.loadSession(peerAddress).serialize();
+                if (peerUserId >= 0) {
+                    previousSession = store.loadSession(peerAddress).serialize();
+                }
                 carrier = encryptAndRemember(content, plaintext);
                 if (carrier.length() > maxTextCharacters) {
                     throw new IllegalArgumentException(
                             "secure text carrier exceeds maximum allowed characters");
                 }
-                byte[] nextSession = store.loadSession(peerAddress).serialize();
+                byte[] nextSession = (peerUserId >= 0)
+                        ? store.loadSession(peerAddress).serialize() : null;
                 return new TextEditTransport(carrier, previousSession, nextSession);
             } catch (Exception error) {
                 try {
@@ -612,7 +644,7 @@ public final class SecureChatEngine {
 
     /** Rolls back a text-edit ratchet step only if no later secure send used it. */
     public void rollbackTextEdit(TextEditTransport transport) {
-        if (transport == null) {
+        if (transport == null || peerUserId < 0 || transport.previousSession == null) {
             return;
         }
         synchronized (ENCRYPT_LOCK) {
@@ -708,6 +740,10 @@ public final class SecureChatEngine {
     }
 
     public SecureContentCodec.Attachment decryptAttachmentManifest(String carrier) {
+        return decryptAttachmentManifest(carrier, 0);
+    }
+
+    public SecureContentCodec.Attachment decryptAttachmentManifest(String carrier, long senderUserId) {
         synchronized (DECRYPT_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
             if (decoded == null || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
@@ -716,11 +752,19 @@ public final class SecureChatEngine {
             try {
                 byte[] content = localContent.loadIncoming(carrier);
                 if (content == null) {
-                    int libsignalType = decoded.type == SecureCarrierCodec.TYPE_PREKEY
-                            ? LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
-                            : LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
+                    int libsignalType;
+                    if (decoded.type == SecureCarrierCodec.TYPE_PREKEY) {
+                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY;
+                    } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
+                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY;
+                    } else {
+                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
+                    }
+                    SignalProtocolAddress decryptAddress = (senderUserId > 0)
+                            ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
+                            : peerAddress;
                     content = sessions.decrypt(
-                            peerAddress,
+                            decryptAddress,
                             new LibsignalSessionAdapter.EncryptedMessage(
                                     libsignalType, decoded.payload));
                     SecureContentCodec.Attachment attachment =
@@ -1005,6 +1049,10 @@ public final class SecureChatEngine {
      * Keystore-encrypted display copy.</p>
      */
     public DialogPreview resolveDialogPreview(String carrier, boolean outgoing) {
+        return resolveDialogPreview(carrier, outgoing, 0);
+    }
+
+    public DialogPreview resolveDialogPreview(String carrier, boolean outgoing, long senderUserId) {
         SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
         if (decoded == null) {
             return null;
@@ -1016,6 +1064,13 @@ public final class SecureChatEngine {
                             : DialogPreview.Kind.PAIRING_OFFER_RECEIVED,
                     null);
         }
+        if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
+            return new DialogPreview(
+                    outgoing
+                            ? DialogPreview.Kind.GROUP_KEY_DISTRIBUTED
+                            : DialogPreview.Kind.GROUP_KEY_RECEIVED,
+                    null);
+        }
         if (outgoing) {
             String local = getOutgoingText(carrier);
             if (local == null) {
@@ -1025,7 +1080,7 @@ public final class SecureChatEngine {
                     controlPreviewKind(local),
                     isControlDisplay(local) ? null : local);
         }
-        String plaintext = decryptText(carrier);
+        String plaintext = decryptText(carrier, senderUserId);
         return new DialogPreview(
                 controlPreviewKind(plaintext),
                 isControlDisplay(plaintext) ? null : plaintext);
@@ -1039,11 +1094,17 @@ public final class SecureChatEngine {
         return PAIRING_READY_DISPLAY.equals(value);
     }
 
+    public static boolean isGroupKeyStatusDisplay(String value) {
+        return GROUP_KEY_DISTRIBUTED_DISPLAY.equals(value)
+                || GROUP_KEY_RECEIVED_DISPLAY.equals(value);
+    }
+
     /** True only for authenticated pairing lifecycle text rendered as a local service row. */
     public static boolean isPairingStatusDisplay(String value) {
         return isPairingAcknowledgementDisplay(value)
                 || isPairingReadyDisplay(value)
-                || isPairingRejectionDisplay(value);
+                || isPairingRejectionDisplay(value)
+                || isGroupKeyStatusDisplay(value);
     }
 
     public static boolean isPairingRejectionDisplay(String value) {
@@ -1082,6 +1143,7 @@ public final class SecureChatEngine {
         return isPairingAcknowledgementDisplay(value)
                 || isPairingReadyDisplay(value)
                 || isPairingRejectionDisplay(value)
+                || isGroupKeyStatusDisplay(value)
                 || isStaticStickerDisplay(value)
                 || isAttachmentDisplay(value)
                 || isControlDeleteDisplay(value)
@@ -1096,6 +1158,12 @@ public final class SecureChatEngine {
         }
         if (isPairingRejectionDisplay(value)) {
             return DialogPreview.Kind.PAIRING_REJECTED;
+        }
+        if (GROUP_KEY_DISTRIBUTED_DISPLAY.equals(value)) {
+            return DialogPreview.Kind.GROUP_KEY_DISTRIBUTED;
+        }
+        if (GROUP_KEY_RECEIVED_DISPLAY.equals(value)) {
+            return DialogPreview.Kind.GROUP_KEY_RECEIVED;
         }
         if (isStaticStickerDisplay(value)) {
             return DialogPreview.Kind.STATIC_STICKER;
@@ -1123,6 +1191,8 @@ public final class SecureChatEngine {
             PLAINTEXT,
             PAIRING_ACK,
             PAIRING_REJECTED,
+            GROUP_KEY_DISTRIBUTED,
+            GROUP_KEY_RECEIVED,
             STATIC_STICKER,
             FILE,
             PHOTO,

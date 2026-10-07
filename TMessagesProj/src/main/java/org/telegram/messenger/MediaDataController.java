@@ -4421,7 +4421,7 @@ public class MediaDataController extends BaseController {
     private int[] adjustForkSecureMediaCounts(
             long dialogId, long topicId, int[] source) {
         int[] result = source.clone();
-        if (topicId != 0 || !DialogObject.isUserDialog(dialogId)) {
+        if (topicId != 0 || (!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId))) {
             return result;
         }
         try {
@@ -4609,7 +4609,7 @@ public class MediaDataController extends BaseController {
                 }
                 ArrayList<MessageObject> objects = new ArrayList<>();
                 SecureMediaIndex secureMediaIndex =
-                        DialogObject.isUserDialog(dialogId)
+                        (DialogObject.isUserDialog(dialogId) || DialogObject.isChatDialog(dialogId))
                                 ? new SecureMediaIndex(
                                         ApplicationLoader.applicationContext,
                                         currentAccount,
@@ -5028,7 +5028,7 @@ public class MediaDataController extends BaseController {
                     state2 = getMessagesStorage().getDatabase().executeFast("REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
                 }
                 SecureMediaIndex secureMediaIndex =
-                        topicId == 0 && DialogObject.isUserDialog(uid)
+                        topicId == 0 && (DialogObject.isUserDialog(uid) || DialogObject.isChatDialog(uid))
                                 ? new SecureMediaIndex(
                                         ApplicationLoader.applicationContext,
                                         currentAccount,

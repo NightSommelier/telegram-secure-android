@@ -256,7 +256,9 @@ public class MessageObject {
                 && !(messageOwner instanceof TLRPC.TL_message_secret)
                 && !(messageOwner instanceof TLRPC.TL_message_secret_layer72)
                 && messageOwner.peer_id != null
-                && messageOwner.peer_id.user_id != 0
+                && (messageOwner.peer_id.user_id != 0
+                        || messageOwner.peer_id.chat_id != 0
+                        || messageOwner.peer_id.channel_id != 0)
                 && SecureCarrierCodec.isMarked(messageOwner.message);
     }
 

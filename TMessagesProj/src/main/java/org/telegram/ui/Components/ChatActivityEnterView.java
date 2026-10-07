@@ -7897,7 +7897,7 @@ public class ChatActivityEnterView extends FrameLayout implements
             }
         }
         // This overlay is intentionally separate from Telegram's native Secret Chats.
-        if (DialogObject.isUserDialog(dialog_id)
+        if ((DialogObject.isUserDialog(dialog_id) || DialogObject.isChatDialog(dialog_id))
                 && text.length() != 0
                 && !(parentFragment instanceof ChatActivity
                 && ((ChatActivity) parentFragment).isSavedMessagesSecureModeEnabled())) {
@@ -7944,9 +7944,19 @@ public class ChatActivityEnterView extends FrameLayout implements
                         notifySecureModeChanged();
                         return true;
                     }
-                    text = secureChat.createPairingOffer();
+                    if (DialogObject.isChatDialog(dialog_id)) {
+                        secureChat.enableGroup();
+                        text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
+                        notify = false;
+                        notifySecureModeChanged();
+                    } else {
+                        text = secureChat.createPairingOffer();
+                        notify = false;
+                        notifySecureModeChanged();
+                    }
+                } else if ("/secure-group-key".equals(entered) && DialogObject.isChatDialog(dialog_id)) {
+                    text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
                     notify = false;
-                    notifySecureModeChanged();
                 } else if ("/secure-off".equals(entered)) {
                     secureChat.disable();
                     notifySecureModeChanged();

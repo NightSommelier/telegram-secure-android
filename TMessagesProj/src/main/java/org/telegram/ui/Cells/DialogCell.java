@@ -2968,13 +2968,20 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
     private void applyForkSecureDialogPreview() {
         if (message == null
                 || message.messageOwner == null
-                || !DialogObject.isUserDialog(currentDialogId)
+                || (!DialogObject.isUserDialog(currentDialogId) && !DialogObject.isChatDialog(currentDialogId))
                 || currentDialogId == UserConfig.getInstance(currentAccount).getClientUserId()) {
             return;
         }
-        TLRPC.User peer = MessagesController.getInstance(currentAccount).getUser(currentDialogId);
-        if (peer == null || peer.bot || UserObject.isService(peer.id)) {
-            return;
+        if (DialogObject.isUserDialog(currentDialogId)) {
+            TLRPC.User peer = MessagesController.getInstance(currentAccount).getUser(currentDialogId);
+            if (peer == null || peer.bot || UserObject.isService(peer.id)) {
+                return;
+            }
+        } else if (DialogObject.isChatDialog(currentDialogId)) {
+            TLRPC.Chat chat = MessagesController.getInstance(currentAccount).getChat(-currentDialogId);
+            if (chat == null || ChatObject.isChannelAndNotMegaGroup(chat)) {
+                return;
+            }
         }
         String carrier = message.messageOwner.message;
         if (carrier == null || !carrier.startsWith(SecureCarrierCodec.PREFIX)) {
@@ -2994,7 +3001,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 securePreviewPeerId = currentDialogId;
             }
             SecureChatEngine.DialogPreview preview = securePreviewEngine.resolveDialogPreview(
-                    carrier, message.isOutOwner());
+                    carrier, message.isOutOwner(), message.getFromChatId());
             if (preview == null) {
                 return;
             }
@@ -3021,6 +3028,12 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.PAIRING_OFFER_RECEIVED) {
                 message.applyNewText(getString(R.string.ForkSecurePairingOfferReceived));
+            } else if (preview.kind
+                    == SecureChatEngine.DialogPreview.Kind.GROUP_KEY_DISTRIBUTED) {
+                message.applyNewText(getString(R.string.ForkSecureGroupKeyDistributed));
+            } else if (preview.kind
+                    == SecureChatEngine.DialogPreview.Kind.GROUP_KEY_RECEIVED) {
+                message.applyNewText(getString(R.string.ForkSecureGroupKeyReceived));
             } else {
                 message.applyNewText(getString(R.string.ForkSecureOutgoingUnavailable));
             }
@@ -3039,7 +3052,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
 
     private void applyForkSecureDialogMediaPreview() {
         if (message == null
-                || !DialogObject.isUserDialog(currentDialogId)
+                || (!DialogObject.isUserDialog(currentDialogId) && !DialogObject.isChatDialog(currentDialogId))
                 || currentDialogId == UserConfig.getInstance(currentAccount).getClientUserId()) {
             return;
         }
