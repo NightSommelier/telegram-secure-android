@@ -20163,7 +20163,7 @@ public class ChatActivity extends BaseFragment implements
             rightIcon = getThemedDrawable(Theme.key_drawable_muteIconDrawable);
         }
         Drawable leftIcon = null;
-        if (currentEncryptedChat != null || isForkSecureActive()) {
+        if (currentEncryptedChat != null) {
             leftIcon = getThemedDrawable(Theme.key_drawable_lockIconDrawable);
         } else if (currentChat != null) {
             leftIcon = avatarContainer.getBotVerificationDrawable(DialogObject.getBotVerificationIcon(currentChat), false);
@@ -21744,7 +21744,11 @@ public class ChatActivity extends BaseFragment implements
         if (message.restoreReadyForkSecureMedia()
                 && !TextUtils.isEmpty(message.forkSecureMediaName)
                 && !TextUtils.isEmpty(message.forkSecureMediaMime)
-                && message.forkSecureAlbumId != null) {
+                && (message.forkSecureAlbumId != null
+                        || message.getGroupId() == 0
+                        || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
+                        || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO)) {
+            indexPreparedSecureMedia(message);
             applyPreparedSecureAttachmentPresentation(message);
             return;
         }
@@ -21948,7 +21952,8 @@ public class ChatActivity extends BaseFragment implements
                 manifest.mediaId, manifest.key, manifest.nonce, manifest.ciphertextSha256,
                 manifest.plaintextSize, manifest.ciphertextSize, manifest.fileName,
                 manifest.mimeType, displayCaption,
-                manifest.width, manifest.height, manifest.photo);
+                manifest.width, manifest.height, manifest.photo,
+                manifest.presentation, manifest.durationSeconds, manifest.title, manifest.performer, manifest.waveform);
     }
 
     private void applySavedSecureStickerMedia(
@@ -22240,19 +22245,20 @@ public class ChatActivity extends BaseFragment implements
         }
         boolean secureVideo = message.forkSecureMediaMime != null
                 && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/");
-        boolean isAnimation = message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+        boolean isAnimation = message.isGif()
+                || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
                 || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime);
         int indexKind;
-        if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
-            indexKind = SecureMediaIndex.KIND_PHOTO;
+        if (isAnimation) {
+            indexKind = SecureMediaIndex.KIND_GIF;
         } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
             indexKind = SecureMediaIndex.KIND_ROUND_VIDEO;
         } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
             indexKind = SecureMediaIndex.KIND_VOICE;
         } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
             indexKind = SecureMediaIndex.KIND_MUSIC;
-        } else if (isAnimation) {
-            indexKind = SecureMediaIndex.KIND_GIF;
+        } else if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+            indexKind = SecureMediaIndex.KIND_PHOTO;
         } else if (secureVideo) {
             indexKind = SecureMediaIndex.KIND_VIDEO;
         } else {
@@ -22280,9 +22286,11 @@ public class ChatActivity extends BaseFragment implements
                     message.forkSecureMediaWidth,
                     message.forkSecureMediaHeight));
             int mediaDataType = MediaDataController.MEDIA_FILE;
-            if (indexKind == SecureMediaIndex.KIND_PHOTO || indexKind == SecureMediaIndex.KIND_VIDEO || indexKind == SecureMediaIndex.KIND_ROUND_VIDEO || indexKind == SecureMediaIndex.KIND_GIF) {
+            if (indexKind == SecureMediaIndex.KIND_GIF) {
+                mediaDataType = MediaDataController.MEDIA_GIF;
+            } else if (indexKind == SecureMediaIndex.KIND_PHOTO || indexKind == SecureMediaIndex.KIND_VIDEO) {
                 mediaDataType = MediaDataController.MEDIA_PHOTOVIDEO;
-            } else if (indexKind == SecureMediaIndex.KIND_VOICE) {
+            } else if (indexKind == SecureMediaIndex.KIND_VOICE || indexKind == SecureMediaIndex.KIND_ROUND_VIDEO) {
                 mediaDataType = MediaDataController.MEDIA_AUDIO;
             } else if (indexKind == SecureMediaIndex.KIND_MUSIC) {
                 mediaDataType = MediaDataController.MEDIA_MUSIC;
@@ -22305,7 +22313,8 @@ public class ChatActivity extends BaseFragment implements
         normalizeSecureTransportDocument(document);
         boolean isRoundVideo = message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
         boolean isAnimation = message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
-                || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime);
+                || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime)
+                || message.isGif();
         document.mime_type = TextUtils.isEmpty(message.forkSecureMediaMime)
                 ? (isRoundVideo ? "video/mp4" : "application/octet-stream")
                 : (isRoundVideo ? "video/mp4" : message.forkSecureMediaMime);
@@ -22314,12 +22323,12 @@ public class ChatActivity extends BaseFragment implements
         // Keep the authenticated source name in MessageObject for explicit save/open actions,
         // but never expose it in the ordinary chat cell. The transport and local preview both
         // use an opaque display name.
-        fileName.file_name = isAnimation ? "animation.gif" : (isRoundVideo ? "round.mp4" : "file");
+        boolean isVoice = message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
+        fileName.file_name = isAnimation ? "animation.gif" : (isRoundVideo ? "round.mp4" : (isVoice ? "audio.ogg" : "file"));
         document.attributes.add(fileName);
         if (message.forkSecureMediaPresentation
                         == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
-                || message.forkSecureMediaPresentation
-                        == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+                || isVoice) {
             TLRPC.TL_documentAttributeAudio audio =
                     new TLRPC.TL_documentAttributeAudio();
             audio.duration = Math.max(1, message.forkSecureMediaDurationSeconds);
@@ -22327,10 +22336,17 @@ public class ChatActivity extends BaseFragment implements
                     ? "" : message.forkSecureMediaTitle;
             audio.performer = TextUtils.isEmpty(message.forkSecureMediaPerformer)
                     ? "" : message.forkSecureMediaPerformer;
-            audio.flags |= 1;
-            audio.flags |= 2;
-            audio.voice = message.forkSecureMediaPresentation
-                    == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
+            audio.voice = isVoice;
+            if (isVoice) {
+                audio.flags |= 1024;
+            } else {
+                if (!TextUtils.isEmpty(audio.title)) {
+                    audio.flags |= 1;
+                }
+                if (!TextUtils.isEmpty(audio.performer)) {
+                    audio.flags |= 2;
+                }
+            }
             if (message.forkSecureMediaWaveform != null && message.forkSecureMediaWaveform.length > 0) {
                 audio.waveform = message.forkSecureMediaWaveform;
                 audio.flags |= 4;
@@ -22385,7 +22401,9 @@ public class ChatActivity extends BaseFragment implements
                 video.round_message = isRoundVideo;
             }
             document.attributes.add(video);
-            if (isAnimation || video.nosound || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime)) {
+            if (!isRoundVideo && (isAnimation || video.nosound || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime))) {
+                isAnimation = true;
+                message.forkSecureMediaPresentation = SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION;
                 document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
             }
             // The encrypted transport has no Telegram thumbnail. Keep an authenticated local
@@ -44658,7 +44676,7 @@ public class ChatActivity extends BaseFragment implements
                     return;
                 }
                 if (message.isGif() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
-                    openForkSecurePhotoViewer(cell, message, verifiedFile);
+                    openForkSecureVideoViewer(cell, message, verifiedFile);
                     return;
                 }
                 if (message.forkSecureMediaKind
