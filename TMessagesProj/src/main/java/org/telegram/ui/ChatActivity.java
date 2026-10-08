@@ -22937,16 +22937,44 @@ public class ChatActivity extends BaseFragment implements
         if (message == null || !message.forkSecureVerified) {
             return null;
         }
+        if (!TextUtils.isEmpty(message.caption)) {
+            return message.caption;
+        }
+        if (!TextUtils.isEmpty(message.forkSecureMediaCaption)
+                && !message.forkSecureMediaCaption.startsWith("TGS1:")
+                && !message.forkSecureMediaCaption.startsWith("FSC1:")
+                && !message.forkSecureMediaCaption.startsWith("ForkSecure")) {
+            return message.forkSecureMediaCaption;
+        }
         if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
             return getString(R.string.AttachPhoto);
+        }
+        if (message.isVoice() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+            return getString(R.string.AttachAudio);
+        }
+        if (message.isRoundVideo() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+            return getString(R.string.AttachRound);
+        }
+        if (message.isGif() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
+            return getString(R.string.AttachGif);
+        }
+        if (message.isMusic() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
+            if (!TextUtils.isEmpty(message.forkSecureMediaTitle)) {
+                return !TextUtils.isEmpty(message.forkSecureMediaPerformer)
+                        ? message.forkSecureMediaPerformer + " - " + message.forkSecureMediaTitle
+                        : message.forkSecureMediaTitle;
+            }
+            return getString(R.string.AttachMusic);
+        }
+        if (message.isVideo() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO) {
+            return getString(R.string.AttachVideo);
         }
         if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_STICKER) {
             return getString(R.string.AttachSticker);
         }
         if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE) {
-            String mime = message.forkSecureMediaMime;
-            if (!TextUtils.isEmpty(mime) && mime.toLowerCase(Locale.ROOT).startsWith("video/")) {
-                return getString(R.string.AttachVideo);
+            if (!TextUtils.isEmpty(message.forkSecureMediaName)) {
+                return message.forkSecureMediaName;
             }
             return getString(R.string.AttachDocument);
         }
@@ -31607,9 +31635,20 @@ public class ChatActivity extends BaseFragment implements
                 if (photoSize == thumbPhotoSize) {
                     thumbPhotoSize = null;
                 }
-                boolean noImage;
+                boolean isForkSecureMedia = pinnedMessageObject.isForkSecureCarrier() && pinnedMessageObject.forkSecureMediaPath != null;
+                boolean isForkSecureVisual = isForkSecureMedia && (
+                    pinnedMessageObject.isPhoto() ||
+                    pinnedMessageObject.isVideo() ||
+                    pinnedMessageObject.isGif() ||
+                    pinnedMessageObject.isRoundVideo() ||
+                    (pinnedMessageObject.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) ||
+                    (pinnedMessageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO) ||
+                    (pinnedMessageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) ||
+                    (pinnedMessageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO)
+                );
+                final boolean noImage = !isForkSecureVisual && (photoSize == null || photoSize instanceof TLRPC.TL_photoSizeEmpty || photoSize.location instanceof TLRPC.TL_fileLocationUnavailable || pinnedMessageObject.isAnyKindOfSticker() || pinnedMessageObject.isSecretMedia());
                 int prevMargin = layoutParams1.leftMargin;
-                if (noImage = (photoSize == null || photoSize instanceof TLRPC.TL_photoSizeEmpty || photoSize.location instanceof TLRPC.TL_fileLocationUnavailable || pinnedMessageObject.isAnyKindOfSticker() || pinnedMessageObject.isSecretMedia())) {
+                if (noImage) {
                     pinnedImageLocation = null;
                     pinnedImageLocationObject = null;
                     pinnedImageHasBlur = false;
@@ -31619,7 +31658,7 @@ public class ChatActivity extends BaseFragment implements
                     }
                     layoutParams1.leftMargin = layoutParams2.leftMargin = layoutParams3.leftMargin = layoutParams4.leftMargin = layoutParams5.leftMargin = dp(23);
                 } else {
-                    if (pinnedMessageObject.isRoundVideo()) {
+                    if (pinnedMessageObject.isRoundVideo() || pinnedMessageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
                         pinnedMessageImageView[1].setRoundRadius(AndroidUtilities.dp(16));
                     } else {
                         pinnedMessageImageView[1].setRoundRadius(AndroidUtilities.dp(2));
@@ -31627,10 +31666,23 @@ public class ChatActivity extends BaseFragment implements
                     pinnedImageHasBlur = pinnedMessageObject.hasMediaSpoilers();
                     pinnedImageSize = size;
                     pinnedImageCacheType = cacheType;
-                    pinnedImageLocation = photoSize;
-                    pinnedImageThumbLocation = thumbPhotoSize;
-                    pinnedImageLocationObject = photoSizeObject;
-                    pinnedMessageImageView[1].setImage(ImageLocation.getForObject(pinnedImageLocation, photoSizeObject), "50_50", ImageLocation.getForObject(thumbPhotoSize, photoSizeObject), "50_50_b", null, size, cacheType, pinnedMessageObject);
+                    if (isForkSecureVisual) {
+                        pinnedImageLocation = null;
+                        pinnedImageThumbLocation = null;
+                        pinnedImageLocationObject = null;
+                        if (pinnedMessageObject.isRoundVideo() || pinnedMessageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+                            pinnedMessageImageView[1].setImage(ImageLocation.getForVideoPath(pinnedMessageObject.forkSecureMediaPath), "50_50_round", (Drawable) null, pinnedMessageObject);
+                        } else if (pinnedMessageObject.isVideo() || pinnedMessageObject.isGif() || pinnedMessageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO || pinnedMessageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
+                            pinnedMessageImageView[1].setImage(ImageLocation.getForVideoPath(pinnedMessageObject.forkSecureMediaPath), "50_50", (Drawable) null, pinnedMessageObject);
+                        } else {
+                            pinnedMessageImageView[1].setImage(ImageLocation.getForPath(pinnedMessageObject.forkSecureMediaPath), "50_50", (Drawable) null, pinnedMessageObject);
+                        }
+                    } else {
+                        pinnedImageLocation = photoSize;
+                        pinnedImageThumbLocation = thumbPhotoSize;
+                        pinnedImageLocationObject = photoSizeObject;
+                        pinnedMessageImageView[1].setImage(ImageLocation.getForObject(pinnedImageLocation, photoSizeObject), "50_50", ImageLocation.getForObject(thumbPhotoSize, photoSizeObject), "50_50_b", null, size, cacheType, pinnedMessageObject);
+                    }
                     pinnedMessageImageView[1].setVisibility(View.VISIBLE);
                     pinnedMessageImageView[1].setHasBlur(pinnedImageHasBlur);
                     if (animateToNext != 0) {
@@ -31775,6 +31827,8 @@ public class ChatActivity extends BaseFragment implements
                     if (pinnedMessageObject != null && pinnedMessageObject.messageOwner != null) {
                         pinnedText = pinnedMessageObject.replaceAnimatedEmoji(pinnedText, messageTextView.getPaint().getFontMetricsInt());
                     }
+                } else if (pinnedMessageObject.isForkSecureCarrier() && (pinnedText = getForkSecureReplyLabel(pinnedMessageObject)) != null) {
+                    FileLog.d("ForkPinned: resolved secure label for pinned message: " + pinnedText);
                 } else if (pinnedMessageObject.messageText != null) {
                     String mess = pinnedMessageObject.messageText.toString();
                     if (mess.length() > 150) {

@@ -2932,7 +2932,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             null,
                             i == 0 ? caption : "",
                             mime,
-                            false));
+                            false,
+                            SecureContentCodec.ATTACHMENT_PRESENTATION_FILE,
+                            0,
+                            "",
+                            "",
+                            null));
                 }
             }
         }
@@ -2945,7 +2950,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             uri,
                             sources.isEmpty() && i == 0 ? caption : "",
                             mime,
-                            false));
+                            false,
+                            SecureContentCodec.ATTACHMENT_PRESENTATION_FILE,
+                            0,
+                            "",
+                            "",
+                            null));
                 }
             }
         }
@@ -3041,7 +3051,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         && !isGif
                         && (!TextUtils.isEmpty(info.imagePath)
                         || isForkSecureImagePath(sourcePath));
-                int presentation = isGif ? SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION : -1;
+                int presentation = forceDocument
+                        ? SecureContentCodec.ATTACHMENT_PRESENTATION_FILE
+                        : (isGif ? SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION : -1);
                 sources.add(new ForkSecureAttachmentSource(sourcePath, info.uri, info.caption,
                         isGif ? "image/gif" : null, securePhoto, presentation, 0, null, null, null));
             }
@@ -3104,7 +3116,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     && !isGif
                     && (!TextUtils.isEmpty(info.imagePath)
                     || isForkSecureImagePath(sourcePath));
-            int presentation = isGif ? SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION : -1;
+            int presentation = forceDocument
+                    ? SecureContentCodec.ATTACHMENT_PRESENTATION_FILE
+                    : (isGif ? SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION : -1);
             sources.add(new ForkSecureAttachmentSource(
                     sourcePath,
                     info.uri,
@@ -3575,7 +3589,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             presentation.waveform);
                     try {
                         int indexKind;
-                        if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                        if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_FILE) {
+                            indexKind = SecureMediaIndex.KIND_FILE;
+                        } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
                                 || "image/gif".equalsIgnoreCase(mimeType)) {
                             indexKind = SecureMediaIndex.KIND_GIF;
                         } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
@@ -3591,6 +3607,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         } else {
                             indexKind = SecureMediaIndex.KIND_FILE;
                         }
+                        FileLog.d("ForkPresentation: outgoing index entry dialog=" + dialogId + " file=" + resolved.fileName + " mime=" + mimeType + " indexKind=" + indexKind + " presentation=" + presentation.kind);
                         SecureMediaIndex secureMediaIndex = new SecureMediaIndex(
                                 ApplicationLoader.applicationContext,
                                 accountInstance.getCurrentAccount(),
@@ -3688,7 +3705,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             for (int i = 0; i < paths.size(); i++) {
                 if (!TextUtils.isEmpty(paths.get(i))) {
                     sources.add(new ForkSecureAttachmentSource(paths.get(i), null,
-                            i == 0 ? caption : "", mime, false));
+                            i == 0 ? caption : "", mime, false, SecureContentCodec.ATTACHMENT_PRESENTATION_FILE, 0, "", "", null));
                 }
             }
         }
@@ -3696,7 +3713,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             for (int i = 0; i < uris.size(); i++) {
                 if (uris.get(i) != null) {
                     sources.add(new ForkSecureAttachmentSource(null, uris.get(i),
-                            sources.isEmpty() && i == 0 ? caption : "", mime, false));
+                            sources.isEmpty() && i == 0 ? caption : "", mime, false, SecureContentCodec.ATTACHMENT_PRESENTATION_FILE, 0, "", "", null));
                 }
             }
         }

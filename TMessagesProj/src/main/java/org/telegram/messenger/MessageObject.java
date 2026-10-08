@@ -849,6 +849,39 @@ public class MessageObject {
                     photoThumbs = new ArrayList<>();
                     photoThumbs.add(localPhoto);
                     photoThumbsObject = document;
+                    if (document.thumbs == null) {
+                        document.thumbs = new ArrayList<>();
+                    }
+                    document.thumbs.clear();
+                    document.thumbs.add(localPhoto);
+                }
+            } else if (entry.mimeType != null && entry.mimeType.toLowerCase(java.util.Locale.ROOT).startsWith("video/") && plaintext.isFile()) {
+                if (entry.width <= 0 || entry.height <= 0) {
+                    try {
+                        TLRPC.TL_documentAttributeVideo videoAttr = new TLRPC.TL_documentAttributeVideo();
+                        SendMessagesHelper.fillVideoAttribute(plaintext.getAbsolutePath(), videoAttr, null);
+                        if (videoAttr.w > 0 && videoAttr.h > 0) {
+                            forkSecureMediaWidth = videoAttr.w;
+                            forkSecureMediaHeight = videoAttr.h;
+                        }
+                    } catch (Throwable ignore) {
+                    }
+                }
+                if (forkSecureMediaWidth > 0 && forkSecureMediaHeight > 0) {
+                    TLRPC.TL_photoSize localVideo = new TLRPC.TL_photoSize();
+                    localVideo.type = "x";
+                    localVideo.w = forkSecureMediaWidth;
+                    localVideo.h = forkSecureMediaHeight;
+                    localVideo.size = (int) Math.min(Integer.MAX_VALUE, plaintext.length());
+                    localVideo.location = new TLRPC.TL_fileLocationUnavailable();
+                    photoThumbs = new ArrayList<>();
+                    photoThumbs.add(localVideo);
+                    photoThumbsObject = document;
+                    if (document.thumbs == null) {
+                        document.thumbs = new ArrayList<>();
+                    }
+                    document.thumbs.clear();
+                    document.thumbs.add(localVideo);
                 }
             }
             applyNewText(TextUtils.isEmpty(displayCaption) ? "" : displayCaption);
@@ -911,7 +944,14 @@ public class MessageObject {
                 messageTextShort = null;
                 messageTextForReply = null;
                 resetLayout();
-                caption = null;
+                if (!TextUtils.isEmpty(state.caption)
+                        && !state.caption.startsWith("TGS1:")
+                        && !state.caption.startsWith("FSC1:")
+                        && !state.caption.startsWith("ForkSecure")) {
+                    caption = state.caption;
+                } else {
+                    caption = null;
+                }
             }
         }
         if (state.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
@@ -4961,6 +5001,8 @@ public class MessageObject {
                 messageText = replaceWithLink(getString(R.string.ActionPinnedRound), "un1", fromUser != null ? fromUser : chat);
             } else if ((replyMessageObject.isSticker() || replyMessageObject.isAnimatedSticker()) && !replyMessageObject.isAnimatedEmoji()) {
                 messageText = replaceWithLink(getString(R.string.ActionPinnedSticker), "un1", fromUser != null ? fromUser : chat);
+            } else if (replyMessageObject.isPhoto()) {
+                messageText = replaceWithLink(getString(R.string.ActionPinnedPhoto), "un1", fromUser != null ? fromUser : chat);
             } else if (getMedia(replyMessageObject) instanceof TLRPC.TL_messageMediaDocument) {
                 messageText = replaceWithLink(getString(R.string.ActionPinnedFile), "un1", fromUser != null ? fromUser : chat);
             } else if (getMedia(replyMessageObject) instanceof TLRPC.TL_messageMediaGeo) {
@@ -12274,6 +12316,10 @@ public class MessageObject {
         if (isGif()) {
             return false;
         }
+        if (type == TYPE_VIDEO
+                || (isForkSecureCarrier() && forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO)) {
+            return true;
+        }
         return isVideoMessage(messageOwner);
     }
 
@@ -12295,6 +12341,10 @@ public class MessageObject {
     }
 
     public boolean isPhoto() {
+        if (type == TYPE_PHOTO
+                || forkSecureMediaKind == FORK_SECURE_MEDIA_KIND_PHOTO) {
+            return true;
+        }
         return isPhoto(messageOwner);
     }
 

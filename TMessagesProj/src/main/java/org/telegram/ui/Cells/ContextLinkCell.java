@@ -368,7 +368,8 @@ public class ContextLinkCell extends FrameLayout implements DownloadController.F
                     if (isForceGif) {
                         location.imageType = FileLoader.IMAGE_TYPE_ANIMATION;
                     }
-                    linkImageView.setImage(location, "100_100" + (!SharedConfig.isAutoplayGifs() && !isKeyboard ? "_firstframe" : ""), null, currentPhotoFilter, strippedLocation, currentPhotoFilterThumb, null, -1, ext, parentObject, 0);
+                    ImageLocation thumbLoc = ImageLocation.getForPath(forkSecureMsg.forkSecureMediaPath);
+                    linkImageView.setImage(location, "100_100" + (!SharedConfig.isAutoplayGifs() && !isKeyboard ? "_firstframe" : ""), thumbLoc, "100_100_firstframe", strippedLocation, currentPhotoFilterThumb, null, -1, ext, parentObject, 0);
                 } else if (documentAttach != null) {
                     TLRPC.VideoSize thumb = MessageObject.getDocumentVideoThumb(documentAttach);
                     if (thumb != null) {
@@ -846,6 +847,8 @@ public class ContextLinkCell extends FrameLayout implements DownloadController.F
         if (drawLinkImageView) {
             if (inlineResult != null) {
                 linkImageView.setVisible(!PhotoViewer.isShowingImage(inlineResult), false);
+            } else if (parentObject instanceof MessageObject) {
+                linkImageView.setVisible(!PhotoViewer.isShowingImage((MessageObject) parentObject), false);
             }
             canvas.save();
             float s = imageScale;
@@ -965,8 +968,17 @@ public class ContextLinkCell extends FrameLayout implements DownloadController.F
                                 cacheFile = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), fileName);
                             }
                         } else if (documentAttach != null) {
-                            fileName = FileLoader.getAttachFileName(documentAttach);
-                            cacheFile = FileLoader.getInstance(currentAccount).getPathToAttach(documentAttach);
+                            MessageObject forkSecureMsg = parentObject instanceof MessageObject ? (MessageObject) parentObject : null;
+                            if (forkSecureMsg != null
+                                    && !TextUtils.isEmpty(forkSecureMsg.forkSecureMediaPath)
+                                    && new File(forkSecureMsg.forkSecureMediaPath).isFile()) {
+                                File secureFile = new File(forkSecureMsg.forkSecureMediaPath);
+                                fileName = secureFile.getName();
+                                cacheFile = secureFile;
+                            } else {
+                                fileName = FileLoader.getAttachFileName(documentAttach);
+                                cacheFile = FileLoader.getInstance(currentAccount).getPathToAttach(documentAttach);
+                            }
                         }
 
                         if (documentAttach != null && documentAttachType == DOCUMENT_ATTACH_TYPE_GIF && MessageObject.getDocumentVideoThumb(documentAttach) != null) {
@@ -998,13 +1010,20 @@ public class ContextLinkCell extends FrameLayout implements DownloadController.F
                 return;
             }
 
+            MessageObject forkSecureMsg = parentObject instanceof MessageObject ? (MessageObject) parentObject : null;
+            boolean isSecureReady = forkSecureMsg != null
+                    && !TextUtils.isEmpty(forkSecureMsg.forkSecureMediaPath)
+                    && new File(forkSecureMsg.forkSecureMediaPath).isFile();
+
             boolean isLoading;
-            if (documentAttach != null) {
+            if (isSecureReady) {
+                isLoading = false;
+            } else if (documentAttach != null) {
                 isLoading = FileLoader.getInstance(currentAccount).isLoadingFile(fileName);
             } else {
                 isLoading = ImageLoader.getInstance().isLoadingHttpFile(fileName);
             }
-            if (isLoading || !fileExist) {
+            if (!isSecureReady && (isLoading || !fileExist)) {
                 DownloadController.getInstance(currentAccount).addLoadingFileObserver(fileName, this);
                 if (documentAttachType == DOCUMENT_ATTACH_TYPE_MUSIC || documentAttachType == DOCUMENT_ATTACH_TYPE_AUDIO) {
                     if (!isLoading) {
@@ -1039,6 +1058,9 @@ public class ContextLinkCell extends FrameLayout implements DownloadController.F
                 }
             }
             radialProgress.setIcon(getIconForCurrentState(), ifSame, animated);
+            if (isSecureReady) {
+                FileLog.d("ForkAnimations: ContextLinkCell updateButtonState isSecureReady=" + isSecureReady + " buttonState=" + buttonState + " fileName=" + fileName);
+            }
             invalidate();
         }
     }

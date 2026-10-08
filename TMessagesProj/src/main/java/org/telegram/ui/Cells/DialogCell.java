@@ -88,6 +88,7 @@ import org.telegram.messenger.Utilities;
 import org.telegram.messenger.utils.DrawableUtils;
 import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureChatEngine;
+import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
@@ -3061,7 +3062,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 FileLog.d("DialogCell: secure carrier preview failed for dialog " + currentDialogId + ": " + error.getMessage());
             }
         } finally {
-            if (message.getDocument() != null) {
+            if (message.getDocument() != null && message.isAnyKindOfSticker()) {
                 // A secure sticker is presented as a sticker, not as a document caption.
                 // Keeping caption populated makes Telegram prepend its paperclip file marker.
                 message.caption = null;
@@ -3089,37 +3090,70 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 || candidate.messageOwner == null) {
             return;
         }
-        // A ChatActivity/media-list pass may already have restored the entry in the process-local
-        // cache. Avoid a Keystore read on every dialogs-list relayout in that case.
-        if (candidate.forkSecureMediaKind != MessageObject.FORK_SECURE_MEDIA_KIND_NONE) {
-            if (candidate.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
-                    && candidate.forkSecureMediaMime != null
-                    && candidate.forkSecureMediaMime.startsWith("video/")) {
-                candidate.applyNewText(getString(R.string.ForkSecureEncryptedVideo));
-            }
-            return;
-        }
-        if (candidate.forkSecureMediaIndexChecked) {
-            return;
-        }
-        candidate.forkSecureMediaIndexChecked = true;
-        try {
-            SecureMediaIndex.Entry entry = new SecureMediaIndex(
-                    ApplicationLoader.applicationContext, currentAccount, currentDialogId)
-                    .find(candidate.getId(), candidate.messageOwner.message);
-            if (entry != null) {
-                candidate.applyForkSecureMediaIndex(entry);
-                if (entry.kind == SecureMediaIndex.KIND_VIDEO) {
-                    candidate.applyNewText(getString(R.string.ForkSecureEncryptedVideo));
+        if (!candidate.forkSecureMediaIndexChecked) {
+            candidate.forkSecureMediaIndexChecked = true;
+            try {
+                SecureMediaIndex.Entry entry = new SecureMediaIndex(
+                        ApplicationLoader.applicationContext, currentAccount, currentDialogId)
+                        .find(candidate.getId(), candidate.messageOwner.message);
+                if (entry != null) {
+                    candidate.applyForkSecureMediaIndex(entry);
+                }
+            } catch (RuntimeException error) {
+                if (BuildVars.LOGS_ENABLED) {
+                    FileLog.d("DialogCell: secure media index lookup failed: " + error.getMessage());
                 }
             }
-        } catch (RuntimeException error) {
-            // The dialogs list is a presentation surface. A missing/corrupt local index must not
-            // turn a marked carrier into plaintext or prevent the list from rendering.
-            if (BuildVars.LOGS_ENABLED) {
-                FileLog.d("DialogCell: secure media index lookup failed: " + error.getMessage());
-            }
         }
+        if (candidate.isAnyKindOfSticker()) {
+            candidate.caption = null;
+            return;
+        }
+        if (!TextUtils.isEmpty(candidate.caption)) {
+            return;
+        }
+        CharSequence mediaLabel = getForkSecureMediaLabel(candidate);
+        if (mediaLabel != null) {
+            candidate.applyNewText(mediaLabel);
+        }
+    }
+
+    private CharSequence getForkSecureMediaLabel(MessageObject candidate) {
+        if (candidate == null) {
+            return null;
+        }
+        if (candidate.isVoice() || candidate.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+            return getString(R.string.AttachAudio);
+        }
+        if (candidate.isRoundVideo() || candidate.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+            return getString(R.string.AttachRound);
+        }
+        if (candidate.isGif() || candidate.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
+            return getString(R.string.AttachGif);
+        }
+        if (candidate.isMusic() || candidate.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
+            if (!TextUtils.isEmpty(candidate.forkSecureMediaTitle)) {
+                String performer = !TextUtils.isEmpty(candidate.forkSecureMediaPerformer) ? candidate.forkSecureMediaPerformer : "";
+                return TextUtils.isEmpty(performer)
+                        ? candidate.forkSecureMediaTitle
+                        : (performer + " - " + candidate.forkSecureMediaTitle);
+            }
+            return getString(R.string.AttachMusic);
+        }
+        if (candidate.isVideo() || candidate.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO) {
+            return getString(R.string.AttachVideo);
+        }
+        if (candidate.isPhoto() || candidate.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+            return getString(R.string.AttachPhoto);
+        }
+        if (candidate.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                || candidate.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_FILE) {
+            if (!TextUtils.isEmpty(candidate.forkSecureMediaName)) {
+                return candidate.forkSecureMediaName;
+            }
+            return getString(R.string.AttachDocument);
+        }
+        return null;
     }
 
     public void setTitleOverride(String s) {
@@ -5860,38 +5894,45 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
     private void setThumb(int index, MessageObject message) {
         if (message.isForkSecureCarrier()
                 && !TextUtils.isEmpty(message.forkSecureMediaPath)
-                && new java.io.File(message.forkSecureMediaPath).isFile()
-                && (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
-                        || message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
-                        && message.forkSecureMediaMime != null
-                        && message.forkSecureMediaMime.startsWith("video/"))) {
-            if (thumbsCount < 3) {
-                boolean video = message.forkSecureMediaKind
-                        == MessageObject.FORK_SECURE_MEDIA_KIND_FILE;
-                hasVideoThumb = hasVideoThumb || video;
-                thumbsCount++;
-                drawPlay[index] = video && !message.hasMediaSpoilers();
-                drawSpoiler[index] = message.hasMediaSpoilers();
-                long fileSize = new java.io.File(message.forkSecureMediaPath).length();
-                ImageLocation location = video
-                        // Dialog rows need a stable still frame. Full chat/video surfaces keep
-                        // getForVideoPath() for playback; vthumb asks ImageLoader for frame 0.
-                        ? ImageLocation.getForPath(
-                                "vthumb://0:" + message.forkSecureMediaPath)
-                        : ImageLocation.getForPath(message.forkSecureMediaPath);
-                thumbImage[index].setImage(
-                        location,
-                        "20_20",
-                        null,
-                        null,
-                        Math.min(Integer.MAX_VALUE, fileSize),
-                        null,
-                        message,
-                        0);
-                thumbImage[index].setRoundRadius(dp(2));
-                needEmoji = false;
+                && new java.io.File(message.forkSecureMediaPath).isFile()) {
+            boolean isPhoto = message.isPhoto()
+                    || message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                    || (message.forkSecureMediaMime != null && message.forkSecureMediaMime.startsWith("image/"));
+            boolean isRound = message.isRoundVideo()
+                    || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
+            boolean isGif = message.isGif()
+                    || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION;
+            boolean isVideo = message.isVideo()
+                    || isRound
+                    || isGif
+                    || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
+                    || (message.forkSecureMediaMime != null && message.forkSecureMediaMime.startsWith("video/"));
+            if (isPhoto || isVideo) {
+                if (thumbsCount < 3) {
+                    boolean realVideo = isVideo && !isRound && !isGif;
+                    hasVideoThumb = hasVideoThumb || realVideo;
+                    thumbsCount++;
+                    drawPlay[index] = realVideo && !message.hasMediaSpoilers();
+                    drawSpoiler[index] = message.hasMediaSpoilers();
+                    long fileSize = new java.io.File(message.forkSecureMediaPath).length();
+                    ImageLocation location = isVideo
+                            ? ImageLocation.getForPath(
+                                    "vthumb://0:" + message.forkSecureMediaPath)
+                            : ImageLocation.getForPath(message.forkSecureMediaPath);
+                    thumbImage[index].setImage(
+                            location,
+                            "20_20",
+                            null,
+                            null,
+                            Math.min(Integer.MAX_VALUE, fileSize),
+                            null,
+                            message,
+                            0);
+                    thumbImage[index].setRoundRadius(isRound ? dp(10) : dp(2));
+                    needEmoji = false;
+                }
+                return;
             }
-            return;
         }
         ArrayList<TLRPC.PhotoSize> photoThumbs = message.photoThumbs;
         TLObject photoThumbsObject = message.photoThumbsObject;

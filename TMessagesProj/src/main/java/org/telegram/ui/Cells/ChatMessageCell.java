@@ -13113,7 +13113,15 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     currentPhotoObjectThumbStripped = currentMessageObject.strippedThumb;
                 }
                 currentPhotoFilter = "86_86_b";
-                photoImage.setImage(ImageLocation.getForObject(currentPhotoObject, messageObject.photoThumbsObject), "86_86", ImageLocation.getForObject(currentPhotoObjectThumb, messageObject.photoThumbsObject), currentPhotoFilter, currentPhotoObjectThumbStripped, 0, null, messageObject, 1);
+                if (messageObject.isForkSecureCarrier() && !TextUtils.isEmpty(messageObject.forkSecureMediaPath) && new File(messageObject.forkSecureMediaPath).isFile()) {
+                    boolean isVideoFile = messageObject.forkSecureMediaMime != null && messageObject.forkSecureMediaMime.startsWith("video/");
+                    ImageLocation loc = isVideoFile
+                            ? ImageLocation.getForVideoPath(messageObject.forkSecureMediaPath)
+                            : ImageLocation.getForPath(messageObject.forkSecureMediaPath);
+                    photoImage.setImage(loc, "86_86", null, currentPhotoFilter, currentPhotoObjectThumbStripped, 0, null, messageObject, 1);
+                } else {
+                    photoImage.setImage(ImageLocation.getForObject(currentPhotoObject, messageObject.photoThumbsObject), "86_86", ImageLocation.getForObject(currentPhotoObjectThumb, messageObject.photoThumbsObject), currentPhotoFilter, currentPhotoObjectThumbStripped, 0, null, messageObject, 1);
+                }
             }
             return width;
         }
