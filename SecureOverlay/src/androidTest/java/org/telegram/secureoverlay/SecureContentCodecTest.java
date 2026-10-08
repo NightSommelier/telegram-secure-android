@@ -136,6 +136,32 @@ public final class SecureContentCodecTest {
     }
 
     @Test
+    public void imageDocumentWithDimensionsEncodesAndDecodesSuccessfully() {
+        SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                123,
+                123 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "photo_document.jpg",
+                "image/jpeg",
+                "caption",
+                1920,
+                1080,
+                false);
+
+        byte[] encoded = SecureContentCodec.encodeAttachment(attachment);
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(encoded);
+
+        assertEquals(SecureContentCodec.TYPE_FILE, decoded.type);
+        assertEquals(1920, decoded.attachment.width);
+        assertEquals(1080, decoded.attachment.height);
+        assertEquals("image/jpeg", decoded.attachment.mimeType);
+        assertEquals("photo_document.jpg", decoded.attachment.fileName);
+    }
+
+    @Test
     public void legacyVideoWithoutDimensionsRemainsReadable() {
         SecureContentCodec.Attachment attachment = new SecureContentCodec.Attachment(
                 new byte[16],

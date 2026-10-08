@@ -213,9 +213,10 @@ public final class SecureChatState {
         }
         SharedPreferences.Editor editor = preferences.edit().clear()
                 .putLong(IDENTITY_EPOCH, generation - 1);
+        boolean hasPrevious = false;
         long previousPeer = 0;
         for (SecureHistoryBackupCodec.PeerRecord peer : peers) {
-            if (peer == null || peer.peerUserId <= previousPeer) {
+            if (peer == null || (hasPrevious && peer.peerUserId <= previousPeer)) {
                 throw new IllegalArgumentException(
                         "non-canonical secure history peer state");
             }
@@ -226,6 +227,7 @@ public final class SecureChatState {
                         peer.lastPairingMessageId);
             }
             previousPeer = peer.peerUserId;
+            hasPrevious = true;
         }
         if (!editor.commit()) {
             throw new IllegalStateException("failed to restore secure history chat state");

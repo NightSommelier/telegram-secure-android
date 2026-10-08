@@ -56,6 +56,8 @@ import org.telegram.messenger.ringtone.RingtoneDataStore;
 import org.telegram.messenger.ringtone.RingtoneUploader;
 import org.telegram.messenger.utils.EphemeralMessagesHelper;
 import org.telegram.secureoverlay.SecureCarrierCodec;
+import org.telegram.secureoverlay.SecureChatEngine;
+import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.NativeByteBuffer;
@@ -4156,6 +4158,32 @@ public class MediaDataController extends BaseController {
     public final static int MEDIA_POLL = 8;
     public final static int MEDIA_TYPES_COUNT = 9;
 
+    public static ArrayList<TLRPC.MessageEntity> extractUrlEntities(CharSequence text) {
+        if (TextUtils.isEmpty(text)) {
+            return null;
+        }
+        SpannableStringBuilder spannable = SpannableStringBuilder.valueOf(text);
+        AndroidUtilities.addLinksSafe(spannable, Linkify.WEB_URLS, false, false);
+        URLSpan[] spansUrl = spannable.getSpans(0, spannable.length(), URLSpan.class);
+        if (spansUrl == null || spansUrl.length == 0) {
+            return null;
+        }
+        ArrayList<TLRPC.MessageEntity> entities = new ArrayList<>();
+        for (int b = 0; b < spansUrl.length; b++) {
+            if (spansUrl[b] instanceof URLSpanReplacement || spansUrl[b] instanceof URLSpanUserMention) {
+                continue;
+            }
+            TLRPC.TL_messageEntityUrl entity = new TLRPC.TL_messageEntityUrl();
+            entity.offset = spannable.getSpanStart(spansUrl[b]);
+            entity.length = Math.min(spannable.getSpanEnd(spansUrl[b]), spannable.length()) - entity.offset;
+            entity.url = spansUrl[b].getURL();
+            if (entity.length > 0 && entity.offset >= 0) {
+                entities.add(entity);
+            }
+        }
+        return entities.isEmpty() ? null : entities;
+    }
+
     /**
      * Reclassifies an authenticated Fork-Secure carrier in Telegram's device-local media table.
      * The serialized object remains the opaque Telegram message; only its local media category
@@ -4180,11 +4208,21 @@ public class MediaDataController extends BaseController {
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
             SQLitePreparedStatement state = null;
             try {
-                getMessagesStorage().getDatabase().executeFast(String.format(
-                        Locale.US,
-                        "DELETE FROM media_v4 WHERE mid = %d AND uid = %d",
-                        messageId,
-                        dialogId)).stepThis().dispose();
+                if (type == MEDIA_URL) {
+                    getMessagesStorage().getDatabase().executeFast(String.format(
+                            Locale.US,
+                            "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
+                            messageId,
+                            dialogId,
+                            MEDIA_URL)).stepThis().dispose();
+                } else {
+                    getMessagesStorage().getDatabase().executeFast(String.format(
+                            Locale.US,
+                            "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type != %d",
+                            messageId,
+                            dialogId,
+                            MEDIA_URL)).stepThis().dispose();
+                }
                 state = getMessagesStorage().getDatabase().executeFast(
                         "REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
                 state.bindInteger(1, messageId);
@@ -4193,6 +4231,7 @@ public class MediaDataController extends BaseController {
                 state.bindInteger(4, type);
                 state.bindByteBuffer(5, data);
                 state.step();
+                FileLog.d("ForkLinks: indexForkSecureMedia saved mid=" + messageId + " uid=" + dialogId + " type=" + type);
             } catch (Exception e) {
                 FileLog.e(e);
             } finally {
@@ -4439,9 +4478,22 @@ public class MediaDataController extends BaseController {
 
             syncForkSecureMediaDatabase(index, dialogId);
 
+            int dbUrlCount = 0;
+            try {
+                org.telegram.SQLite.SQLiteCursor urlCountCursor = getMessagesStorage().getDatabase().queryFinalized(String.format(
+                        Locale.US,
+                        "SELECT count(*) FROM media_v4 WHERE uid = %d AND type = %d",
+                        dialogId, MEDIA_URL));
+                if (urlCountCursor.next()) {
+                    dbUrlCount = urlCountCursor.intValue(0);
+                }
+                urlCountCursor.dispose();
+            } catch (Throwable ignore) {
+            }
+
             if (securePhotos == 0 && secureVideos == 0 && secureGifs == 0
                     && secureAudio == 0 && secureMusic == 0 && secureRound == 0
-                    && secureFiles == 0) {
+                    && secureFiles == 0 && dbUrlCount == 0) {
                 return result;
             }
             result[MEDIA_PHOTOVIDEO] =
@@ -4476,6 +4528,13 @@ public class MediaDataController extends BaseController {
                 } catch (Throwable ignore) {
                 }
                 result[MEDIA_FILE] = Math.max(dbFileCount, secureFiles);
+            }
+            if (result.length > MEDIA_URL) {
+                result[MEDIA_URL] = Math.max(Math.max(0, result[MEDIA_URL]), dbUrlCount);
+                if (dbUrlCount > 0) {
+                    putMediaCountDatabase(dialogId, topicId, MEDIA_URL, result[MEDIA_URL]);
+                }
+                FileLog.d("ForkLinks: adjustForkSecureMediaCounts dialogId=" + dialogId + " dbUrlCount=" + dbUrlCount + " finalUrlCount=" + result[MEDIA_URL]);
             }
         } catch (RuntimeException e) {
             FileLog.e(e);
@@ -4558,6 +4617,71 @@ public class MediaDataController extends BaseController {
                     }
                 } catch (Throwable ignore) {
                 }
+                try {
+                    SecureChatEngine secureChat = new SecureChatEngine(
+                            ApplicationLoader.applicationContext,
+                            currentAccount,
+                            dialogId);
+                    org.telegram.SQLite.SQLiteCursor msgCursor = getMessagesStorage().getDatabase().queryFinalized(String.format(
+                            Locale.US,
+                            "SELECT mid, date, data FROM messages_v2 WHERE uid = %d AND (media = 0 OR media IS NULL)",
+                            dialogId));
+                    int syncedUrls = 0;
+                    while (msgCursor.next()) {
+                        int mid = msgCursor.intValue(0);
+                        int date = msgCursor.intValue(1);
+                        NativeByteBuffer data = msgCursor.byteBufferValue(2);
+                        if (data != null) {
+                            try {
+                                TLRPC.Message msg = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                                if (msg != null && SecureCarrierCodec.isMarked(msg.message)) {
+                                    org.telegram.SQLite.SQLiteCursor checkUrl = getMessagesStorage().getDatabase().queryFinalized(String.format(
+                                            Locale.US,
+                                            "SELECT 1 FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
+                                            mid, dialogId, MEDIA_URL));
+                                    boolean alreadyHasUrl = checkUrl.next();
+                                    checkUrl.dispose();
+                                    if (!alreadyHasUrl) {
+                                        String text = null;
+                                        if (index != null) {
+                                            SecureMediaIndex.Entry entry = index.find(mid, msg.message);
+                                            if (entry != null && !TextUtils.isEmpty(entry.caption)) {
+                                                text = SecureContentCodec.displayCaption(entry.caption);
+                                            }
+                                        }
+                                        if (TextUtils.isEmpty(text)) {
+                                            text = msg.out
+                                                    ? secureChat.getOutgoingText(msg.message)
+                                                    : secureChat.getIncomingText(msg.message);
+                                        }
+                                        if (!TextUtils.isEmpty(text) && extractUrlEntities(text) != null) {
+                                            data.position(0);
+                                            SQLitePreparedStatement ins = getMessagesStorage().getDatabase().executeFast(
+                                                    "REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
+                                            ins.bindInteger(1, mid);
+                                            ins.bindLong(2, dialogId);
+                                            ins.bindInteger(3, date);
+                                            ins.bindInteger(4, MEDIA_URL);
+                                            ins.bindByteBuffer(5, data);
+                                            ins.step();
+                                            ins.dispose();
+                                            syncedUrls++;
+                                        }
+                                    }
+                                }
+                            } catch (Throwable ignore) {
+                            } finally {
+                                data.reuse();
+                            }
+                        }
+                    }
+                    msgCursor.dispose();
+                    if (syncedUrls > 0) {
+                        FileLog.d("ForkLinks: syncForkSecureMediaDatabase synced " + syncedUrls + " URL messages for dialogId=" + dialogId);
+                    }
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
             } catch (Throwable e) {
                 FileLog.e(e);
             }
@@ -4621,10 +4745,21 @@ public class MediaDataController extends BaseController {
             int reqId = getConnectionsManager().sendRequest(req, (response, error) -> {
                 if (response instanceof Vector) {
                     final Vector res = (Vector) response;
-                    if (!res.objects.isEmpty()) {
                         final TLRPC.TL_messages_searchCounter counter = (TLRPC.TL_messages_searchCounter) res.objects.get(0);
+                        if (type == MEDIA_URL && (DialogObject.isUserDialog(dialogId) || DialogObject.isChatDialog(dialogId))) {
+                            try {
+                                SQLiteCursor c = getMessagesStorage().getDatabase().queryFinalized(String.format(Locale.US, "SELECT COUNT(mid) FROM media_v4 WHERE uid = %d AND type = %d LIMIT 1", dialogId, type));
+                                if (c.next()) {
+                                    int dbCount = c.intValue(0);
+                                    if (dbCount > 0) {
+                                        counter.count = Math.max(counter.count, dbCount);
+                                    }
+                                }
+                                c.dispose();
+                            } catch (Throwable ignore) {
+                            }
+                        }
                         processLoadedMediaCount(counter.count, dialogId, topicId, type, classGuid, false, 0);
-                    }
                 }
             });
             getConnectionsManager().bindRequestToGuid(reqId, classGuid);
@@ -4646,6 +4781,16 @@ public class MediaDataController extends BaseController {
                     SecureMediaIndex.Entry secureEntry = secureMediaIndex.find(message.id, message.message);
                     if (secureEntry != null) {
                         return mediaTypeForSecureEntry(secureEntry);
+                    }
+                    SecureChatEngine secureChat = new SecureChatEngine(
+                            ApplicationLoader.applicationContext,
+                            UserConfig.selectedAccount,
+                            dialogId);
+                    String text = message.out
+                            ? secureChat.getOutgoingText(message.message)
+                            : secureChat.getIncomingText(message.message);
+                    if (!TextUtils.isEmpty(text) && extractUrlEntities(text) != null) {
+                        return MEDIA_URL;
                     }
                 } catch (Throwable ignore) {
                 }
@@ -4770,24 +4915,64 @@ public class MediaDataController extends BaseController {
                 for (int a = 0; a < res.messages.size(); a++) {
                     TLRPC.Message message = res.messages.get(a);
                     SecureMediaIndex.Entry secureEntry = null;
-                    if (secureMediaIndex != null
-                            && SecureCarrierCodec.isMarked(message.message)) {
-                        secureEntry = secureMediaIndex.find(
-                                message.id, message.message);
-                        if (secureEntry == null) {
-                            continue;
-                        }
-                        if (mediaTypeForSecureEntry(secureEntry) != type
-                                && !(type == MEDIA_PHOTOS_ONLY
-                                        && secureEntry.kind
-                                                == SecureMediaIndex.KIND_PHOTO)
-                                && !(type == MEDIA_VIDEOS_ONLY
-                                        && secureEntry.kind
-                                                == SecureMediaIndex.KIND_VIDEO)) {
-                            continue;
+                    if (SecureCarrierCodec.isMarked(message.message)) {
+                        if (type == MEDIA_URL) {
+                            String plaintext = null;
+                            if (secureMediaIndex != null) {
+                                secureEntry = secureMediaIndex.find(message.id, message.message);
+                                if (secureEntry != null && !TextUtils.isEmpty(secureEntry.caption)) {
+                                    plaintext = SecureContentCodec.displayCaption(secureEntry.caption);
+                                }
+                            }
+                            if (TextUtils.isEmpty(plaintext)) {
+                                try {
+                                    SecureChatEngine secureChat = new SecureChatEngine(
+                                            ApplicationLoader.applicationContext,
+                                            currentAccount,
+                                            dialogId);
+                                    plaintext = message.out
+                                            ? secureChat.getOutgoingText(message.message)
+                                            : secureChat.getIncomingText(message.message);
+                                } catch (Throwable e) {
+                                    FileLog.e(e);
+                                }
+                            }
+                            if (!TextUtils.isEmpty(plaintext)) {
+                                ArrayList<TLRPC.MessageEntity> entities = extractUrlEntities(plaintext);
+                                if (entities != null && !entities.isEmpty()) {
+                                    message.message = plaintext;
+                                    message.entities = entities;
+                                    FileLog.d("ForkLinks: processLoadedMedia decrypted and extracted " + entities.size() + " URLs for mid=" + message.id);
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                FileLog.w("ForkLinks: processLoadedMedia could not resolve plaintext for carrier mid=" + message.id);
+                                continue;
+                            }
+                        } else {
+                            if (secureMediaIndex != null) {
+                                secureEntry = secureMediaIndex.find(
+                                        message.id, message.message);
+                            }
+                            if (secureEntry == null) {
+                                continue;
+                            }
+                            if (mediaTypeForSecureEntry(secureEntry) != type
+                                    && !(type == MEDIA_PHOTOS_ONLY
+                                            && secureEntry.kind
+                                                    == SecureMediaIndex.KIND_PHOTO)
+                                    && !(type == MEDIA_VIDEOS_ONLY
+                                            && secureEntry.kind
+                                                    == SecureMediaIndex.KIND_VIDEO)) {
+                                continue;
+                            }
                         }
                     }
                     MessageObject messageObject = new MessageObject(currentAccount, message, usersDict, true, false);
+                    if (SecureCarrierCodec.isMarked(message.message) || secureEntry != null) {
+                        messageObject.forkSecureVerified = true;
+                    }
                     if (secureEntry != null) {
                         messageObject.applyForkSecureMediaIndex(secureEntry);
                     }
@@ -4881,14 +5066,18 @@ public class MediaDataController extends BaseController {
                     old = cursor.intValue(1);
                 }
                 cursor.dispose();
-                if (count == -1 && DialogObject.isEncryptedDialog(dialogId)) {
+                if ((count == -1 && DialogObject.isEncryptedDialog(dialogId))
+                        || (count <= 0 && type == MEDIA_URL && (DialogObject.isUserDialog(dialogId) || DialogObject.isChatDialog(dialogId)))) {
                     cursor = getMessagesStorage().getDatabase().queryFinalized(String.format(Locale.US, "SELECT COUNT(mid) FROM media_v4 WHERE uid = %d AND type = %d LIMIT 1", dialogId, type));
                     if (cursor.next()) {
-                        count = cursor.intValue(0);
+                        int dbCount = cursor.intValue(0);
+                        if (dbCount > 0) {
+                            count = dbCount;
+                        }
                     }
                     cursor.dispose();
 
-                    if (count != -1) {
+                    if (count > 0) {
                         putMediaCountDatabase(dialogId, topicId, type, count);
                     }
                 }
@@ -5197,15 +5386,16 @@ public class MediaDataController extends BaseController {
                             SecureMediaIndex.Entry secureEntry =
                                     secureMediaIndex.find(
                                             message.id, message.message);
-                            if (secureEntry != null) {
+                            if (secureEntry != null && type != MEDIA_URL) {
                                 storedType =
                                         mediaTypeForSecureEntry(secureEntry);
                                 getMessagesStorage().getDatabase().executeFast(
                                         String.format(
                                                 Locale.US,
-                                                "DELETE FROM media_v4 WHERE mid = %d AND uid = %d",
+                                                "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type != %d",
                                                 message.id,
-                                                uid))
+                                                uid,
+                                                MEDIA_URL))
                                         .stepThis()
                                         .dispose();
                             }

@@ -137,6 +137,46 @@ public final class SecureHistoryBackupManagerTest {
         }
     }
 
+    @Test
+    public void exportAndRestoreWithNegativeGroupPeerIdSucceeds() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        long groupPeer = -5442088927L;
+        char[] password = "test-group-history-password".toCharArray();
+        byte[] archive = null;
+        String carrier = carrier();
+        try {
+            clean(context, groupPeer);
+            SecureLocalTextStore text =
+                    new SecureLocalTextStore(context, ACCOUNT, groupPeer);
+            text.rememberOutgoing(carrier, "group outgoing message");
+            text.rememberIncoming(carrier, "group incoming message");
+            SecureChatState state = new SecureChatState(context);
+            state.markPaired(ACCOUNT, groupPeer);
+
+            archive = SecureHistoryBackupManager.exportArchive(
+                    context, ACCOUNT, OWNER, password);
+            assertTrue(archive != null && archive.length > 0);
+
+            SecureChatEngine.resetOwnIdentity(context);
+            new SecureLocalMessageCache(context, ACCOUNT, groupPeer).forgetPeer();
+            assertNull(text.loadOutgoing(carrier));
+
+            SecureHistoryBackupManager.RestoreResult restored =
+                    SecureHistoryBackupManager.restoreArchive(
+                            context, ACCOUNT, OWNER, archive, password);
+            assertEquals(1, restored.pausedChats);
+            assertEquals("group outgoing message", text.loadOutgoing(carrier));
+            assertEquals("group incoming message", text.loadIncoming(carrier));
+            assertTrue(state.isPaused(ACCOUNT, groupPeer));
+        } finally {
+            Arrays.fill(password, '\0');
+            if (archive != null) {
+                Arrays.fill(archive, (byte) 0);
+            }
+            clean(context, groupPeer);
+        }
+    }
+
     private static void clean(Context context, long peer) throws Exception {
         try {
             SecureChatEngine.resetOwnIdentity(context);

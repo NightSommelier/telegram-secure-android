@@ -21558,6 +21558,8 @@ public class ChatActivity extends BaseFragment implements
                         applySecureContactMedia(message, secureChat, carrier);
                     } else if (SecureChatEngine.isLocationDisplay(localText)) {
                         applySecureLocationMedia(message, secureChat, carrier);
+                    } else {
+                        indexForkSecureUrls(message, localText);
                     }
                 }
             } else {
@@ -21586,6 +21588,8 @@ public class ChatActivity extends BaseFragment implements
                         applySecureContactMedia(message, secureChat, carrier);
                     } else if (SecureChatEngine.isLocationDisplay(localText)) {
                         applySecureLocationMedia(message, secureChat, carrier);
+                    } else {
+                        indexForkSecureUrls(message, localText);
                     }
                 }
             }
@@ -22297,8 +22301,23 @@ public class ChatActivity extends BaseFragment implements
             getMediaDataController().indexForkSecureMedia(
                     message.messageOwner,
                     mediaDataType);
+            if (!TextUtils.isEmpty(message.forkSecureMediaCaption)) {
+                String caption = SecureContentCodec.displayCaption(message.forkSecureMediaCaption);
+                indexForkSecureUrls(message, caption);
+            }
         } catch (Throwable e) {
             FileLog.e(e);
+        }
+    }
+
+    private void indexForkSecureUrls(MessageObject message, String text) {
+        if (message == null || message.messageOwner == null || TextUtils.isEmpty(text)) {
+            return;
+        }
+        ArrayList<TLRPC.MessageEntity> entities = MediaDataController.extractUrlEntities(text);
+        if (entities != null && !entities.isEmpty()) {
+            FileLog.d("ForkLinks: ChatActivity indexing URL mid=" + message.getId() + " count=" + entities.size());
+            getMediaDataController().indexForkSecureMedia(message.messageOwner, MediaDataController.MEDIA_URL);
         }
     }
 

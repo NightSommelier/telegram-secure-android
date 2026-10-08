@@ -405,17 +405,19 @@ public final class SecureHistoryBackupManager {
             }
             List<SecureHistoryBackupCodec.PeerRecord> peers =
                     new ArrayList<>(peerCount);
+            boolean hasPrevious = false;
             long previousPeer = 0;
             for (int i = 0; i < peerCount; i++) {
                 SecureHistoryBackupCodec.PeerRecord peer =
                         new SecureHistoryBackupCodec.PeerRecord(
                                 input.readLong(), input.readInt());
-                if (peer.peerUserId <= previousPeer) {
+                if (hasPrevious && peer.peerUserId <= previousPeer) {
                     throw new IllegalArgumentException(
                             "non-canonical secure history recovery peers");
                 }
                 peers.add(peer);
                 previousPeer = peer.peerUserId;
+                hasPrevious = true;
             }
             byte[] fingerprint = new byte[32];
             input.readFully(fingerprint);

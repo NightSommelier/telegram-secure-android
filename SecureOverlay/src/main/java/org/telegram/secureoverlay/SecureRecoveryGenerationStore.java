@@ -291,7 +291,7 @@ public final class SecureRecoveryGenerationStore {
     }
 
     private static void requirePeer(int account, long peerUserId) {
-        if (account < 0 || peerUserId <= 0) {
+        if (account < 0 || peerUserId == 0) {
             throw new IllegalArgumentException("recovery peer requires an account and user");
         }
     }

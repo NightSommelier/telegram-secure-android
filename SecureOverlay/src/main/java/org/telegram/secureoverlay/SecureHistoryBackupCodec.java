@@ -73,7 +73,7 @@ public final class SecureHistoryBackupCodec {
 
         public CacheRecord(int kind, long peerUserId, byte[] carrierDigest, byte[] value) {
             requireKind(kind);
-            if (peerUserId <= 0
+            if (peerUserId == 0
                     || carrierDigest == null
                     || carrierDigest.length != 32
                     || value == null
@@ -94,7 +94,7 @@ public final class SecureHistoryBackupCodec {
         public final int lastPairingMessageId;
 
         public PeerRecord(long peerUserId, int lastPairingMessageId) {
-            if (peerUserId <= 0 || lastPairingMessageId < 0) {
+            if (peerUserId == 0 || lastPairingMessageId < 0) {
                 throw new IllegalArgumentException("invalid secure history peer record");
             }
             this.peerUserId = peerUserId;
@@ -336,15 +336,17 @@ public final class SecureHistoryBackupCodec {
                 throw new IllegalArgumentException("invalid secure history peer count");
             }
             List<PeerRecord> peers = new ArrayList<>(peerCount);
+            boolean hasPrevious = false;
             long previousPeer = 0;
             for (int i = 0; i < peerCount; i++) {
                 PeerRecord peer = new PeerRecord(input.readLong(), input.readInt());
-                if (peer.peerUserId <= previousPeer) {
+                if (hasPrevious && peer.peerUserId <= previousPeer) {
                     throw new IllegalArgumentException(
                             "non-canonical secure history peer order");
                 }
                 peers.add(peer);
                 previousPeer = peer.peerUserId;
+                hasPrevious = true;
             }
             if (input.available() != 0) {
                 throw new IllegalArgumentException("secure history backup has trailing bytes");
