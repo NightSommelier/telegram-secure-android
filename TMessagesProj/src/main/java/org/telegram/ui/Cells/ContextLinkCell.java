@@ -15,7 +15,11 @@ import android.animation.ObjectAnimator;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.text.Layout;
 import android.text.StaticLayout;
@@ -356,7 +360,16 @@ public class ContextLinkCell extends FrameLayout implements DownloadController.F
             }
 
             if (documentAttachType == DOCUMENT_ATTACH_TYPE_GIF) {
-                if (documentAttach != null) {
+                MessageObject forkSecureMsg = parentObject instanceof MessageObject ? (MessageObject) parentObject : null;
+                if (forkSecureMsg != null
+                        && !TextUtils.isEmpty(forkSecureMsg.forkSecureMediaPath)
+                        && new File(forkSecureMsg.forkSecureMediaPath).isFile()) {
+                    ImageLocation location = ImageLocation.getForPath(forkSecureMsg.forkSecureMediaPath);
+                    if (isForceGif) {
+                        location.imageType = FileLoader.IMAGE_TYPE_ANIMATION;
+                    }
+                    linkImageView.setImage(location, "100_100" + (!SharedConfig.isAutoplayGifs() && !isKeyboard ? "_firstframe" : ""), null, currentPhotoFilter, strippedLocation, currentPhotoFilterThumb, null, -1, ext, parentObject, 0);
+                } else if (documentAttach != null) {
                     TLRPC.VideoSize thumb = MessageObject.getDocumentVideoThumb(documentAttach);
                     if (thumb != null) {
                         linkImageView.setImage(ImageLocation.getForDocument(thumb, documentAttach), "100_100" + (!SharedConfig.isAutoplayGifs() && !isKeyboard ? "_firstframe" : ""), ImageLocation.getForDocument(currentPhotoObject, documentAttach), currentPhotoFilter, strippedLocation, currentPhotoFilterThumb, null, -1, ext, parentObject, 1);
@@ -858,6 +871,38 @@ public class ContextLinkCell extends FrameLayout implements DownloadController.F
             Theme.chat_contextResult_shadowUnderSwitchDrawable.setBounds(0, 0, getMeasuredWidth(), AndroidUtilities.dp(3));
             Theme.chat_contextResult_shadowUnderSwitchDrawable.draw(canvas);
         }
+        drawForkSecureBadge(canvas);
+    }
+
+    private final Paint forkSecureBadgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Drawable forkSecureLockDrawable;
+
+    private void drawForkSecureBadge(Canvas canvas) {
+        if (!(parentObject instanceof MessageObject)) {
+            return;
+        }
+        MessageObject messageObject = (MessageObject) parentObject;
+        if (!(messageObject.isForkSecureCarrier() || messageObject.forkSecureVerified)) {
+            return;
+        }
+        float centerX = AndroidUtilities.dp(16);
+        float centerY = AndroidUtilities.dp(14);
+        forkSecureBadgePaint.setColor(0x99000000);
+        canvas.drawCircle(centerX, centerY, AndroidUtilities.dp(9), forkSecureBadgePaint);
+        if (forkSecureLockDrawable == null) {
+            forkSecureLockDrawable = getContext().getResources()
+                    .getDrawable(R.drawable.msg_mini_lock3).mutate();
+            forkSecureLockDrawable.setColorFilter(
+                    new PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN));
+        }
+        int halfWidth = AndroidUtilities.dp(5);
+        int halfHeight = AndroidUtilities.dp(6);
+        forkSecureLockDrawable.setBounds(
+                (int) centerX - halfWidth,
+                (int) centerY - halfHeight,
+                (int) centerX + halfWidth,
+                (int) centerY + halfHeight);
+        forkSecureLockDrawable.draw(canvas);
     }
 
     private int getIconForCurrentState() {

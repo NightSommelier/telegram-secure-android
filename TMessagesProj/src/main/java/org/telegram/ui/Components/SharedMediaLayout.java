@@ -7837,8 +7837,20 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 if (index < 0) {
                     ArrayList<MessageObject> documents = new ArrayList<>();
                     documents.add(message);
+                    if (message.forkSecureVerified
+                            && !TextUtils.isEmpty(message.forkSecureMediaPath)
+                            && PhotoViewer.getInstance().openForkSecurePhotos(
+                                    documents, 0, provider)) {
+                        return;
+                    }
                     PhotoViewer.getInstance().openPhoto(documents, 0, 0, 0, 0, provider);
                 } else {
+                    if (message.forkSecureVerified
+                            && !TextUtils.isEmpty(message.forkSecureMediaPath)
+                            && PhotoViewer.getInstance().openForkSecurePhotos(
+                                    sharedMediaData[selectedMode].messages, index, provider)) {
+                        return;
+                    }
                     PhotoViewer.getInstance().openPhoto(sharedMediaData[selectedMode].messages, index, dialog_id, mergeDialogId, topicId, provider);
                 }
             } else if (selectedMode == TAB_FILES) {

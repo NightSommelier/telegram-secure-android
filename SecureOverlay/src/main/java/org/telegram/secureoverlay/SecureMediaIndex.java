@@ -65,16 +65,43 @@ public final class SecureMediaIndex {
     }
 
     public Entry find(int messageId, String carrier) {
-        byte[] digest = digest(carrier);
+        if (carrier == null || carrier.isEmpty()) {
+            return null;
+        }
+        return findByDigest(messageId, digest(carrier));
+    }
+
+    public Entry findByDigest(int messageId, byte[] digest) {
+        if (digest == null || digest.length != DIGEST_BYTES) {
+            return null;
+        }
         try {
             byte[] encoded = blobs.get(key(digest));
             if (encoded == null) {
                 return null;
             }
             Entry entry = decode(encoded);
-            return entry.messageId == messageId
-                    && MessageDigest.isEqual(digest, entry.carrierDigest)
-                    ? entry : null;
+            if (!MessageDigest.isEqual(digest, entry.carrierDigest)) {
+                return null;
+            }
+            if (messageId > 0 && entry.messageId != messageId) {
+                entry = new Entry(
+                        messageId,
+                        entry.date,
+                        entry.carrierDigest,
+                        entry.kind,
+                        entry.plaintextPath,
+                        entry.fileName,
+                        entry.mimeType,
+                        entry.caption,
+                        entry.width,
+                        entry.height);
+                try {
+                    blobs.put(key(digest), encode(entry));
+                } catch (Exception ignore) {
+                }
+            }
+            return entry;
         } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
             throw new SecureMediaIndexException("cannot load secure media index", e);
         }
@@ -262,7 +289,7 @@ public final class SecureMediaIndex {
         }
     }
 
-    private static byte[] digest(String carrier) {
+    public static byte[] digest(String carrier) {
         if (carrier == null || carrier.isEmpty()) {
             throw new IllegalArgumentException("secure media carrier is required");
         }
@@ -311,7 +338,7 @@ public final class SecureMediaIndex {
                     plaintextPath, fileName, mimeType, caption, width, height);
         }
 
-        private Entry(
+        public Entry(
                 int messageId,
                 int date,
                 byte[] carrierDigest,

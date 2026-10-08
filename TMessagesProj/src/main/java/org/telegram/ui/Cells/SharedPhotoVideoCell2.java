@@ -52,6 +52,7 @@ import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.Utilities;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.AvatarSpan;
 import org.telegram.ui.Components.AnimatedFloat;
@@ -357,17 +358,23 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
                 && (messageObject.forkSecureMediaKind
                         == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
                         || messageObject.forkSecureMediaMime != null
-                        && messageObject.forkSecureMediaMime.startsWith("video/"))
+                        && messageObject.forkSecureMediaMime.startsWith("video/")
+                        || messageObject.isGif()
+                        || messageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                        || "image/gif".equalsIgnoreCase(messageObject.forkSecureMediaMime))
                 && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
                 && new File(messageObject.forkSecureMediaPath).isFile()) {
             boolean secureVideo = messageObject.forkSecureMediaMime != null
                     && messageObject.forkSecureMediaMime.startsWith("video/");
-            showVideoLayout = secureVideo && !messageObject.isLivePhoto();
+            boolean isGif = messageObject.isGif()
+                    || messageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                    || "image/gif".equalsIgnoreCase(messageObject.forkSecureMediaMime);
+            showVideoLayout = secureVideo && !isGif && !messageObject.isLivePhoto();
             if (showVideoLayout && parentColumnsCount != 9) {
                 videoText = AndroidUtilities.formatShortDuration((int) messageObject.getDuration());
             }
             imageReceiver.setImage(
-                    secureVideo
+                    secureVideo && !isGif
                             ? ImageLocation.getForPath(
                                     "vthumb://0:" + messageObject.forkSecureMediaPath)
                             : ImageLocation.getForPath(messageObject.forkSecureMediaPath),
@@ -617,8 +624,11 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
                         == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
                         || currentMessageObject.forkSecureMediaKind
                                 == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
-                        && currentMessageObject.forkSecureMediaMime != null
-                        && currentMessageObject.forkSecureMediaMime.startsWith("video/"))) {
+                        && (currentMessageObject.forkSecureMediaMime != null
+                                && currentMessageObject.forkSecureMediaMime.startsWith("video/")
+                                || currentMessageObject.isGif()
+                                || currentMessageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                                || "image/gif".equalsIgnoreCase(currentMessageObject.forkSecureMediaMime)))) {
             return;
         }
         float centerX = dp(16);

@@ -239,6 +239,7 @@ public class MessageObject {
     public long forkSecureNativeGroupId;
     /** Hides opaque transport metadata while authenticated media is prepared in background. */
     public boolean forkSecureMediaPending;
+    public boolean forkSecureMediaIndexChecked;
     public SecureChatEngine.TextEditTransport forkSecureTextEditTransport;
     public SecureChatEngine.AttachmentEditTransport forkSecureAttachmentEditTransport;
     public CharSequence linkDescription;
@@ -457,7 +458,10 @@ public class MessageObject {
      * original opaque Telegram message.
      */
     public boolean applyForkSecureMediaIndex(SecureMediaIndex.Entry entry) {
-        if (entry == null || !isForkSecureCarrier() || entry.messageId != getId()) {
+        if (entry == null || !isForkSecureCarrier()) {
+            return false;
+        }
+        if (entry.messageId != getId() && getId() > 0 && entry.messageId > 0) {
             return false;
         }
         int mediaKind;
@@ -498,6 +502,41 @@ public class MessageObject {
             displayCaption = entry.caption;
         }
         forkSecureAlbumId = TextUtils.isEmpty(albumId) ? null : albumId;
+        int durationSeconds = 0;
+        String title = "";
+        String performer = "";
+        byte[] waveform = null;
+        if (plaintext.isFile()) {
+            if (entry.kind == SecureMediaIndex.KIND_VOICE) {
+                try {
+                    waveform = MediaController.getWaveform(plaintext.getAbsolutePath());
+                } catch (Throwable ignore) {
+                }
+                try {
+                    android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+                    retriever.setDataSource(plaintext.getAbsolutePath());
+                    String duration = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+                    if (!TextUtils.isEmpty(duration)) {
+                        durationSeconds = (int) Math.ceil(Long.parseLong(duration) / 1000.0d);
+                    }
+                    retriever.release();
+                } catch (Throwable ignore) {
+                }
+            } else if (entry.kind == SecureMediaIndex.KIND_MUSIC) {
+                try {
+                    android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+                    retriever.setDataSource(plaintext.getAbsolutePath());
+                    String duration = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+                    if (!TextUtils.isEmpty(duration)) {
+                        durationSeconds = (int) Math.ceil(Long.parseLong(duration) / 1000.0d);
+                    }
+                    title = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE);
+                    performer = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_ARTIST);
+                    retriever.release();
+                } catch (Throwable ignore) {
+                }
+            }
+        }
         ForkSecureMediaUiState state = new ForkSecureMediaUiState(
                 plaintext.isFile() ? plaintext.getAbsolutePath() : null,
                 mediaKind,
@@ -506,6 +545,11 @@ public class MessageObject {
                 entry.fileName,
                 entry.mimeType,
                 displayCaption,
+                presentation,
+                durationSeconds,
+                title != null ? title : "",
+                performer != null ? performer : "",
+                waveform,
                 !plaintext.isFile());
         synchronized (forkSecureMediaUiCache) {
             putForkSecureMediaUiState(messageOwner.message, state);
@@ -560,6 +604,13 @@ public class MessageObject {
                     forkSecureMediaHeight = video.h;
                 }
             }
+            boolean isAnimation = video.nosound
+                    || "image/gif".equalsIgnoreCase(entry.mimeType)
+                    || (!TextUtils.isEmpty(entry.fileName) && entry.fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".gif"));
+            if (isAnimation) {
+                document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
+                fileName.file_name = "animation.gif";
+            }
             document.attributes.add(video);
             TLRPC.TL_photoSize localVideo = new TLRPC.TL_photoSize();
             localVideo.type = "x";
@@ -571,8 +622,19 @@ public class MessageObject {
             photoThumbs = new ArrayList<>();
             photoThumbs.add(localVideo);
             photoThumbsObject = document;
-            applyNewText(getString(R.string.ForkSecureEncryptedFile));
-            type = TYPE_VIDEO;
+            if (isAnimation) {
+                if (document.thumbs == null) {
+                    document.thumbs = new ArrayList<>();
+                }
+                document.thumbs.clear();
+                document.thumbs.add(localVideo);
+                applyNewText(TextUtils.isEmpty(displayCaption) ? "" : displayCaption);
+                type = TYPE_GIF;
+                forkSecureMediaPresentation = SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION;
+            } else {
+                applyNewText(getString(R.string.ForkSecureEncryptedFile));
+                type = TYPE_VIDEO;
+            }
             mediaExists = plaintext.isFile();
             attachPathExists = plaintext.isFile();
         } else if (entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO && getDocument() != null) {
@@ -653,7 +715,7 @@ public class MessageObject {
                     new TLRPC.TL_documentAttributeAudio();
             audio.voice = true;
             audio.duration = Math.max(1, forkSecureMediaDurationSeconds);
-            audio.flags |= 1 | 2;
+            audio.flags |= 1024;
             if (forkSecureMediaWaveform != null && forkSecureMediaWaveform.length > 0) {
                 audio.waveform = forkSecureMediaWaveform;
                 audio.flags |= 4;
@@ -744,6 +806,53 @@ public class MessageObject {
             document.thumbs.add(localVideo);
             applyNewText(TextUtils.isEmpty(displayCaption) ? "" : displayCaption);
             type = TYPE_GIF;
+            forkSecureMediaPresentation = SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION;
+            mediaExists = plaintext.isFile();
+            attachPathExists = plaintext.isFile();
+        } else if (entry.kind == SecureMediaIndex.KIND_FILE && getDocument() != null) {
+            TLRPC.Document document = getDocument();
+            document.mime_type = TextUtils.isEmpty(entry.mimeType)
+                    ? "application/octet-stream" : entry.mimeType;
+            for (int i = document.attributes.size() - 1; i >= 0; i--) {
+                TLRPC.DocumentAttribute attribute = document.attributes.get(i);
+                if (attribute instanceof TLRPC.TL_documentAttributeFilename) {
+                    document.attributes.remove(i);
+                }
+            }
+            TLRPC.TL_documentAttributeFilename fileName =
+                    new TLRPC.TL_documentAttributeFilename();
+            fileName.file_name = !TextUtils.isEmpty(entry.fileName) ? entry.fileName : "file";
+            document.attributes.add(fileName);
+            if (plaintext.isFile()) {
+                document.size = (int) Math.min(Integer.MAX_VALUE, plaintext.length());
+            }
+            if (entry.mimeType != null && entry.mimeType.toLowerCase(java.util.Locale.ROOT).startsWith("image/") && plaintext.isFile()) {
+                if (entry.width <= 0 || entry.height <= 0) {
+                    try {
+                        android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+                        options.inJustDecodeBounds = true;
+                        android.graphics.BitmapFactory.decodeFile(plaintext.getAbsolutePath(), options);
+                        if (options.outWidth > 0 && options.outHeight > 0) {
+                            forkSecureMediaWidth = options.outWidth;
+                            forkSecureMediaHeight = options.outHeight;
+                        }
+                    } catch (Throwable ignore) {
+                    }
+                }
+                if (forkSecureMediaWidth > 0 && forkSecureMediaHeight > 0) {
+                    TLRPC.TL_photoSize localPhoto = new TLRPC.TL_photoSize();
+                    localPhoto.type = "x";
+                    localPhoto.w = forkSecureMediaWidth;
+                    localPhoto.h = forkSecureMediaHeight;
+                    localPhoto.size = (int) Math.min(Integer.MAX_VALUE, plaintext.length());
+                    localPhoto.location = new TLRPC.TL_fileLocationUnavailable();
+                    photoThumbs = new ArrayList<>();
+                    photoThumbs.add(localPhoto);
+                    photoThumbsObject = document;
+                }
+            }
+            applyNewText(TextUtils.isEmpty(displayCaption) ? "" : displayCaption);
+            type = TYPE_FILE;
             mediaExists = plaintext.isFile();
             attachPathExists = plaintext.isFile();
         }
@@ -864,7 +973,7 @@ public class MessageObject {
                 }
                 audio.voice = true;
                 audio.duration = Math.max(1, state.durationSeconds);
-                audio.flags |= 1 | 2;
+                audio.flags |= 1024;
                 if (state.waveform != null && state.waveform.length > 0) {
                     audio.waveform = state.waveform;
                     audio.flags |= 4;
@@ -876,14 +985,50 @@ public class MessageObject {
                 TLRPC.Document document = getDocument();
                 document.mime_type = TextUtils.isEmpty(state.mime) ? "video/mp4" : state.mime;
                 boolean hasAnimated = false;
+                TLRPC.TL_documentAttributeVideo video = null;
                 for (int a = 0; a < document.attributes.size(); a++) {
-                    if (document.attributes.get(a) instanceof TLRPC.TL_documentAttributeAnimated) {
+                    TLRPC.DocumentAttribute attr = document.attributes.get(a);
+                    if (attr instanceof TLRPC.TL_documentAttributeAnimated) {
                         hasAnimated = true;
-                        break;
+                    } else if (attr instanceof TLRPC.TL_documentAttributeVideo) {
+                        video = (TLRPC.TL_documentAttributeVideo) attr;
                     }
                 }
                 if (!hasAnimated) {
                     document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
+                }
+                if (video == null) {
+                    video = new TLRPC.TL_documentAttributeVideo();
+                    video.w = state.width > 0 ? state.width : 1;
+                    video.h = state.height > 0 ? state.height : 1;
+                    video.supports_streaming = true;
+                    document.attributes.add(video);
+                }
+                if (!TextUtils.isEmpty(state.path) && new File(state.path).isFile()) {
+                    File pFile = new File(state.path);
+                    if (video.w <= 1 || video.h <= 1) {
+                        SendMessagesHelper.fillVideoAttribute(state.path, video, null);
+                        if (video.w > 0 && video.h > 0) {
+                            forkSecureMediaWidth = video.w;
+                            forkSecureMediaHeight = video.h;
+                        }
+                    }
+                    TLRPC.TL_photoSize localVideo = new TLRPC.TL_photoSize();
+                    localVideo.type = "x";
+                    localVideo.w = video.w;
+                    localVideo.h = video.h;
+                    localVideo.size = (int) Math.min(Integer.MAX_VALUE, pFile.length());
+                    localVideo.location = new TLRPC.TL_fileLocationUnavailable();
+                    photoThumbs = new ArrayList<>();
+                    photoThumbs.add(localVideo);
+                    photoThumbsObject = document;
+                    if (document.thumbs == null) {
+                        document.thumbs = new ArrayList<>();
+                    }
+                    document.thumbs.clear();
+                    document.thumbs.add(localVideo);
+                    mediaExists = true;
+                    attachPathExists = true;
                 }
             }
         } else if (state.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
@@ -7585,6 +7730,8 @@ public class MessageObject {
                 type = TYPE_GEO;
             } else if (isRoundVideo()) {
                 type = TYPE_ROUND_VIDEO;
+            } else if (isGif()) {
+                type = TYPE_GIF;
             } else if (isVideo()) {
                 type = TYPE_VIDEO;
             } else if (isVoice()) {
@@ -12106,7 +12253,7 @@ public class MessageObject {
         if (forkSecureMediaKind == FORK_SECURE_MEDIA_KIND_PHOTO) {
             return false;
         }
-        return getDocument() != null && !isVideo() && !isMusic() && !isVoice() && !isAnyKindOfSticker();
+        return getDocument() != null && !isVideo() && !isRoundVideo() && !isMusic() && !isVoice() && !isAnyKindOfSticker();
     }
 
     public boolean isVoice() {
@@ -12124,6 +12271,9 @@ public class MessageObject {
     }
 
     public boolean isVideo() {
+        if (isGif()) {
+            return false;
+        }
         return isVideoMessage(messageOwner);
     }
 
@@ -13485,6 +13635,19 @@ public class MessageObject {
                     MediaController.getInstance().generateWaveform(this);
                 }
                 return attribute.waveform;
+            }
+        }
+        if (forkSecureMediaWaveform != null && forkSecureMediaWaveform.length > 0) {
+            return forkSecureMediaWaveform;
+        }
+        if (isVoice() && !TextUtils.isEmpty(forkSecureMediaPath)) {
+            try {
+                byte[] generated = MediaController.getWaveform(forkSecureMediaPath);
+                if (generated != null && generated.length > 0) {
+                    forkSecureMediaWaveform = generated;
+                    return generated;
+                }
+            } catch (Throwable ignore) {
             }
         }
         if (isRoundVideo()) {

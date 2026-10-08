@@ -4431,7 +4431,17 @@ public class MediaDataController extends BaseController {
                     dialogId);
             int securePhotos = index.count(SecureMediaIndex.KIND_PHOTO);
             int secureVideos = index.count(SecureMediaIndex.KIND_VIDEO);
-            if (securePhotos == 0 && secureVideos == 0) {
+            int secureGifs = index.count(SecureMediaIndex.KIND_GIF);
+            int secureAudio = index.count(SecureMediaIndex.KIND_VOICE);
+            int secureMusic = index.count(SecureMediaIndex.KIND_MUSIC);
+            int secureRound = index.count(SecureMediaIndex.KIND_ROUND_VIDEO);
+            int secureFiles = index.count(SecureMediaIndex.KIND_FILE);
+
+            syncForkSecureMediaDatabase(index, dialogId);
+
+            if (securePhotos == 0 && secureVideos == 0 && secureGifs == 0
+                    && secureAudio == 0 && secureMusic == 0 && secureRound == 0
+                    && secureFiles == 0) {
                 return result;
             }
             result[MEDIA_PHOTOVIDEO] =
@@ -4440,14 +4450,139 @@ public class MediaDataController extends BaseController {
                     Math.max(0, result[MEDIA_PHOTOS_ONLY]) + securePhotos;
             result[MEDIA_VIDEOS_ONLY] =
                     Math.max(0, result[MEDIA_VIDEOS_ONLY]) + secureVideos;
+            if (result.length > MEDIA_GIF) {
+                result[MEDIA_GIF] =
+                        Math.max(0, result[MEDIA_GIF]) + secureGifs;
+            }
+            if (result.length > MEDIA_AUDIO) {
+                result[MEDIA_AUDIO] =
+                        Math.max(0, result[MEDIA_AUDIO]) + secureAudio + secureRound;
+            }
+            if (result.length > MEDIA_MUSIC) {
+                result[MEDIA_MUSIC] =
+                        Math.max(0, result[MEDIA_MUSIC]) + secureMusic;
+            }
             if (result[MEDIA_FILE] >= 0) {
-                result[MEDIA_FILE] =
-                        Math.max(0, result[MEDIA_FILE] - securePhotos - secureVideos);
+                int dbFileCount = 0;
+                try {
+                    org.telegram.SQLite.SQLiteCursor fileCountCursor = getMessagesStorage().getDatabase().queryFinalized(String.format(
+                            Locale.US,
+                            "SELECT count(*) FROM media_v4 WHERE uid = %d AND type = %d",
+                            dialogId, MEDIA_FILE));
+                    if (fileCountCursor.next()) {
+                        dbFileCount = fileCountCursor.intValue(0);
+                    }
+                    fileCountCursor.dispose();
+                } catch (Throwable ignore) {
+                }
+                result[MEDIA_FILE] = Math.max(dbFileCount, secureFiles);
             }
         } catch (RuntimeException e) {
             FileLog.e(e);
         }
         return result;
+    }
+
+    private void syncForkSecureMediaDatabase(SecureMediaIndex index, long dialogId) {
+        if (index == null || dialogId == 0) {
+            return;
+        }
+        Runnable syncTask = () -> {
+            try {
+                java.util.HashSet<Integer> validFileIds = new java.util.HashSet<>();
+                for (SecureMediaIndex.Entry fileEntry : index.list(SecureMediaIndex.KIND_FILE)) {
+                    if (fileEntry.messageId > 0) {
+                        validFileIds.add(fileEntry.messageId);
+                    }
+                }
+                for (int kind = SecureMediaIndex.KIND_PHOTO; kind <= SecureMediaIndex.KIND_GIF; kind++) {
+                    int targetType = mediaTypeForSecureKind(kind);
+                    if (targetType == MEDIA_FILE) {
+                        continue;
+                    }
+                    List<SecureMediaIndex.Entry> entries = index.list(kind);
+                    for (SecureMediaIndex.Entry entry : entries) {
+                        if (entry.messageId > 0) {
+                            try {
+                                org.telegram.SQLite.SQLiteCursor check = getMessagesStorage().getDatabase().queryFinalized(String.format(
+                                        Locale.US,
+                                        "SELECT 1 FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
+                                        entry.messageId, dialogId, targetType));
+                                boolean alreadyHasTarget = check.next();
+                                check.dispose();
+                                if (alreadyHasTarget) {
+                                    getMessagesStorage().getDatabase().executeFast(String.format(
+                                            Locale.US,
+                                            "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
+                                            entry.messageId, dialogId, MEDIA_FILE)).stepThis().dispose();
+                                } else {
+                                    getMessagesStorage().getDatabase().executeFast(String.format(
+                                            Locale.US,
+                                            "UPDATE media_v4 SET type = %d WHERE mid = %d AND uid = %d AND type = %d",
+                                            targetType, entry.messageId, dialogId, MEDIA_FILE)).stepThis().dispose();
+                                }
+                            } catch (Throwable ignore) {
+                            }
+                        }
+                    }
+                }
+                try {
+                    org.telegram.SQLite.SQLiteCursor fileCursor = getMessagesStorage().getDatabase().queryFinalized(String.format(
+                            Locale.US,
+                            "SELECT mid, data FROM media_v4 WHERE uid = %d AND type = %d",
+                            dialogId, MEDIA_FILE));
+                    java.util.ArrayList<Integer> toDelete = new java.util.ArrayList<>();
+                    while (fileCursor.next()) {
+                        int mid = fileCursor.intValue(0);
+                        if (!validFileIds.contains(mid)) {
+                            NativeByteBuffer data = fileCursor.byteBufferValue(1);
+                            if (data != null) {
+                                try {
+                                    TLRPC.Message msg = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                                    if (msg != null && SecureCarrierCodec.isMarked(msg.message)) {
+                                        toDelete.add(mid);
+                                    }
+                                } catch (Throwable ignore) {
+                                } finally {
+                                    data.reuse();
+                                }
+                            }
+                        }
+                    }
+                    fileCursor.dispose();
+                    for (int mid : toDelete) {
+                        getMessagesStorage().getDatabase().executeFast(String.format(
+                                Locale.US,
+                                "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
+                                mid, dialogId, MEDIA_FILE)).stepThis().dispose();
+                    }
+                } catch (Throwable ignore) {
+                }
+            } catch (Throwable e) {
+                FileLog.e(e);
+            }
+        };
+        try {
+            if (Thread.currentThread() == getMessagesStorage().getStorageQueue()) {
+                syncTask.run();
+                return;
+            }
+        } catch (Throwable ignore) {
+        }
+        getMessagesStorage().getStorageQueue().postRunnable(syncTask);
+    }
+
+    private static int mediaTypeForSecureKind(int kind) {
+        if (kind == SecureMediaIndex.KIND_PHOTO || kind == SecureMediaIndex.KIND_VIDEO) {
+            return MEDIA_PHOTOVIDEO;
+        } else if (kind == SecureMediaIndex.KIND_ROUND_VIDEO || kind == SecureMediaIndex.KIND_VOICE) {
+            return MEDIA_AUDIO;
+        } else if (kind == SecureMediaIndex.KIND_MUSIC) {
+            return MEDIA_MUSIC;
+        } else if (kind == SecureMediaIndex.KIND_GIF) {
+            return MEDIA_GIF;
+        }
+        return MEDIA_FILE;
     }
 
     public void getMediaCount(long dialogId, long topicId, int type, int classGuid, boolean fromCache) {
@@ -4498,6 +4633,23 @@ public class MediaDataController extends BaseController {
 
     public static int getMediaType(TLRPC.Message message) {
         if (message == null) {
+            return -1;
+        }
+        if (SecureCarrierCodec.isMarked(message.message)) {
+            long dialogId = MessageObject.getDialogId(message);
+            if (dialogId != 0 && ApplicationLoader.applicationContext != null) {
+                try {
+                    SecureMediaIndex secureMediaIndex = new SecureMediaIndex(
+                            ApplicationLoader.applicationContext,
+                            UserConfig.selectedAccount,
+                            dialogId);
+                    SecureMediaIndex.Entry secureEntry = secureMediaIndex.find(message.id, message.message);
+                    if (secureEntry != null) {
+                        return mediaTypeForSecureEntry(secureEntry);
+                    }
+                } catch (Throwable ignore) {
+                }
+            }
             return -1;
         }
         final TLRPC.MessageMedia media = MessageObject.getMedia(message);
@@ -4558,10 +4710,10 @@ public class MediaDataController extends BaseController {
 
     private static int mediaTypeForSecureEntry(SecureMediaIndex.Entry entry) {
         if (entry.kind == SecureMediaIndex.KIND_PHOTO
-                || entry.kind == SecureMediaIndex.KIND_VIDEO
-                || entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO) {
+                || entry.kind == SecureMediaIndex.KIND_VIDEO) {
             return MEDIA_PHOTOVIDEO;
-        } else if (entry.kind == SecureMediaIndex.KIND_VOICE) {
+        } else if (entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO
+                || entry.kind == SecureMediaIndex.KIND_VOICE) {
             return MEDIA_AUDIO;
         } else if (entry.kind == SecureMediaIndex.KIND_MUSIC) {
             return MEDIA_MUSIC;
@@ -4622,14 +4774,16 @@ public class MediaDataController extends BaseController {
                             && SecureCarrierCodec.isMarked(message.message)) {
                         secureEntry = secureMediaIndex.find(
                                 message.id, message.message);
-                                if (secureEntry != null
-                                        && mediaTypeForSecureEntry(secureEntry) != type
-                                        && !(type == MEDIA_PHOTOS_ONLY
-                                                && secureEntry.kind
-                                                        == SecureMediaIndex.KIND_PHOTO)
-                                        && !(type == MEDIA_VIDEOS_ONLY
-                                                && secureEntry.kind
-                                                        == SecureMediaIndex.KIND_VIDEO)) {
+                        if (secureEntry == null) {
+                            continue;
+                        }
+                        if (mediaTypeForSecureEntry(secureEntry) != type
+                                && !(type == MEDIA_PHOTOS_ONLY
+                                        && secureEntry.kind
+                                                == SecureMediaIndex.KIND_PHOTO)
+                                && !(type == MEDIA_VIDEOS_ONLY
+                                        && secureEntry.kind
+                                                == SecureMediaIndex.KIND_VIDEO)) {
                             continue;
                         }
                     }
@@ -4644,7 +4798,7 @@ public class MediaDataController extends BaseController {
 
                 Runnable notify = () -> {
                     AndroidUtilities.runOnUIThread(() -> {
-                        int totalCount = res.count;
+                        int totalCount = Math.max(res.count, objects.size());
                         getMessagesController().putUsers(res.users, fromCache != 0);
                         getMessagesController().putChats(res.chats, fromCache != 0);
                         getNotificationCenter().postNotificationName(NotificationCenter.mediaDidLoad, dialogId, totalCount, objects, classGuid, type, topReached, min_id != 0, requestIndex);

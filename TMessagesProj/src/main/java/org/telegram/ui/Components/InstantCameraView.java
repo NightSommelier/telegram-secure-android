@@ -83,6 +83,7 @@ import org.telegram.messenger.MediaController;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
+import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.Utilities;
@@ -2881,7 +2882,8 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
 
         private void handleStopRecording(final int send, final SendOptions sendOptions) {
             final boolean runDone;
-            if (send == ENCODER_SEND_SEND && (videoEditedInfo == null || !videoEditedInfo.needConvert()) && !delegate.isInScheduleMode()) {
+            final boolean isForkSecure = delegate != null && SendMessagesHelper.isForkSecureProtectedPeer(currentAccount, delegate.getDialogId());
+            if (send == ENCODER_SEND_SEND && !isForkSecure && (videoEditedInfo == null || !videoEditedInfo.needConvert()) && !delegate.isInScheduleMode()) {
                 runDone = false;
                 if (!sentMedia) {
                     sentMedia = true;
@@ -3373,6 +3375,9 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
         }
 
         private void didWriteData(File file, long availableSize, boolean last) {
+            if (delegate != null && SendMessagesHelper.isForkSecureProtectedPeer(currentAccount, delegate.getDialogId())) {
+                return;
+            }
             if (videoConvertFirstWrite) {
                 FileLoader.getInstance(currentAccount).uploadFile(file.toString(), isSecretChat, false, 1, ConnectionsManager.FileTypeVideo, false);
                 videoConvertFirstWrite = false;

@@ -21385,8 +21385,7 @@ public class ChatActivity extends BaseFragment implements
                 applySavedSecureStickerMedia(message, content.staticSticker,
                         message.messageOwner.message);
             } else if (content.attachment != null) {
-                message.applyNewText(getString(content.attachment.photo
-                        ? R.string.ForkSecureEncryptedPhoto : R.string.ForkSecureEncryptedFile));
+                message.applyNewText("");
                 applySavedSecureAttachmentMedia(message, content.attachment,
                         message.messageOwner.message, content.attachment.photo);
             } else if (content.contact != null) {
@@ -22320,12 +22319,16 @@ public class ChatActivity extends BaseFragment implements
                 : (isRoundVideo ? "video/mp4" : message.forkSecureMediaMime);
         TLRPC.TL_documentAttributeFilename fileName =
                 new TLRPC.TL_documentAttributeFilename();
-        // Keep the authenticated source name in MessageObject for explicit save/open actions,
-        // but never expose it in the ordinary chat cell. The transport and local preview both
-        // use an opaque display name.
         boolean isVoice = message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
-        fileName.file_name = isAnimation ? "animation.gif" : (isRoundVideo ? "round.mp4" : (isVoice ? "audio.ogg" : "file"));
+        String realFileName = !TextUtils.isEmpty(message.forkSecureMediaName)
+                ? message.forkSecureMediaName
+                : "file";
+        fileName.file_name = isAnimation ? "animation.gif" : (isRoundVideo ? "round.mp4" : (isVoice ? "audio.ogg" : realFileName));
         document.attributes.add(fileName);
+        File plaintextFile = new File(message.forkSecureMediaPath);
+        if (plaintextFile.isFile() && plaintextFile.length() > 0) {
+            document.size = (int) Math.min(Integer.MAX_VALUE, plaintextFile.length());
+        }
         if (message.forkSecureMediaPresentation
                         == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
                 || isVoice) {
@@ -22430,16 +22433,7 @@ public class ChatActivity extends BaseFragment implements
         // applyNewText() regenerates the upstream layout and calls MessageObject.setType(), which
         // classifies the opaque Telegram transport as a generic Document. Run it before applying
         // the authenticated process-local presentation so the true type remains authoritative.
-        if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
-                || isRoundVideo
-                || isAnimation) {
-            message.applyNewText("");
-        } else {
-            message.applyNewText(getString(message.forkSecureMediaKind
-                    == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
-                            ? R.string.ForkSecureEncryptedPhoto
-                            : R.string.ForkSecureEncryptedFile));
-        }
+        message.applyNewText("");
         if (message.forkSecureMediaKind
                 == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
             /*
@@ -22458,6 +22452,35 @@ public class ChatActivity extends BaseFragment implements
             message.photoThumbs.add(localPhoto);
             message.photoThumbsObject = document;
             message.type = MessageObject.TYPE_PHOTO;
+        } else if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                && !TextUtils.isEmpty(message.forkSecureMediaMime)
+                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("image/")) {
+            if (message.forkSecureMediaWidth <= 0 || message.forkSecureMediaHeight <= 0) {
+                if (plaintextFile.isFile()) {
+                    try {
+                        android.graphics.BitmapFactory.Options bounds = new android.graphics.BitmapFactory.Options();
+                        bounds.inJustDecodeBounds = true;
+                        android.graphics.BitmapFactory.decodeFile(plaintextFile.getAbsolutePath(), bounds);
+                        if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                            message.forkSecureMediaWidth = bounds.outWidth;
+                            message.forkSecureMediaHeight = bounds.outHeight;
+                        }
+                    } catch (Throwable ignore) {
+                    }
+                }
+            }
+            if (message.forkSecureMediaWidth > 0 && message.forkSecureMediaHeight > 0 && plaintextFile.isFile()) {
+                TLRPC.TL_photoSize localPhoto = new TLRPC.TL_photoSize();
+                localPhoto.type = "x";
+                localPhoto.w = message.forkSecureMediaWidth;
+                localPhoto.h = message.forkSecureMediaHeight;
+                localPhoto.size = (int) Math.min(Integer.MAX_VALUE, plaintextFile.length());
+                localPhoto.location = new TLRPC.TL_fileLocationUnavailable();
+                message.photoThumbs = new ArrayList<>();
+                message.photoThumbs.add(localPhoto);
+                message.photoThumbsObject = document;
+            }
+            message.type = MessageObject.TYPE_FILE;
         } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
             message.type = MessageObject.TYPE_VOICE;
         } else if (isRoundVideo) {
@@ -22469,6 +22492,8 @@ public class ChatActivity extends BaseFragment implements
         } else if (!TextUtils.isEmpty(message.forkSecureMediaMime)
                 && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/")) {
             message.type = MessageObject.TYPE_VIDEO;
+        } else {
+            message.type = MessageObject.TYPE_FILE;
         }
         applySecureAlbumGrouping(message);
         message.forkSecureVerified = true;
@@ -44688,7 +44713,9 @@ public class ChatActivity extends BaseFragment implements
                     return;
                 }
                 if (message.forkSecureMediaKind
-                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                        || (!TextUtils.isEmpty(message.forkSecureMediaMime)
+                                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("image/"))) {
                     openForkSecurePhotoViewer(cell, message, verifiedFile);
                     return;
                 }

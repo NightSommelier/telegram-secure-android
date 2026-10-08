@@ -2,8 +2,16 @@
 set -euo pipefail
 
 project_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-java_home=${JAVA_HOME:-/nix/store/v3n6jl0sxn64g97c5kxzriwj4fv6qnjh-openjdk-21.0.12+2}
-android_sdk=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/nix/store/9w9ynwf0j4f2z18i3x5dwic9d73qv3n4-androidsdk/libexec/android-sdk}}
+java_home=${JAVA_HOME:-}
+if [[ -z "$java_home" || ! -x "$java_home/bin/java" ]]; then
+    if [[ -x /nix/store/r5yyzs1n6hrs3n6kjmxlf8dwynbif5mq-openjdk-21.0.12.1+1/bin/java ]]; then
+        java_home=/nix/store/r5yyzs1n6hrs3n6kjmxlf8dwynbif5mq-openjdk-21.0.12.1+1
+    fi
+fi
+android_sdk=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}
+if [[ -z "$android_sdk" && -f "$project_dir/local.properties" ]]; then
+    android_sdk=$(sed -n 's/^sdk\.dir=//p' "$project_dir/local.properties" | head -n 1 | sed 's#\\:#:#g')
+fi
 gradle_bin="$project_dir/gradlew"
 
 test -x "$java_home/bin/java"

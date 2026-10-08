@@ -109,6 +109,35 @@ public final class SecureMediaIndexTest {
         }
     }
 
+    @Test
+    public void temporaryMessageIdUpdatedWhenServerIdConfirmed() {
+        Context context = ApplicationProvider.getApplicationContext();
+        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        SecureMediaIndex index = new SecureMediaIndex(context, 3, peer);
+        try {
+            index.put(entry(
+                    -100, 1000, "TGS1:outbound-gif",
+                    SecureMediaIndex.KIND_GIF,
+                    "/cache/animation.gif"));
+
+            SecureMediaIndex.Entry entryWithServerId =
+                    index.find(555, "TGS1:outbound-gif");
+            assertEquals(555, entryWithServerId.messageId);
+            assertEquals(SecureMediaIndex.KIND_GIF, entryWithServerId.kind);
+            assertEquals("/cache/animation.gif", entryWithServerId.plaintextPath);
+
+            SecureMediaIndex.Entry foundAgain =
+                    index.find(555, "TGS1:outbound-gif");
+            assertEquals(555, foundAgain.messageId);
+
+            byte[] digest = SecureMediaIndex.digest("TGS1:outbound-gif");
+            SecureMediaIndex.Entry byDigest = index.findByDigest(555, digest);
+            assertEquals(555, byDigest.messageId);
+        } finally {
+            index.forgetPeer();
+        }
+    }
+
     private static SecureMediaIndex.Entry entry(
             int messageId,
             int date,

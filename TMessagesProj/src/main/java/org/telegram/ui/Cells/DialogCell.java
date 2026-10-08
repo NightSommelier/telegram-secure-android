@@ -61,6 +61,7 @@ import androidx.core.math.MathUtils;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.ChatObject;
 import org.telegram.messenger.ChatThemeController;
 import org.telegram.messenger.CodeHighlighting;
@@ -2961,6 +2962,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         updateThumbsPosition();
     }
 
+    private static final android.util.LruCache<String, CharSequence> forkSecurePreviewCache =
+            new android.util.LruCache<>(512);
+
     /**
      * Resolves Fork-Secure carriers only for ordinary one-to-one user dialogs.
      * Native Telegram Secret Chats, groups, bots, self, and service dialogs never enter this path.
@@ -2987,6 +2991,15 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         if (carrier == null || !carrier.startsWith(SecureCarrierCodec.PREFIX)) {
             return;
         }
+        String cacheKey = currentAccount + "_" + currentDialogId + "_" + carrier;
+        CharSequence cached = forkSecurePreviewCache.get(cacheKey);
+        if (cached != null) {
+            message.applyNewText(cached);
+            if (message.getDocument() != null) {
+                message.caption = null;
+            }
+            return;
+        }
         // Fail closed before consulting the local secure cache. Document captions are stored
         // separately and otherwise win over messageText in getMessageStringFormatted().
         message.applyNewText(message.getDocument() != null
@@ -3005,42 +3018,48 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             if (preview == null) {
                 return;
             }
+            CharSequence previewText;
             if (preview.kind == SecureChatEngine.DialogPreview.Kind.PLAINTEXT) {
-                message.applyNewText(LocaleController.formatString(
-                        R.string.ForkSecureTextPreview, preview.plaintext));
+                previewText = LocaleController.formatString(
+                        R.string.ForkSecureTextPreview, preview.plaintext);
             } else if (preview.kind == SecureChatEngine.DialogPreview.Kind.PAIRING_ACK) {
-                message.applyNewText(getString(R.string.ForkSecurePairingConfirmed));
+                previewText = getString(R.string.ForkSecurePairingConfirmed);
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.PAIRING_REJECTED) {
-                message.applyNewText(getString(R.string.ForkSecurePairingRejected));
+                previewText = getString(R.string.ForkSecurePairingRejected);
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.STATIC_STICKER) {
-                message.applyNewText(getString(R.string.ForkSecureEncryptedSticker));
+                previewText = getString(R.string.ForkSecureEncryptedSticker);
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.PHOTO) {
-                message.applyNewText(getString(R.string.ForkSecureEncryptedPhoto));
+                previewText = getString(R.string.ForkSecureEncryptedPhoto);
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.FILE) {
-                message.applyNewText(getString(R.string.ForkSecureEncryptedFile));
+                previewText = getString(R.string.ForkSecureEncryptedFile);
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.PAIRING_OFFER_SENT) {
-                message.applyNewText(getString(R.string.ForkSecurePairingOfferSent));
+                previewText = getString(R.string.ForkSecurePairingOfferSent);
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.PAIRING_OFFER_RECEIVED) {
-                message.applyNewText(getString(R.string.ForkSecurePairingOfferReceived));
+                previewText = getString(R.string.ForkSecurePairingOfferReceived);
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.GROUP_KEY_DISTRIBUTED) {
-                message.applyNewText(getString(R.string.ForkSecureGroupKeyDistributed));
+                previewText = getString(R.string.ForkSecureGroupKeyDistributed);
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.GROUP_KEY_RECEIVED) {
-                message.applyNewText(getString(R.string.ForkSecureGroupKeyReceived));
+                previewText = getString(R.string.ForkSecureGroupKeyReceived);
             } else {
-                message.applyNewText(getString(R.string.ForkSecureOutgoingUnavailable));
+                previewText = getString(R.string.ForkSecureOutgoingUnavailable);
             }
+            forkSecurePreviewCache.put(cacheKey, previewText);
+            message.applyNewText(previewText);
         } catch (RuntimeException error) {
-            FileLog.e(error);
-            // A marked carrier must never leak ciphertext into the dialogs list.
-            message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+            CharSequence failedText = getString(R.string.ForkSecureMessageFailed);
+            forkSecurePreviewCache.put(cacheKey, failedText);
+            message.applyNewText(failedText);
+            if (BuildVars.LOGS_ENABLED) {
+                FileLog.d("DialogCell: secure carrier preview failed for dialog " + currentDialogId + ": " + error.getMessage());
+            }
         } finally {
             if (message.getDocument() != null) {
                 // A secure sticker is presented as a sticker, not as a document caption.
@@ -3080,6 +3099,10 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             }
             return;
         }
+        if (candidate.forkSecureMediaIndexChecked) {
+            return;
+        }
+        candidate.forkSecureMediaIndexChecked = true;
         try {
             SecureMediaIndex.Entry entry = new SecureMediaIndex(
                     ApplicationLoader.applicationContext, currentAccount, currentDialogId)
@@ -3093,7 +3116,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         } catch (RuntimeException error) {
             // The dialogs list is a presentation surface. A missing/corrupt local index must not
             // turn a marked carrier into plaintext or prevent the list from rendering.
-            FileLog.e(error);
+            if (BuildVars.LOGS_ENABLED) {
+                FileLog.d("DialogCell: secure media index lookup failed: " + error.getMessage());
+            }
         }
     }
 

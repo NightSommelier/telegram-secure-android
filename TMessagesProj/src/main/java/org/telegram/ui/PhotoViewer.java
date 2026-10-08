@@ -197,6 +197,7 @@ import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
 import org.telegram.messenger.WebFile;
+import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.secureoverlay.SecureMediaCache;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.messenger.camera.Size;
@@ -3152,7 +3153,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 videoPlayerControlFrameLayout.parentHeight = heightSize;
                 MarginLayoutParams controlLayoutParams =
                         (MarginLayoutParams) videoPlayerControlFrameLayout.getLayoutParams();
-                int controlBottomMargin = bottomLayoutHeight;
+                int controlBottomMargin = 0;
                 if (groupedPhotosHeight > 0
                         && (AndroidUtilities.isTablet() || heightSize > widthSize)) {
                     // The video seekbar is also bottom-aligned. Keep it above the media strip;
@@ -10403,15 +10404,19 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if ((videoPlayer != null ? videoPlayer.isPlaying() : photoViewerWebView.isPlaying()) && playbackState != ExoPlayer.STATE_ENDED) {
             if (!isPlaying) {
                 isPlaying = true;
-                photoProgressViews[0].setBackgroundState(isCurrentVideo ? PROGRESS_NONE : PROGRESS_PAUSE, false, true);
+                MessageObject currentGifMsg = currentMessageObject != null ? currentMessageObject : forkSecureLocalViewerMessage;
+                boolean isGif = currentGifMsg != null && (currentGifMsg.isGif() || currentGifMsg.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION);
+                photoProgressViews[0].setBackgroundState(isCurrentVideo || isGif ? PROGRESS_NONE : PROGRESS_PAUSE, false, true);
                 photoProgressViews[0].setIndexedAlpha(1, !isCurrentVideo && (!isAccessibilityEnabled() || playerWasPlaying) && ((playerAutoStarted && !playerWasPlaying) || !isActionBarVisible) ? 0f : 1f, false);
                 playerWasPlaying = true;
                 AndroidUtilities.runOnUIThread(updateProgressRunnable);
             }
         } else if (isPlaying || playbackState == ExoPlayer.STATE_ENDED) {
             if (currentEditMode != EDIT_MODE_PAINT) {
+                MessageObject currentGifMsg = currentMessageObject != null ? currentMessageObject : forkSecureLocalViewerMessage;
+                boolean isGif = currentGifMsg != null && (currentGifMsg.isGif() || currentGifMsg.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION);
                 photoProgressViews[0].setIndexedAlpha(1, 1f, playbackState == ExoPlayer.STATE_ENDED);
-                photoProgressViews[0].setBackgroundState(PROGRESS_PLAY, false, photoProgressViews[0].animAlphas[1] > 0f);
+                photoProgressViews[0].setBackgroundState(isGif ? PROGRESS_NONE : PROGRESS_PLAY, false, photoProgressViews[0].animAlphas[1] > 0f);
             }
             isPlaying = false;
             AndroidUtilities.cancelRunOnUIThread(updateProgressRunnable);
@@ -10879,13 +10884,20 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
         }
 
+        MessageObject loopingMessage = currentMessageObject != null
+                ? currentMessageObject
+                : (forkSecureLocalViewerMessage != null
+                        ? forkSecureLocalViewerMessage
+                        : (forkSecureLocalViewerMessages != null && switchingToIndex >= 0 && switchingToIndex < forkSecureLocalViewerMessages.size()
+                                ? forkSecureLocalViewerMessages.get(switchingToIndex) : null));
         Boolean savedLooping = VideoPlayer.getLooping(currentMessageObject);
         if (livePhoto) {
             playerLooping = false;
         } else if (savedLooping != null) {
             playerLooping = savedLooping;
         } else {
-            playerLooping = (currentMessageObject != null && currentMessageObject.getDuration() <= 30) || (pageBlocksAdapter != null && pageBlocksAdapter.isHardwarePlayer(currentIndex));
+            playerLooping = (loopingMessage != null && (loopingMessage.isGif() || loopingMessage.getDuration() <= 30))
+                    || (pageBlocksAdapter != null && pageBlocksAdapter.isHardwarePlayer(currentIndex));
         }
         videoPlayerControlFrameLayout.setSeekBarTransitionEnabled(playerLooping);
         videoPlayer.setLooping(playerLooping);
@@ -10908,7 +10920,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (pageBlocksAdapter != null) {
             bottomLayout.setVisibility(View.VISIBLE);
         }
-        if (pageBlocksAdapter != null && pageBlocksAdapter.isHardwarePlayer(currentIndex) && !pageBlocksAdapter.isVideo(currentIndex)) {
+        boolean isGifMessage = loopingMessage != null && (loopingMessage.isGif() || loopingMessage.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION);
+        if (isGifMessage) {
+            setVideoPlayerControlVisible(false, false);
+            bottomLayout.setVisibility(View.GONE);
+        } else if (pageBlocksAdapter != null && pageBlocksAdapter.isHardwarePlayer(currentIndex) && !pageBlocksAdapter.isVideo(currentIndex)) {
             setVideoPlayerControlVisible(false, true);
         } else {
             setVideoPlayerControlVisible(!isCurrentVideo && !livePhoto, true);
@@ -14582,9 +14598,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
         }
         boolean secureViewer = isForkSecureViewer();
+        MessageObject checkGif = currentMessageObject != null ? currentMessageObject : forkSecureLocalViewerMessage;
+        boolean isGif = checkGif != null && (checkGif.isGif() || checkGif.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION);
         if (currentMessageObject != null && currentMessageObject.isVideo() || currentBotInlineResult != null && (currentBotInlineResult.type.equals("video") || MessageObject.isVideoDocument(currentBotInlineResult.document)) || (pageBlocksAdapter != null && (pageBlocksAdapter.isVideo(index) || pageBlocksAdapter.isHardwarePlayer(index))) || (sendPhotoType == SELECT_TYPE_NO_SELECT && ((MediaController.PhotoEntry)imagesArrLocals.get(index)).isVideo)) {
-            playerAutoStarted = !secureViewer || SharedConfig.isAutoplayVideo();
-            if (!secureViewer || SharedConfig.isAutoplayVideo()) {
+            playerAutoStarted = isGif || !secureViewer || SharedConfig.isAutoplayVideo();
+            if (isGif || !secureViewer || SharedConfig.isAutoplayVideo()) {
                 onActionClick(false);
             }
         } else if (!imagesArrLocals.isEmpty()) {
@@ -14697,7 +14715,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
             boolean isInvoice = newMessageObject.isInvoice();
             boolean noforwards = MessagesController.getInstance(currentAccount).isPeerNoForwards(newMessageObject.getDialogId()) || (newMessageObject.messageOwner != null && newMessageObject.messageOwner.noforwards) || newMessageObject.hasRevealedExtendedMedia();
-            if (isVideo && !isLivePhoto) {
+            if (isVideo && !isLivePhoto && !newMessageObject.isGif()) {
                 bottomLayout.setVisibility(View.VISIBLE);
                 bottomLayout.setTag(1);
             } else {
@@ -16105,7 +16123,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         if (isVideo && videoPath != null) {
             isStreaming = false;
-            preparePlayer(null, videoPath, sendPhotoType == SELECT_TYPE_AVATAR && (!isLivePhoto || !isUnalivePhoto()) || isLivePhoto && !isUnalivePhoto(), false, editState.savedFilterState, isLivePhoto, livePhotoVideoOffset);
+            boolean playWhenReady = (sendPhotoType == SELECT_TYPE_AVATAR && (!isLivePhoto || !isUnalivePhoto()) || isLivePhoto && !isUnalivePhoto())
+                    || (forkSecureLocalViewerMessage != null || (forkSecureLocalViewerMessages != null && !forkSecureLocalViewerMessages.isEmpty()));
+            preparePlayer(null, videoPath, playWhenReady, false, editState.savedFilterState, isLivePhoto, livePhotoVideoOffset);
         }
 
         if (!imagesArrLocals.isEmpty()) {
@@ -16761,7 +16781,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     isLocalVideo = photoEntry.isVideo && (!photoEntry.isLivePhoto() || !photoEntry.isUnalivePhoto() && sendPhotoType != SELECT_TYPE_STICKER);
                 }
             }
-            if (isLocalVideo) {
+            MessageObject currentMsg = forkSecureLocalViewerMessage != null
+                    ? forkSecureLocalViewerMessage
+                    : (forkSecureLocalViewerMessages != null && index >= 0 && index < forkSecureLocalViewerMessages.size()
+                            ? forkSecureLocalViewerMessages.get(index)
+                            : currentMessageObject);
+            boolean isLocalGif = currentMsg != null && (currentMsg.isGif() || currentMsg.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION);
+            if (isLocalVideo && !isLocalGif) {
                 photoProgressViews[a].setBackgroundState(PROGRESS_PLAY, animated, true);
             } else {
                 photoProgressViews[a].setBackgroundState(PROGRESS_NONE, animated, true);
@@ -17401,15 +17427,21 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         int viewerIndex = -1;
         for (int i = 0; i < sourceMessages.size(); i++) {
             MessageObject source = sourceMessages.get(i);
+            boolean isAnimation = source != null
+                    && (source.isGif()
+                            || source.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                            || "image/gif".equalsIgnoreCase(source.forkSecureMediaMime));
             boolean secureVideo = source != null
+                    && !isAnimation
                     && source.forkSecureMediaKind
                             == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
                     && source.forkSecureMediaMime != null
                     && source.forkSecureMediaMime.startsWith("video/");
             if (source == null
-                    || source.forkSecureMediaKind
+                    || (source.forkSecureMediaKind
                             != MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
                             && !secureVideo
+                            && !isAnimation)
                     || TextUtils.isEmpty(source.forkSecureMediaPath)) {
                 continue;
             }
@@ -17419,7 +17451,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
             Pair<Integer, Integer> orientation = AndroidUtilities.getImageOrientation(file);
             MediaController.PhotoEntry entry;
-            if (secureVideo) {
+            if (secureVideo || isAnimation) {
                 TLRPC.TL_documentAttributeVideo videoAttribute =
                         new TLRPC.TL_documentAttributeVideo();
                 SendMessagesHelper.fillVideoAttribute(

@@ -39,6 +39,7 @@ import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MediaController;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
+import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.utils.settings.SharedSettings;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.Utilities;
@@ -367,9 +368,10 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
         lastVisibleDurationMs = 0L;
         progressView.setProgress(0f);
         showInitialPlaceholder();
-        upload = new TelegramRoundVideoUpload(currentAccount, secretChat);
+        final boolean forkSecure = delegate != null && SendMessagesHelper.isForkSecureProtectedPeer(currentAccount, delegate.getDialogId());
+        upload = forkSecure ? null : new TelegramRoundVideoUpload(currentAccount, secretChat);
         activeOutputResolution = SharedSettings.roundVideoOutputResolution.get();
-        session = new RoundVideoSession.Builder(getContext(), textureView)
+        RoundVideoSession.Builder sessionBuilder = new RoundVideoSession.Builder(getContext(), textureView)
                 .setInitialFacing(SharedSettings.roundVideoLastCamera.get())
                 .setOutputResolution(activeOutputResolution)
                 .setVideoBitrate(SharedSettings.roundVideoVideoBitrate.get())
@@ -377,9 +379,13 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
                 .setFrameRate(SharedSettings.roundVideoFrameRate.get())
                 .setCompositionEnabled(SharedSettings.roundVideoComposition.get())
                 .setListener(sessionListener)
-                .setOutputListener(upload)
-                .setScreenFlashController(this::setScreenFlashEnabled)
-                .build();
+                .setScreenFlashController(this::setScreenFlashEnabled);
+        if (upload != null) {
+            sessionBuilder.setOutputListener(upload);
+        } else {
+            sessionBuilder.setOutputListener(new RoundVideoSession.OutputListener() {});
+        }
+        session = sessionBuilder.build();
         MediaController.getInstance().requestRecordAudioFocus(true);
         session.start();
         startAnimation(true, fromPaused);

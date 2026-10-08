@@ -6,7 +6,11 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
+import android.graphics.drawable.Drawable;
 import android.text.Layout;
 import android.text.SpannableStringBuilder;
 import android.text.StaticLayout;
@@ -260,7 +264,9 @@ public class SharedAudioCell extends FrameLayout implements DownloadController.F
         currentMessageObject = messageObject;
         final TLRPC.Document document = messageObject.getDocument();
         final TLRPC.PhotoSize thumb = document != null ? FileLoader.getClosestPhotoSizeWithSize(document.thumbs, 360) : null;
-        if (thumb instanceof TLRPC.TL_photoSize || thumb instanceof TLRPC.TL_photoSizeProgressive) {
+        if (messageObject.isRoundVideo() && messageObject.isForkSecureCarrier() && !TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+            radialProgress.setImageOverlay("vthumb://0:" + messageObject.forkSecureMediaPath);
+        } else if (thumb instanceof TLRPC.TL_photoSize || thumb instanceof TLRPC.TL_photoSizeProgressive) {
             radialProgress.setImageOverlay(thumb, document, messageObject);
         } else {
             Bitmap cover = null;
@@ -764,6 +770,7 @@ public class SharedAudioCell extends FrameLayout implements DownloadController.F
         radialProgress.setProgressColor(getThemedColor(buttonPressed ? Theme.key_chat_inAudioSelectedProgress : Theme.key_chat_inAudioProgress));
         radialProgress.setOverlayImageAlpha(showNameProgress);
         radialProgress.draw(canvas);
+        drawForkSecureBadge(canvas);
 
         if (needDivider) {
             if (LocaleController.isRTL) {
@@ -802,6 +809,38 @@ public class SharedAudioCell extends FrameLayout implements DownloadController.F
         }
         showName = show;
         invalidate();
+    }
+
+    private final Paint forkSecureBadgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Drawable forkSecureLockDrawable;
+
+    private void drawForkSecureBadge(Canvas canvas) {
+        if (currentMessageObject == null || !(currentMessageObject.isForkSecureCarrier() || currentMessageObject.forkSecureVerified)) {
+            return;
+        }
+        float centerX;
+        if (LocaleController.isRTL) {
+            centerX = buttonX + dp(8);
+        } else {
+            centerX = buttonX + dp(36);
+        }
+        float centerY = buttonY + dp(36);
+        forkSecureBadgePaint.setColor(0x99000000);
+        canvas.drawCircle(centerX, centerY, dp(8), forkSecureBadgePaint);
+        if (forkSecureLockDrawable == null) {
+            forkSecureLockDrawable = getContext().getResources()
+                    .getDrawable(R.drawable.msg_mini_lock3).mutate();
+            forkSecureLockDrawable.setColorFilter(
+                    new PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN));
+        }
+        int halfWidth = dp(4);
+        int halfHeight = dp(5);
+        forkSecureLockDrawable.setBounds(
+                (int) centerX - halfWidth,
+                (int) centerY - halfHeight,
+                (int) centerX + halfWidth,
+                (int) centerY + halfHeight);
+        forkSecureLockDrawable.draw(canvas);
     }
 
     public static final class Factory extends UItem.UItemFactory<SharedAudioCell> {

@@ -55,6 +55,14 @@ public final class SecureChatEngine {
             "\u0000fork-secure-display:group-key-received:v1";
     private static final Object DECRYPT_LOCK = new Object();
     private static final Object ENCRYPT_LOCK = new Object();
+    private static final int FAILED_DECRYPT_CACHE_LIMIT = 512;
+    private static final java.util.LinkedHashMap<String, Boolean> failedDecryptCarriers =
+            new java.util.LinkedHashMap<String, Boolean>(FAILED_DECRYPT_CACHE_LIMIT, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, Boolean> eldest) {
+                    return size() > FAILED_DECRYPT_CACHE_LIMIT;
+                }
+            };
 
     /**
      * The protocol-state key is intentionally unavailable while Android considers the device
@@ -368,7 +376,12 @@ public final class SecureChatEngine {
         }
     }
 
-    public boolean isPaired() { return state.isPaired(account, peerUserId); }
+    public boolean isPaired() {
+        if (peerUserId < 0) {
+            return state.isPaired(account, peerUserId);
+        }
+        return state.isPaired(account, peerUserId) && store.containsSession(peerAddress);
+    }
 
     public Mode getMode() {
         if (state.isIdentityPending(account, peerUserId)) {
@@ -377,7 +390,7 @@ public final class SecureChatEngine {
                     ? Mode.RECOVERY_CHANGED
                     : Mode.IDENTITY_CHANGED;
         }
-        if (state.isPaired(account, peerUserId)) {
+        if (isPaired()) {
             return Mode.PROTECTED;
         }
         if (state.isWaiting(account, peerUserId)) {
@@ -959,6 +972,11 @@ public final class SecureChatEngine {
 
     public String decryptText(String carrier, long senderUserId) {
         synchronized (DECRYPT_LOCK) {
+            synchronized (failedDecryptCarriers) {
+                if (failedDecryptCarriers.containsKey(carrier)) {
+                    throw new SecureChatException("cannot decrypt secure text (previously failed)", null);
+                }
+            }
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
             if (decoded == null) return null;
             if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
@@ -1051,6 +1069,9 @@ public final class SecureChatEngine {
             } catch (SecureChatException e) {
                 throw e;
             } catch (Exception e) {
+                synchronized (failedDecryptCarriers) {
+                    failedDecryptCarriers.put(carrier, Boolean.TRUE);
+                }
                 throw new SecureChatException("cannot decrypt secure text", e);
             }
         }
@@ -1094,6 +1115,15 @@ public final class SecureChatEngine {
             return new DialogPreview(
                     controlPreviewKind(local),
                     isControlDisplay(local) ? null : local);
+        }
+        try {
+            String cached = localText.loadIncoming(carrier);
+            if (cached != null) {
+                return new DialogPreview(
+                        controlPreviewKind(cached),
+                        isControlDisplay(cached) ? null : cached);
+            }
+        } catch (Exception ignore) {
         }
         String plaintext = decryptText(carrier, senderUserId);
         return new DialogPreview(
