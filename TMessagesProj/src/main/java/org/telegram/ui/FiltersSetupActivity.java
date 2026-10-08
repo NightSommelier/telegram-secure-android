@@ -733,9 +733,12 @@ public class FiltersSetupActivity extends BaseFragment implements NotificationCe
 
     public void createFolder(INavigationLayout navigationLayout) {
         final int count = getMessagesController().getDialogFilters().size();
+        final int limitDefault = getMessagesController().dialogFiltersLimitDefault;
+        final int limitPremium = getMessagesController().dialogFiltersLimitPremium;
+        FileLog.d("ForkFolders: createFolder check. count=" + count + ", limitDefault=" + limitDefault + ", limitPremium=" + limitPremium + ", isPremium=" + getUserConfig().isPremium());
         if (
-            count - 1 >= getMessagesController().dialogFiltersLimitDefault && !getUserConfig().isPremium() ||
-            count >= getMessagesController().dialogFiltersLimitPremium
+            count - 1 >= limitDefault && !getUserConfig().isPremium() ||
+            count >= limitPremium
         ) {
             showDialog(new LimitReachedBottomSheet(this, getContext(), LimitReachedBottomSheet.TYPE_FOLDERS, currentAccount, null));
         } else if (navigationLayout != null) {

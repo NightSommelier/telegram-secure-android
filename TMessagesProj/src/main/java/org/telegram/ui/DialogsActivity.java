@@ -8689,7 +8689,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             int maxPinnedCount;
             if (containsFilter && filter != null) {
-                maxPinnedCount = 100 - filter.alwaysShow.size();
+                int chatsLimit = getUserConfig().isPremium() ? getMessagesController().dialogFiltersChatsLimitPremium : getMessagesController().dialogFiltersChatsLimitDefault;
+                maxPinnedCount = chatsLimit - filter.alwaysShow.size();
             } else if (folderId != 0 || filter != null) {
                 if (getUserConfig().isPremium()) {
                     maxPinnedCount = getMessagesController().maxFolderPinnedDialogsCountPremium;
@@ -9225,7 +9226,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             int maxPinnedCount;
             if (containsFilter) {
-                maxPinnedCount = 100 - filter.alwaysShow.size();
+                int chatsLimit = getUserConfig().isPremium() ? getMessagesController().dialogFiltersChatsLimitPremium : getMessagesController().dialogFiltersChatsLimitDefault;
+                maxPinnedCount = chatsLimit - (filter != null ? filter.alwaysShow.size() : 0);
             } else if (folderId != 0 || filter != null) {
                 if (UserConfig.getInstance(currentAccount).isPremium()) {
                     maxPinnedCount = getMessagesController().maxFolderPinnedDialogsCountPremium;
@@ -9235,6 +9237,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             } else {
                 maxPinnedCount = getUserConfig().isPremium() ? getMessagesController().dialogFiltersPinnedLimitPremium : getMessagesController().dialogFiltersPinnedLimitDefault;
             }
+            FileLog.d("ForkFolders: pin check. pinnedCount=" + pinnedCount + ", newPinned=" + newPinnedCount + ", alreadyAdded=" + alreadyAdded + ", maxPinnedCount=" + maxPinnedCount + ", folderId=" + folderId + ", filter=" + (filter != null ? filter.id : "null"));
             if (newPinnedSecretCount + pinnedSecretCount > maxPinnedCount || newPinnedCount + pinnedCount - alreadyAdded > maxPinnedCount) {
                 if (folderId != 0 || filter != null) {
                     AlertsCreator.showSimpleAlert(DialogsActivity.this, LocaleController.formatString("PinFolderLimitReached", R.string.PinFolderLimitReached, LocaleController.formatPluralString("Chats", maxPinnedCount)));
@@ -9668,11 +9671,13 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 filter.pinnedDialogs.delete(selectedDialog);
             }
 
+            FileLog.d("ForkFolders: pinDialog in folder id=" + filter.id + " name=" + filter.name + " dialogId=" + selectedDialog + " pin=" + pin + " totalPinned=" + filter.pinnedDialogs.size());
             if (animated) {
                 getMessagesController().onFilterUpdate(filter);
             }
             updated = true;
         } else {
+            FileLog.d("ForkFolders: pinDialog in main list dialogId=" + selectedDialog + " pin=" + pin);
             updated = getMessagesController().pinDialog(selectedDialog, pin, null, -1);
         }
 

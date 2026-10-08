@@ -602,6 +602,17 @@ public class MessagesController extends BaseController implements NotificationCe
     public int savedGifsLimitPremium;
     public int stickersFavedLimitDefault;
     public int stickersFavedLimitPremium;
+    public static final int FOLDER_LIMIT_MULTIPLIER = 3;
+
+    public static int getMultipliedFolderLimit(android.content.SharedPreferences prefs, String key, int defaultBaseVal) {
+        int val = prefs.getInt(key, defaultBaseVal);
+        int expectedMin = defaultBaseVal * FOLDER_LIMIT_MULTIPLIER;
+        if (val < expectedMin) {
+            val *= FOLDER_LIMIT_MULTIPLIER;
+        }
+        return Math.max(expectedMin, val);
+    }
+
     public int maxPinnedDialogsCountDefault;
     public int maxPinnedDialogsCountPremium;
     public int dialogFiltersLimitDefault;
@@ -894,8 +905,16 @@ public class MessagesController extends BaseController implements NotificationCe
                     filtersSortedById.get(i).locked = false;
                 }
             }
+        } else {
+            for (int i = 0; i < dialogFilters.size(); i++) {
+                if (dialogFilters.get(i).locked) {
+                    dialogFilters.get(i).locked = false;
+                    changed = true;
+                }
+            }
         }
         if (changed) {
+            FileLog.d("ForkFolders: lockFiltersInternal updated locked filters. total=" + dialogFilters.size() + ", limitDefault=" + dialogFiltersLimitDefault);
             getNotificationCenter().postNotificationName(NotificationCenter.dialogFiltersUpdated);
         }
     }
@@ -1592,8 +1611,8 @@ public class MessagesController extends BaseController implements NotificationCe
         callConnectTimeout = mainPreferences.getInt("callConnectTimeout", 30000);
         callPacketTimeout = mainPreferences.getInt("callPacketTimeout", 10000);
         updateCheckDelay = mainPreferences.getInt("updateCheckDelay", 24 * 60 * 60);
-        maxFolderPinnedDialogsCountDefault = mainPreferences.getInt("maxFolderPinnedDialogsCountDefault", 100);
-        maxFolderPinnedDialogsCountPremium = mainPreferences.getInt("maxFolderPinnedDialogsCountPremium", 100);
+        maxFolderPinnedDialogsCountDefault = getMultipliedFolderLimit(mainPreferences, "maxFolderPinnedDialogsCountDefault", 100);
+        maxFolderPinnedDialogsCountPremium = getMultipliedFolderLimit(mainPreferences, "maxFolderPinnedDialogsCountPremium", 100);
         maxMessageLength = mainPreferences.getInt("maxMessageLength", 4096);
         maxCaptionLength = mainPreferences.getInt("maxCaptionLength", 1024);
         mapProvider = mainPreferences.getInt("mapProvider", 0);
@@ -1645,16 +1664,15 @@ public class MessagesController extends BaseController implements NotificationCe
         savedGifsLimitPremium = mainPreferences.getInt("savedGifsLimitPremium", 400);
         stickersFavedLimitDefault = mainPreferences.getInt("stickersFavedLimitDefault", 5);
         stickersFavedLimitPremium = mainPreferences.getInt("stickersFavedLimitPremium", 200);
-        maxPinnedDialogsCountDefault = mainPreferences.getInt("maxPinnedDialogsCountDefault", 5);
-        maxPinnedDialogsCountPremium = mainPreferences.getInt("maxPinnedDialogsCountPremium", 5);
-        maxPinnedDialogsCountDefault = mainPreferences.getInt("maxPinnedDialogsCountDefault", 5);
-        maxPinnedDialogsCountPremium = mainPreferences.getInt("maxPinnedDialogsCountPremium", 5);
-        dialogFiltersLimitDefault = mainPreferences.getInt("dialogFiltersLimitDefault", 10);
-        dialogFiltersLimitPremium = mainPreferences.getInt("dialogFiltersLimitPremium", 20);
-        dialogFiltersChatsLimitDefault = mainPreferences.getInt("dialogFiltersChatsLimitDefault", 100);
-        dialogFiltersChatsLimitPremium = mainPreferences.getInt("dialogFiltersChatsLimitPremium", 200);
-        dialogFiltersPinnedLimitDefault = mainPreferences.getInt("dialogFiltersPinnedLimitDefault", 5);
-        dialogFiltersPinnedLimitPremium = mainPreferences.getInt("dialogFiltersPinnedLimitPremium", 10);
+        maxPinnedDialogsCountDefault = getMultipliedFolderLimit(mainPreferences, "maxPinnedDialogsCountDefault", 5);
+        maxPinnedDialogsCountPremium = getMultipliedFolderLimit(mainPreferences, "maxPinnedDialogsCountPremium", 10);
+        dialogFiltersLimitDefault = getMultipliedFolderLimit(mainPreferences, "dialogFiltersLimitDefault", 10);
+        dialogFiltersLimitPremium = getMultipliedFolderLimit(mainPreferences, "dialogFiltersLimitPremium", 20);
+        dialogFiltersChatsLimitDefault = getMultipliedFolderLimit(mainPreferences, "dialogFiltersChatsLimitDefault", 100);
+        dialogFiltersChatsLimitPremium = getMultipliedFolderLimit(mainPreferences, "dialogFiltersChatsLimitPremium", 200);
+        dialogFiltersPinnedLimitDefault = getMultipliedFolderLimit(mainPreferences, "dialogFiltersPinnedLimitDefault", 5);
+        dialogFiltersPinnedLimitPremium = getMultipliedFolderLimit(mainPreferences, "dialogFiltersPinnedLimitPremium", 10);
+        FileLog.d("ForkFolders: initialized limits: folders=" + dialogFiltersLimitDefault + "/" + dialogFiltersLimitPremium + ", pinned=" + dialogFiltersPinnedLimitDefault + "/" + dialogFiltersPinnedLimitPremium + ", chats=" + dialogFiltersChatsLimitDefault + "/" + dialogFiltersChatsLimitPremium);
         publicLinksLimitDefault = mainPreferences.getInt("publicLinksLimitDefault", 10);
         publicLinksLimitPremium = mainPreferences.getInt("publicLinksLimitPremium", 20);
         captionLengthLimitDefault = mainPreferences.getInt("captionLengthLimitDefault", 1024);
@@ -3511,10 +3529,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 case "pinned_dialogs_count_max_default": {
                     if (value.value instanceof TLRPC.TL_jsonNumber) {
                         TLRPC.TL_jsonNumber number = (TLRPC.TL_jsonNumber) value.value;
-                        if (number.value != maxPinnedDialogsCountDefault) {
-                            maxPinnedDialogsCountDefault = (int) number.value;
+                        int target = (int) number.value * FOLDER_LIMIT_MULTIPLIER;
+                        if (target != maxPinnedDialogsCountDefault) {
+                            maxPinnedDialogsCountDefault = target;
                             editor.putInt("maxPinnedDialogsCountDefault", maxPinnedDialogsCountDefault);
                             changed = true;
+                            FileLog.d("ForkFolders: appConfig updated maxPinnedDialogsCountDefault to " + maxPinnedDialogsCountDefault);
                         }
                     }
                     break;
@@ -3522,10 +3542,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 case "pinned_dialogs_count_max_premium": {
                     if (value.value instanceof TLRPC.TL_jsonNumber) {
                         TLRPC.TL_jsonNumber number = (TLRPC.TL_jsonNumber) value.value;
-                        if (number.value != maxPinnedDialogsCountPremium) {
-                            maxPinnedDialogsCountPremium = (int) number.value;
+                        int target = (int) number.value * FOLDER_LIMIT_MULTIPLIER;
+                        if (target != maxPinnedDialogsCountPremium) {
+                            maxPinnedDialogsCountPremium = target;
                             editor.putInt("maxPinnedDialogsCountPremium", maxPinnedDialogsCountPremium);
                             changed = true;
+                            FileLog.d("ForkFolders: appConfig updated maxPinnedDialogsCountPremium to " + maxPinnedDialogsCountPremium);
                         }
                     }
                     break;
@@ -3533,10 +3555,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 case "dialog_filters_limit_default": {
                     if (value.value instanceof TLRPC.TL_jsonNumber) {
                         TLRPC.TL_jsonNumber number = (TLRPC.TL_jsonNumber) value.value;
-                        if (number.value != dialogFiltersLimitDefault) {
-                            dialogFiltersLimitDefault = (int) number.value;
+                        int target = (int) number.value * FOLDER_LIMIT_MULTIPLIER;
+                        if (target != dialogFiltersLimitDefault) {
+                            dialogFiltersLimitDefault = target;
                             editor.putInt("dialogFiltersLimitDefault", dialogFiltersLimitDefault);
                             changed = true;
+                            FileLog.d("ForkFolders: appConfig updated dialogFiltersLimitDefault to " + dialogFiltersLimitDefault);
                         }
                     }
                     break;
@@ -3544,10 +3568,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 case "dialog_filters_limit_premium": {
                     if (value.value instanceof TLRPC.TL_jsonNumber) {
                         TLRPC.TL_jsonNumber number = (TLRPC.TL_jsonNumber) value.value;
-                        if (number.value != dialogFiltersLimitPremium) {
-                            dialogFiltersLimitPremium = (int) number.value;
+                        int target = (int) number.value * FOLDER_LIMIT_MULTIPLIER;
+                        if (target != dialogFiltersLimitPremium) {
+                            dialogFiltersLimitPremium = target;
                             editor.putInt("dialogFiltersLimitPremium", dialogFiltersLimitPremium);
                             changed = true;
+                            FileLog.d("ForkFolders: appConfig updated dialogFiltersLimitPremium to " + dialogFiltersLimitPremium);
                         }
                     }
                     break;
@@ -3555,10 +3581,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 case "dialog_filters_chats_limit_default": {
                     if (value.value instanceof TLRPC.TL_jsonNumber) {
                         TLRPC.TL_jsonNumber number = (TLRPC.TL_jsonNumber) value.value;
-                        if (number.value != dialogFiltersChatsLimitDefault) {
-                            dialogFiltersChatsLimitDefault = (int) number.value;
+                        int target = (int) number.value * FOLDER_LIMIT_MULTIPLIER;
+                        if (target != dialogFiltersChatsLimitDefault) {
+                            dialogFiltersChatsLimitDefault = target;
                             editor.putInt("dialogFiltersChatsLimitDefault", dialogFiltersChatsLimitDefault);
                             changed = true;
+                            FileLog.d("ForkFolders: appConfig updated dialogFiltersChatsLimitDefault to " + dialogFiltersChatsLimitDefault);
                         }
                     }
                     break;
@@ -3566,10 +3594,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 case "dialog_filters_chats_limit_premium": {
                     if (value.value instanceof TLRPC.TL_jsonNumber) {
                         TLRPC.TL_jsonNumber number = (TLRPC.TL_jsonNumber) value.value;
-                        if (number.value != dialogFiltersChatsLimitPremium) {
-                            dialogFiltersChatsLimitPremium = (int) number.value;
+                        int target = (int) number.value * FOLDER_LIMIT_MULTIPLIER;
+                        if (target != dialogFiltersChatsLimitPremium) {
+                            dialogFiltersChatsLimitPremium = target;
                             editor.putInt("dialogFiltersChatsLimitPremium", dialogFiltersChatsLimitPremium);
                             changed = true;
+                            FileLog.d("ForkFolders: appConfig updated dialogFiltersChatsLimitPremium to " + dialogFiltersChatsLimitPremium);
                         }
                     }
                     break;
@@ -3577,10 +3607,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 case "dialog_filters_pinned_limit_default": {
                     if (value.value instanceof TLRPC.TL_jsonNumber) {
                         TLRPC.TL_jsonNumber number = (TLRPC.TL_jsonNumber) value.value;
-                        if (number.value != dialogFiltersPinnedLimitDefault) {
-                            dialogFiltersPinnedLimitDefault = (int) number.value;
+                        int target = (int) number.value * FOLDER_LIMIT_MULTIPLIER;
+                        if (target != dialogFiltersPinnedLimitDefault) {
+                            dialogFiltersPinnedLimitDefault = target;
                             editor.putInt("dialogFiltersPinnedLimitDefault", dialogFiltersPinnedLimitDefault);
                             changed = true;
+                            FileLog.d("ForkFolders: appConfig updated dialogFiltersPinnedLimitDefault to " + dialogFiltersPinnedLimitDefault);
                         }
                     }
                     break;
@@ -3588,10 +3620,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 case "dialog_filters_pinned_limit_premium": {
                     if (value.value instanceof TLRPC.TL_jsonNumber) {
                         TLRPC.TL_jsonNumber number = (TLRPC.TL_jsonNumber) value.value;
-                        if (number.value != dialogFiltersPinnedLimitPremium) {
-                            dialogFiltersPinnedLimitPremium = (int) number.value;
+                        int target = (int) number.value * FOLDER_LIMIT_MULTIPLIER;
+                        if (target != dialogFiltersPinnedLimitPremium) {
+                            dialogFiltersPinnedLimitPremium = target;
                             editor.putInt("dialogFiltersPinnedLimitPremium", dialogFiltersPinnedLimitPremium);
                             changed = true;
+                            FileLog.d("ForkFolders: appConfig updated dialogFiltersPinnedLimitPremium to " + dialogFiltersPinnedLimitPremium);
                         }
                     }
                     break;

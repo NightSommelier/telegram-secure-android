@@ -3575,7 +3575,13 @@ public class MessagesStorage extends BaseController {
         boolean anythingChanged = false;
         putUsersAndChats(users, chats, true, false);
         for (int a = 0, N = filtersToDelete.size(); a < N; a++) {
-            deleteDialogFilterInternal(filtersToDelete.valueAt(a));
+            MessagesController.DialogFilter filter = filtersToDelete.valueAt(a);
+            if (filtersOrder != null && filtersOrder.size() >= 10 && dialogFilters.size() <= getMessagesController().dialogFiltersLimitPremium) {
+                FileLog.d("ForkFolders: retaining local filter id=" + filter.id + " name=" + filter.name + " missing from server response (server count=" + filtersOrder.size() + ", local count=" + dialogFilters.size() + ")");
+                continue;
+            }
+            FileLog.d("ForkFolders: deleting filter id=" + filter.id + " name=" + filter.name);
+            deleteDialogFilterInternal(filter);
             anythingChanged = true;
         }
         for (Integer id : filtersUnreadCounterReset) {
@@ -3592,6 +3598,7 @@ public class MessagesStorage extends BaseController {
             }
             HashSet<Long> set = entry.getValue();
             for (Long id : set) {
+                FileLog.d("ForkFolders: filterDialogRemovals unpinning peer id=" + id + " from filter id=" + filter.id);
                 filter.pinnedDialogs.delete(id);
             }
             anythingChanged = true;

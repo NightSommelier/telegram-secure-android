@@ -1116,6 +1116,7 @@ public class FilterCreateActivity extends BaseFragment {
         if (fragment == null || fragment.getParentActivity() == null) {
             return;
         }
+        FileLog.d("ForkFolders: saveFilterToServer filterId=" + filter.id + ", name=" + newFilterName + ", pinned=" + (newPinned != null ? newPinned.size() : 0) + ", include=" + (newAlwaysShow != null ? newAlwaysShow.size() : 0) + ", creatingNew=" + creatingNew);
         AlertDialog progressDialog;
         if (progress) {
             progressDialog = new AlertDialog(fragment.getParentActivity(), AlertDialog.ALERT_TYPE_SPINNER);
@@ -1215,6 +1216,11 @@ public class FilterCreateActivity extends BaseFragment {
             }
         }
         fragment.getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+            if (error != null) {
+                FileLog.w("ForkFolders: updateDialogFilter server returned error: " + error.code + " " + error.text + " for filter id=" + filter.id);
+            } else {
+                FileLog.d("ForkFolders: updateDialogFilter server success for filter id=" + filter.id);
+            }
             if (progress) {
                 try {
                     if (progressDialog != null) {
