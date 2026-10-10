@@ -3775,6 +3775,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 "cannot copy secure attachment URI", error);
             }
             temporary = true;
+        } else if (source.uri != null && (TextUtils.isEmpty(fileName) || fileName.endsWith(".tmp") || fileName.startsWith("file."))) {
+            String uriName = queryForkSecureFileName(source.uri);
+            if (!TextUtils.isEmpty(uriName) && !"file".equals(uriName)) {
+                fileName = uriName;
+            }
         }
         if (!file.isFile()
                 || file.length() <= 0
@@ -3796,7 +3801,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         return new ForkSecureResolvedSource(
                 file,
                 temporary,
-                safeForkSecureFileName(fileName),
+                safeForkSecureFileName(fileName, mimeType),
                 mimeType,
                 source.caption == null ? "" : source.caption,
                 source.photo,
@@ -3808,6 +3813,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     private static String queryForkSecureFileName(Uri uri) {
+        if (uri == null) {
+            return "file";
+        }
         try (Cursor cursor = ApplicationLoader.applicationContext
                 .getContentResolver().query(
                         uri,
@@ -3824,10 +3832,17 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         } catch (RuntimeException error) {
             FileLog.e(error);
         }
+        String path = uri.getPath();
+        if (!TextUtils.isEmpty(path)) {
+            int lastSlash = path.lastIndexOf('/');
+            if (lastSlash >= 0 && lastSlash + 1 < path.length()) {
+                return path.substring(lastSlash + 1);
+            }
+        }
         return "file";
     }
 
-    private static String safeForkSecureFileName(String value) {
+    private static String safeForkSecureFileName(String value, String mimeType) {
         String candidate = TextUtils.isEmpty(value) ? "file" : new File(value).getName();
         candidate = candidate.replace('/', '_').replace('\\', '_');
         StringBuilder safe = new StringBuilder();
@@ -3839,10 +3854,26 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             safe.setLength(0);
             safe.append("file");
         }
-        while (safe.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 128) {
-            safe.setLength(safe.length() - 1);
+        String result = safe.toString();
+        if (!result.contains(".") && !TextUtils.isEmpty(mimeType)) {
+            String ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType.toLowerCase(java.util.Locale.ROOT));
+            if (!TextUtils.isEmpty(ext)) {
+                result += "." + ext;
+            }
         }
-        return safe.toString();
+        while (result.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 128) {
+            int lastDot = result.lastIndexOf('.');
+            if (lastDot > 0 && lastDot < result.length() - 1) {
+                String ext = result.substring(lastDot);
+                String base = result.substring(0, lastDot);
+                if (base.length() > 1) {
+                    result = base.substring(0, base.length() - 1) + ext;
+                    continue;
+                }
+            }
+            result = result.substring(0, result.length() - 1);
+        }
+        return result;
     }
 
     private static String getForkSecureMimeTypeForPath(String path) {

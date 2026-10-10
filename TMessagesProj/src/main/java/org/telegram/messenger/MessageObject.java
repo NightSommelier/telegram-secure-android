@@ -823,6 +823,7 @@ public class MessageObject {
                     new TLRPC.TL_documentAttributeFilename();
             fileName.file_name = !TextUtils.isEmpty(entry.fileName) ? entry.fileName : "file";
             document.attributes.add(fileName);
+            document.file_name_fixed = fileName.file_name;
             if (plaintext.isFile()) {
                 document.size = (int) Math.min(Integer.MAX_VALUE, plaintext.length());
             }
@@ -1077,6 +1078,89 @@ public class MessageObject {
             type = TYPE_PHOTO;
         } else if (!TextUtils.isEmpty(state.mime) && state.mime.startsWith("video/")) {
             type = TYPE_VIDEO;
+        } else if (state.kind == FORK_SECURE_MEDIA_KIND_FILE) {
+            type = TYPE_FILE;
+            if (getDocument() != null) {
+                TLRPC.Document document = getDocument();
+                document.mime_type = TextUtils.isEmpty(state.mime) ? "application/octet-stream" : state.mime;
+                for (int i = document.attributes.size() - 1; i >= 0; i--) {
+                    TLRPC.DocumentAttribute attribute = document.attributes.get(i);
+                    if (attribute instanceof TLRPC.TL_documentAttributeFilename) {
+                        document.attributes.remove(i);
+                    }
+                }
+                TLRPC.TL_documentAttributeFilename fileName =
+                        new TLRPC.TL_documentAttributeFilename();
+                fileName.file_name = !TextUtils.isEmpty(state.name) ? state.name : "file";
+                document.attributes.add(fileName);
+                document.file_name_fixed = fileName.file_name;
+                if (!TextUtils.isEmpty(state.path) && new File(state.path).isFile()) {
+                    File pFile = new File(state.path);
+                    document.size = (int) Math.min(Integer.MAX_VALUE, pFile.length());
+                    boolean isImg = state.mime != null && state.mime.toLowerCase(java.util.Locale.ROOT).startsWith("image/");
+                    boolean isVid = state.mime != null && state.mime.toLowerCase(java.util.Locale.ROOT).startsWith("video/");
+                    if (isImg) {
+                        if (forkSecureMediaWidth <= 0 || forkSecureMediaHeight <= 0) {
+                            try {
+                                android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+                                options.inJustDecodeBounds = true;
+                                android.graphics.BitmapFactory.decodeFile(state.path, options);
+                                if (options.outWidth > 0 && options.outHeight > 0) {
+                                    forkSecureMediaWidth = options.outWidth;
+                                    forkSecureMediaHeight = options.outHeight;
+                                }
+                            } catch (Throwable ignore) {
+                            }
+                        }
+                        if (forkSecureMediaWidth > 0 && forkSecureMediaHeight > 0) {
+                            TLRPC.TL_photoSize localPhoto = new TLRPC.TL_photoSize();
+                            localPhoto.type = "x";
+                            localPhoto.w = forkSecureMediaWidth;
+                            localPhoto.h = forkSecureMediaHeight;
+                            localPhoto.size = (int) Math.min(Integer.MAX_VALUE, pFile.length());
+                            localPhoto.location = new TLRPC.TL_fileLocationUnavailable();
+                            photoThumbs = new ArrayList<>();
+                            photoThumbs.add(localPhoto);
+                            photoThumbsObject = document;
+                            if (document.thumbs == null) {
+                                document.thumbs = new ArrayList<>();
+                            }
+                            document.thumbs.clear();
+                            document.thumbs.add(localPhoto);
+                        }
+                    } else if (isVid) {
+                        if (forkSecureMediaWidth <= 0 || forkSecureMediaHeight <= 0) {
+                            try {
+                                TLRPC.TL_documentAttributeVideo videoAttr = new TLRPC.TL_documentAttributeVideo();
+                                SendMessagesHelper.fillVideoAttribute(state.path, videoAttr, null);
+                                if (videoAttr.w > 0 && videoAttr.h > 0) {
+                                    forkSecureMediaWidth = videoAttr.w;
+                                    forkSecureMediaHeight = videoAttr.h;
+                                }
+                            } catch (Throwable ignore) {
+                            }
+                        }
+                        if (forkSecureMediaWidth > 0 && forkSecureMediaHeight > 0) {
+                            TLRPC.TL_photoSize localVideo = new TLRPC.TL_photoSize();
+                            localVideo.type = "x";
+                            localVideo.w = forkSecureMediaWidth;
+                            localVideo.h = forkSecureMediaHeight;
+                            localVideo.size = (int) Math.min(Integer.MAX_VALUE, pFile.length());
+                            localVideo.location = new TLRPC.TL_fileLocationUnavailable();
+                            photoThumbs = new ArrayList<>();
+                            photoThumbs.add(localVideo);
+                            photoThumbsObject = document;
+                            if (document.thumbs == null) {
+                                document.thumbs = new ArrayList<>();
+                            }
+                            document.thumbs.clear();
+                            document.thumbs.add(localVideo);
+                        }
+                    }
+                    mediaExists = true;
+                    attachPathExists = true;
+                }
+            }
         }
     }
 
@@ -3015,6 +3099,9 @@ public class MessageObject {
         replyMessageObject = replyToMessage;
         eventId = eid;
         wasUnread = !messageOwner.out && messageOwner.unread;
+        if (isForkSecureCarrier()) {
+            syncForkSecureMediaUiState();
+        }
 
         if (message.replyMessage != null) {
             replyMessageObject = new MessageObject(currentAccount, message.replyMessage, null, users, chats, sUsers, sChats, false, checkMediaExists, eid);
@@ -11328,6 +11415,9 @@ public class MessageObject {
     }
 
     public String getDocumentName() {
+        if (isForkSecureCarrier() && !TextUtils.isEmpty(forkSecureMediaName)) {
+            return forkSecureMediaName;
+        }
         return FileLoader.getDocumentFileName(getDocument());
     }
 

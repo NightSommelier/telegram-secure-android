@@ -13061,12 +13061,16 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             }
             return 0;
         } else {
-            drawPhotoImage = documentAttach.mime_type != null && (documentAttach.mime_type.toLowerCase().startsWith("image/") || documentAttach.mime_type.toLowerCase().startsWith("video/mp4")) || MessageObject.isDocumentHasThumb(documentAttach);
+            drawPhotoImage = (documentAttach.mime_type != null && (documentAttach.mime_type.toLowerCase().startsWith("image/") || documentAttach.mime_type.toLowerCase().startsWith("video/mp4")))
+                    || MessageObject.isDocumentHasThumb(documentAttach)
+                    || (currentMessageObject != null && currentMessageObject.isForkSecureCarrier() && currentMessageObject.forkSecureMediaMime != null && (currentMessageObject.forkSecureMediaMime.toLowerCase().startsWith("image/") || currentMessageObject.forkSecureMediaMime.toLowerCase().startsWith("video/mp4")));
             if (!drawPhotoImage) {
                 maxWidth += dp(30);
             }
             documentAttachType = DOCUMENT_ATTACH_TYPE_DOCUMENT;
-            String name = FileLoader.getDocumentFileName(documentAttach);
+            String name = currentMessageObject != null && currentMessageObject.isForkSecureCarrier() && !TextUtils.isEmpty(currentMessageObject.forkSecureMediaName)
+                    ? currentMessageObject.forkSecureMediaName
+                    : FileLoader.getDocumentFileName(documentAttach);
             if (name.length() == 0) {
                 name = getString("AttachDocument", R.string.AttachDocument);
             }
@@ -13085,7 +13089,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 docTitleOffsetX = 0;
             }
 
-            String str = AndroidUtilities.formatFileSize(documentAttach.size) + " " + FileLoader.getDocumentExtension(documentAttach);
+            String ext = currentMessageObject != null && currentMessageObject.isForkSecureCarrier() && !TextUtils.isEmpty(currentMessageObject.forkSecureMediaName)
+                    ? FileLoader.getFileExtension(new File(currentMessageObject.forkSecureMediaName))
+                    : FileLoader.getDocumentExtension(documentAttach);
+            String str = AndroidUtilities.formatFileSize(documentAttach.size) + " " + ext;
             infoWidth = Math.min(maxWidth - dp(30), (int) Math.ceil(Theme.chat_infoPaint.measureText("000.0 mm / " + AndroidUtilities.formatFileSize(documentAttach.size))));
             CharSequence str2 = TextUtils.ellipsize(str, Theme.chat_infoPaint, infoWidth, TextUtils.TruncateAt.END);
             try {

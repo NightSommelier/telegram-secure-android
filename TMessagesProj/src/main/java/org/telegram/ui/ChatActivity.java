@@ -21753,6 +21753,7 @@ public class ChatActivity extends BaseFragment implements
                         || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO)) {
             indexPreparedSecureMedia(message);
             applyPreparedSecureAttachmentPresentation(message);
+            updateSecureStickerRow(message);
             return;
         }
         final String prepareKey = message.getId() + ":" + carrier;
@@ -22180,6 +22181,7 @@ public class ChatActivity extends BaseFragment implements
 
     private static void normalizeSecureTransportDocument(TLRPC.Document document) {
         document.mime_type = "application/octet-stream";
+        document.file_name_fixed = null;
         for (int i = document.attributes.size() - 1; i >= 0; i--) {
             TLRPC.DocumentAttribute attribute = document.attributes.get(i);
             if (attribute instanceof TLRPC.TL_documentAttributeSticker
@@ -22344,6 +22346,7 @@ public class ChatActivity extends BaseFragment implements
                 : "file";
         fileName.file_name = isAnimation ? "animation.gif" : (isRoundVideo ? "round.mp4" : (isVoice ? "audio.ogg" : realFileName));
         document.attributes.add(fileName);
+        document.file_name_fixed = fileName.file_name;
         File plaintextFile = new File(message.forkSecureMediaPath);
         if (plaintextFile.isFile() && plaintextFile.length() > 0) {
             document.size = (int) Math.min(Integer.MAX_VALUE, plaintextFile.length());
@@ -22440,13 +22443,11 @@ public class ChatActivity extends BaseFragment implements
             message.photoThumbs = new ArrayList<>();
             message.photoThumbs.add(localVideo);
             message.photoThumbsObject = document;
-            if (isRoundVideo || isAnimation) {
-                if (document.thumbs == null) {
-                    document.thumbs = new ArrayList<>();
-                }
-                document.thumbs.clear();
-                document.thumbs.add(localVideo);
+            if (document.thumbs == null) {
+                document.thumbs = new ArrayList<>();
             }
+            document.thumbs.clear();
+            document.thumbs.add(localVideo);
         }
         message.attachPathExists = true;
         // applyNewText() regenerates the upstream layout and calls MessageObject.setType(), which
@@ -22498,6 +22499,11 @@ public class ChatActivity extends BaseFragment implements
                 message.photoThumbs = new ArrayList<>();
                 message.photoThumbs.add(localPhoto);
                 message.photoThumbsObject = document;
+                if (document.thumbs == null) {
+                    document.thumbs = new ArrayList<>();
+                }
+                document.thumbs.clear();
+                document.thumbs.add(localPhoto);
             }
             message.type = MessageObject.TYPE_FILE;
         } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
@@ -22914,6 +22920,17 @@ public class ChatActivity extends BaseFragment implements
             if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
                     && message.type != MessageObject.TYPE_VIDEO) {
                 return true;
+            }
+            if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE) {
+                String docName = FileLoader.getDocumentFileName(message.getDocument());
+                if ("file.bin".equals(docName) || "file".equals(docName)) {
+                    return true;
+                }
+                if (!TextUtils.isEmpty(message.forkSecureMediaMime)
+                        && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("image/")
+                        && (message.photoThumbs == null || message.photoThumbs.isEmpty())) {
+                    return true;
+                }
             }
         }
         return false;
@@ -25614,11 +25631,14 @@ public class ChatActivity extends BaseFragment implements
             MessageObject obj = messagesDict[0].get(msgId);
             if (obj != null) {
                 obj.messageOwner.send_state = MessageObject.MESSAGE_SEND_STATE_SENT;
+                if (obj.isForkSecureCarrier()) {
+                    applyCachedSecureTextOverlay(obj);
+                }
                 if (obj.hasEntitiesFromServer()) {
                     obj.generateLayout(null);
                 }
                 if (chatAdapter != null) {
-                    chatAdapter.updateRowWithMessageObject(obj, false, false);
+                    chatAdapter.updateRowWithMessageObject(obj, false, obj.isForkSecureCarrier());
                 }
             }
         } else if (id == NotificationCenter.messageSendError) {
