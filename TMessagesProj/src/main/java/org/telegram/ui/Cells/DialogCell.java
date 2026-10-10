@@ -3049,6 +3049,10 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             } else if (preview.kind
                     == SecureChatEngine.DialogPreview.Kind.GROUP_KEY_RECEIVED) {
                 previewText = getString(R.string.ForkSecureGroupKeyReceived);
+            } else if (preview.kind
+                    == SecureChatEngine.DialogPreview.Kind.CONTROL_DELETE) {
+                previewText = "";
+                message.deleted = true;
             } else {
                 previewText = getString(R.string.ForkSecureOutgoingUnavailable);
             }

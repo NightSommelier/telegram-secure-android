@@ -21221,6 +21221,8 @@ public class ChatActivity extends BaseFragment implements
                                 SecureChatEngine.isPairingStatusDisplay(localText)
                                         || SecureChatEngine.isControlDeleteDisplay(localText));
                         if (SecureChatEngine.isControlDeleteDisplay(localText)) {
+                            message.applyNewText("");
+                            message.deleted = true;
                             getMessagesController().deleteMessages(
                                     new ArrayList<>(java.util.Collections.singletonList(message.getId())),
                                     null, null, dialog_id, 0, false, 0, true);
@@ -21251,6 +21253,8 @@ public class ChatActivity extends BaseFragment implements
                             SecureChatEngine.isPairingStatusDisplay(localText)
                                     || SecureChatEngine.isControlDeleteDisplay(localText));
                     if (SecureChatEngine.isControlDeleteDisplay(localText)) {
+                        message.applyNewText("");
+                        message.deleted = true;
                         getMessagesController().deleteMessages(
                                 new ArrayList<>(java.util.Collections.singletonList(message.getId())),
                                 null, null, dialog_id, 0, false, 0, true);
@@ -21540,6 +21544,14 @@ public class ChatActivity extends BaseFragment implements
                 String localText = getForkSecureOutgoingText(secureChat, carrier);
                 if (localText == null) {
                     message.applyNewText(getString(R.string.ForkSecureOutgoingUnavailable));
+                } else if (SecureChatEngine.isControlDeleteDisplay(localText)) {
+                    message.applyNewText("");
+                    message.deleted = true;
+                    applyForkSecureServiceStyle(message, true);
+                    getMessagesController().deleteMessages(
+                            new ArrayList<>(java.util.Collections.singletonList(message.getId())),
+                            null, null, dialog_id, 0, false, 0, true);
+                    return true;
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
                     message.forkSecureVerified = true;
@@ -21570,6 +21582,14 @@ public class ChatActivity extends BaseFragment implements
                     // A replacement received before its original bubble is authenticated must
                     // never expose the marked Telegram carrier.
                     message.applyNewText(getString(R.string.ForkSecureReplyPreview));
+                } else if (SecureChatEngine.isControlDeleteDisplay(localText)) {
+                    message.applyNewText("");
+                    message.deleted = true;
+                    applyForkSecureServiceStyle(message, true);
+                    getMessagesController().deleteMessages(
+                            new ArrayList<>(java.util.Collections.singletonList(message.getId())),
+                            null, null, dialog_id, 0, false, 0, true);
+                    return true;
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
                     message.forkSecureVerified = true;
@@ -23132,6 +23152,9 @@ public class ChatActivity extends BaseFragment implements
         }
         if (SecureChatEngine.GROUP_KEY_RECEIVED_DISPLAY.equals(plaintext)) {
             return getString(R.string.ForkSecureGroupKeyReceived);
+        }
+        if (SecureChatEngine.isControlDeleteDisplay(plaintext)) {
+            return "";
         }
         return plaintext;
     }
