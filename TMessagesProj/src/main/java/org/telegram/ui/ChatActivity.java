@@ -18804,15 +18804,14 @@ public class ChatActivity extends BaseFragment implements
                 }*/ else {
                     showSearchAsIcon = false;
                 }
-                if (showSearchAsIcon || showAudioCallAsIcon || UserObject.isBotForumWithEditableTopics(currentUser)) {
-                    if (avatarContainer != null && avatarContainer.getLayoutParams() != null) {
-                        ((ViewGroup.MarginLayoutParams) avatarContainer.getLayoutParams()).rightMargin =
-                                AndroidUtilities.dp(getAvatarContainerRightMargin(chatMode == MODE_SAVED ? 52 : 92));
-                    }
-                } else {
-                    if (avatarContainer != null && avatarContainer.getLayoutParams() != null) {
-                        ((ViewGroup.MarginLayoutParams) avatarContainer.getLayoutParams()).rightMargin =
-                                AndroidUtilities.dp(getAvatarContainerRightMargin(52));
+                final int newRightMargin = AndroidUtilities.dp(getAvatarContainerRightMargin(
+                        (showSearchAsIcon || showAudioCallAsIcon || UserObject.isBotForumWithEditableTopics(currentUser))
+                                ? (chatMode == MODE_SAVED ? 52 : 92) : 52));
+                if (avatarContainer != null && avatarContainer.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
+                    ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) avatarContainer.getLayoutParams();
+                    if (lp.rightMargin != newRightMargin) {
+                        lp.rightMargin = newRightMargin;
+                        avatarContainer.requestLayout();
                     }
                 }
                 if (showSearchAsIcon) {
@@ -23334,7 +23333,7 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private int getAvatarContainerRightMargin(int baseMarginDp) {
-        return baseMarginDp + (isSecureModeUiEligible() ? 48 : 0);
+        return baseMarginDp + ((isSecureModeUiEligible() || isSavedMessagesSecureUiEligible()) ? 48 : 0);
     }
 
     public void updateSecureModeUi() {

@@ -122,6 +122,14 @@ References: [Telegram APIs](https://core.telegram.org/),
    tests.
 7. Audit notifications, widgets, clipboard, screenshots, share/export,
    accessibility, logs, crash reports and temporary files on both devices.
+8. Automatic `SenderKey` rotation in protected groups when membership changes
+   (member leave/removal or `IDENTITY_CHANGED`) so the next message automatically
+   generates and distributes a fresh group key.
+9. Backup expansion (`.fsrk`): optional embedded media payloads for fully offline
+   archival or preparation for automated background backups.
+10. UI/UX polish and two-device edge-case verification: session recovery after
+    reinstall/backup import in live chats (`RECOVERY_REQUIRED` -> automatic or
+    one-tap re-pair) and final UI layout checks across chat modes.
 
 ## Deferred privacy and resilience backlog
 
