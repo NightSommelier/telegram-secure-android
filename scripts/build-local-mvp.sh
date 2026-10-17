@@ -4,7 +4,9 @@ set -euo pipefail
 project_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 java_home=${JAVA_HOME:-}
 if [[ -z "$java_home" || ! -x "$java_home/bin/java" ]]; then
-    if [[ -x /nix/store/r5yyzs1n6hrs3n6kjmxlf8dwynbif5mq-openjdk-21.0.12.1+1/bin/java ]]; then
+    if [[ -x /nix/store/x92dxglx7ziz2sc3wfvcyl6v2n34w4c4-openjdk-21.0.12.1+1/bin/java ]]; then
+        java_home=/nix/store/x92dxglx7ziz2sc3wfvcyl6v2n34w4c4-openjdk-21.0.12.1+1
+    elif [[ -x /nix/store/r5yyzs1n6hrs3n6kjmxlf8dwynbif5mq-openjdk-21.0.12.1+1/bin/java ]]; then
         java_home=/nix/store/r5yyzs1n6hrs3n6kjmxlf8dwynbif5mq-openjdk-21.0.12.1+1
     fi
 fi

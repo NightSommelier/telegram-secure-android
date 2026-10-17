@@ -460,6 +460,7 @@ public class ChatActivity extends BaseFragment implements
     private final HashSet<String> forkSecureMediaPreparing = new HashSet<>();
     private final HashSet<String> forkSecureMediaDownloadAttempted = new HashSet<>();
     private final HashSet<String> forkSecureMediaRejected = new HashSet<>();
+    private final HashSet<String> forkSecureMediaIndexed = new HashSet<>();
     private ComposeDrawable otherIcon;
     private ActionBarMenu.LazyItem attachItem;
     private ActionBarMenuItem.Item savedChatsItem, savedChatsGap;;
@@ -22173,6 +22174,10 @@ public class ChatActivity extends BaseFragment implements
                 || !message.restoreReadyForkSecureMedia()) {
             return false;
         }
+        if (message.forkSecureVerified
+                && message.photoThumbs != null && !message.photoThumbs.isEmpty()) {
+            return true;
+        }
         normalizeSecureTransportDocument(message.getDocument());
         if (message.forkSecureMediaKind
                 == MessageObject.FORK_SECURE_MEDIA_KIND_STICKER) {
@@ -22286,68 +22291,95 @@ public class ChatActivity extends BaseFragment implements
                                 == MessageObject.FORK_SECURE_MEDIA_KIND_FILE)) {
             return;
         }
-        boolean secureVideo = message.forkSecureMediaMime != null
-                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/");
-        boolean isAnimation = message.isGif()
-                || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
-                || "image/gif".equalsIgnoreCase(message.forkSecureMediaMime);
-        int indexKind;
-        if (isAnimation) {
-            indexKind = SecureMediaIndex.KIND_GIF;
-        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
-            indexKind = SecureMediaIndex.KIND_ROUND_VIDEO;
-        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
-            indexKind = SecureMediaIndex.KIND_VOICE;
-        } else if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
-            indexKind = SecureMediaIndex.KIND_MUSIC;
-        } else if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
-            indexKind = SecureMediaIndex.KIND_PHOTO;
-        } else if (secureVideo) {
-            indexKind = SecureMediaIndex.KIND_VIDEO;
-        } else {
-            indexKind = SecureMediaIndex.KIND_FILE;
+        String indexKey = message.getId() + ":" + message.forkSecureMediaPath;
+        if (!forkSecureMediaIndexed.add(indexKey)) {
+            return;
         }
-        try {
-            SecureMediaIndex secureMediaIndex =
-                    new SecureMediaIndex(
-                            ApplicationLoader.applicationContext,
-                            currentAccount,
-                            dialog_id);
-            secureMediaIndex.put(new SecureMediaIndex.Entry(
-                    message.getId(),
-                    message.messageOwner.date,
-                    message.messageOwner.message,
-                    indexKind,
-                    message.forkSecureMediaPath,
-                    message.forkSecureMediaName,
-                    message.forkSecureMediaMime,
-                    SecureContentCodec.encodeCaption(
-                            SecureContentCodec.displayCaption(message.forkSecureMediaCaption),
-                            message.messageOwner.invert_media,
-                            TextUtils.isEmpty(message.forkSecureAlbumId)
-                                    ? null : message.forkSecureAlbumId),
-                    message.forkSecureMediaWidth,
-                    message.forkSecureMediaHeight));
-            int mediaDataType = MediaDataController.MEDIA_FILE;
-            if (indexKind == SecureMediaIndex.KIND_GIF) {
-                mediaDataType = MediaDataController.MEDIA_GIF;
-            } else if (indexKind == SecureMediaIndex.KIND_PHOTO || indexKind == SecureMediaIndex.KIND_VIDEO) {
-                mediaDataType = MediaDataController.MEDIA_PHOTOVIDEO;
-            } else if (indexKind == SecureMediaIndex.KIND_VOICE || indexKind == SecureMediaIndex.KIND_ROUND_VIDEO) {
-                mediaDataType = MediaDataController.MEDIA_AUDIO;
-            } else if (indexKind == SecureMediaIndex.KIND_MUSIC) {
-                mediaDataType = MediaDataController.MEDIA_MUSIC;
+        final int messageId = message.getId();
+        final int messageDate = message.messageOwner.date;
+        final String carrierMessage = message.messageOwner.message;
+        final boolean invertMedia = message.messageOwner.invert_media;
+        final String albumId = message.forkSecureAlbumId;
+        final String secureMediaPath = message.forkSecureMediaPath;
+        final String secureMediaName = message.forkSecureMediaName;
+        final String secureMediaMime = message.forkSecureMediaMime;
+        final String secureMediaCaption = message.forkSecureMediaCaption;
+        final int secureMediaWidth = message.forkSecureMediaWidth;
+        final int secureMediaHeight = message.forkSecureMediaHeight;
+        final int secureMediaPresentation = message.forkSecureMediaPresentation;
+        final int secureMediaKind = message.forkSecureMediaKind;
+        final boolean isGif = message.isGif();
+        final TLRPC.Message messageOwner = message.messageOwner;
+        final long dialogId = dialog_id;
+        final int currentAcc = currentAccount;
+
+        Utilities.globalQueue.postRunnable(() -> {
+            boolean secureVideo = secureMediaMime != null
+                    && secureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/");
+            boolean isAnimation = isGif
+                    || secureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                    || "image/gif".equalsIgnoreCase(secureMediaMime);
+            int indexKind;
+            if (isAnimation) {
+                indexKind = SecureMediaIndex.KIND_GIF;
+            } else if (secureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+                indexKind = SecureMediaIndex.KIND_ROUND_VIDEO;
+            } else if (secureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+                indexKind = SecureMediaIndex.KIND_VOICE;
+            } else if (secureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
+                indexKind = SecureMediaIndex.KIND_MUSIC;
+            } else if (secureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+                indexKind = SecureMediaIndex.KIND_PHOTO;
+            } else if (secureVideo) {
+                indexKind = SecureMediaIndex.KIND_VIDEO;
+            } else {
+                indexKind = SecureMediaIndex.KIND_FILE;
             }
-            getMediaDataController().indexForkSecureMedia(
-                    message.messageOwner,
-                    mediaDataType);
-            if (!TextUtils.isEmpty(message.forkSecureMediaCaption)) {
-                String caption = SecureContentCodec.displayCaption(message.forkSecureMediaCaption);
-                indexForkSecureUrls(message, caption);
+            try {
+                SecureMediaIndex secureMediaIndex =
+                        new SecureMediaIndex(
+                                ApplicationLoader.applicationContext,
+                                currentAcc,
+                                dialogId);
+                secureMediaIndex.put(new SecureMediaIndex.Entry(
+                        messageId,
+                        messageDate,
+                        carrierMessage,
+                        indexKind,
+                        secureMediaPath,
+                        secureMediaName,
+                        secureMediaMime,
+                        SecureContentCodec.encodeCaption(
+                                SecureContentCodec.displayCaption(secureMediaCaption),
+                                invertMedia,
+                                TextUtils.isEmpty(albumId) ? null : albumId),
+                        secureMediaWidth,
+                        secureMediaHeight));
+                int mediaDataType = MediaDataController.MEDIA_FILE;
+                if (indexKind == SecureMediaIndex.KIND_GIF) {
+                    mediaDataType = MediaDataController.MEDIA_GIF;
+                } else if (indexKind == SecureMediaIndex.KIND_PHOTO || indexKind == SecureMediaIndex.KIND_VIDEO) {
+                    mediaDataType = MediaDataController.MEDIA_PHOTOVIDEO;
+                } else if (indexKind == SecureMediaIndex.KIND_VOICE || indexKind == SecureMediaIndex.KIND_ROUND_VIDEO) {
+                    mediaDataType = MediaDataController.MEDIA_AUDIO;
+                } else if (indexKind == SecureMediaIndex.KIND_MUSIC) {
+                    mediaDataType = MediaDataController.MEDIA_MUSIC;
+                }
+                MediaDataController.getInstance(currentAcc).indexForkSecureMedia(
+                        messageOwner,
+                        mediaDataType);
+                if (!TextUtils.isEmpty(secureMediaCaption)) {
+                    String caption = SecureContentCodec.displayCaption(secureMediaCaption);
+                    ArrayList<TLRPC.MessageEntity> entities = MediaDataController.extractUrlEntities(caption);
+                    if (entities != null && !entities.isEmpty()) {
+                        FileLog.d("ForkLinks: ChatActivity indexing URL mid=" + messageId + " count=" + entities.size());
+                        MediaDataController.getInstance(currentAcc).indexForkSecureMedia(messageOwner, MediaDataController.MEDIA_URL);
+                    }
+                }
+            } catch (Throwable e) {
+                FileLog.e(e);
             }
-        } catch (Throwable e) {
-            FileLog.e(e);
-        }
+        });
     }
 
     private void indexForkSecureUrls(MessageObject message, String text) {
@@ -22386,8 +22418,9 @@ public class ChatActivity extends BaseFragment implements
         document.attributes.add(fileName);
         document.file_name_fixed = fileName.file_name;
         File plaintextFile = new File(message.forkSecureMediaPath);
-        if (plaintextFile.isFile() && plaintextFile.length() > 0) {
-            document.size = (int) Math.min(Integer.MAX_VALUE, plaintextFile.length());
+        long plaintextSize = document.size > 0 ? document.size : (plaintextFile.isFile() ? plaintextFile.length() : 0);
+        if (document.size <= 0 && plaintextSize > 0) {
+            document.size = (int) Math.min(Integer.MAX_VALUE, plaintextSize);
         }
         if (message.forkSecureMediaPresentation
                         == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
@@ -22475,8 +22508,7 @@ public class ChatActivity extends BaseFragment implements
             localVideo.type = "x";
             localVideo.w = message.forkSecureMediaWidth;
             localVideo.h = message.forkSecureMediaHeight;
-            localVideo.size = (int) Math.min(
-                    Integer.MAX_VALUE, new File(message.forkSecureMediaPath).length());
+            localVideo.size = (int) Math.min(Integer.MAX_VALUE, plaintextSize);
             localVideo.location = new TLRPC.TL_fileLocationUnavailable();
             message.photoThumbs = new ArrayList<>();
             message.photoThumbs.add(localVideo);
@@ -22491,7 +22523,9 @@ public class ChatActivity extends BaseFragment implements
         // applyNewText() regenerates the upstream layout and calls MessageObject.setType(), which
         // classifies the opaque Telegram transport as a generic Document. Run it before applying
         // the authenticated process-local presentation so the true type remains authoritative.
-        message.applyNewText("");
+        if (!TextUtils.isEmpty(message.messageText)) {
+            message.applyNewText("");
+        }
         if (message.forkSecureMediaKind
                 == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
             /*
@@ -22503,8 +22537,7 @@ public class ChatActivity extends BaseFragment implements
             localPhoto.type = "x";
             localPhoto.w = message.forkSecureMediaWidth;
             localPhoto.h = message.forkSecureMediaHeight;
-            localPhoto.size = (int) Math.min(
-                    Integer.MAX_VALUE, new File(message.forkSecureMediaPath).length());
+            localPhoto.size = (int) Math.min(Integer.MAX_VALUE, plaintextSize);
             localPhoto.location = new TLRPC.TL_fileLocationUnavailable();
             message.photoThumbs = new ArrayList<>();
             message.photoThumbs.add(localPhoto);
@@ -22527,12 +22560,12 @@ public class ChatActivity extends BaseFragment implements
                     }
                 }
             }
-            if (message.forkSecureMediaWidth > 0 && message.forkSecureMediaHeight > 0 && plaintextFile.isFile()) {
+            if (message.forkSecureMediaWidth > 0 && message.forkSecureMediaHeight > 0 && plaintextSize > 0) {
                 TLRPC.TL_photoSize localPhoto = new TLRPC.TL_photoSize();
                 localPhoto.type = "x";
                 localPhoto.w = message.forkSecureMediaWidth;
                 localPhoto.h = message.forkSecureMediaHeight;
-                localPhoto.size = (int) Math.min(Integer.MAX_VALUE, plaintextFile.length());
+                localPhoto.size = (int) Math.min(Integer.MAX_VALUE, plaintextSize);
                 localPhoto.location = new TLRPC.TL_fileLocationUnavailable();
                 message.photoThumbs = new ArrayList<>();
                 message.photoThumbs.add(localPhoto);
@@ -22764,7 +22797,15 @@ public class ChatActivity extends BaseFragment implements
                 chatLayoutManager.getSpanSizeLookup().invalidateSpanGroupIndexCache();
             }
             if (chatAdapter != null) {
-                chatAdapter.notifyDataSetChanged(true);
+                if (chatListView != null && chatListView.isComputingLayout()) {
+                    chatListView.post(() -> {
+                        if (chatAdapter != null) {
+                            chatAdapter.notifyDataSetChanged(true);
+                        }
+                    });
+                } else {
+                    chatAdapter.notifyDataSetChanged(true);
+                }
             }
         }
         return true;

@@ -3443,6 +3443,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     String mimeType;
                     int width = 0;
                     int height = 0;
+                    int videoDuration = 0;
                     if (resolved.photo) {
                         bounds = new BitmapFactory.Options();
                         bounds.inJustDecodeBounds = true;
@@ -3466,6 +3467,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                     resolved.file.getAbsolutePath(), videoAttribute, null);
                             width = videoAttribute.w;
                             height = videoAttribute.h;
+                            videoDuration = (int) Math.round(videoAttribute.duration);
                         } else if ("image/gif".equalsIgnoreCase(mimeType)) {
                             BitmapFactory.Options gifBounds = new BitmapFactory.Options();
                             gifBounds.inJustDecodeBounds = true;
@@ -3482,7 +3484,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     }
                     ForkSecureAttachmentPresentation presentation =
                             inferForkSecureAttachmentPresentation(
-                                    resolved, mimeType, width, height);
+                                    resolved, mimeType, width, height, videoDuration);
                     if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
                         if (width <= 0 || height <= 0) {
                             width = 512;
@@ -3936,8 +3938,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
 
     private static ForkSecureAttachmentPresentation inferForkSecureAttachmentPresentation(
             ForkSecureResolvedSource source, String mimeType, int width, int height) {
+        return inferForkSecureAttachmentPresentation(source, mimeType, width, height, 0);
+    }
+
+    private static ForkSecureAttachmentPresentation inferForkSecureAttachmentPresentation(
+            ForkSecureResolvedSource source, String mimeType, int width, int height, int videoDuration) {
         int kind = source.presentation;
-        int durationSeconds = Math.max(0, source.durationSeconds);
+        int durationSeconds = Math.max(Math.max(0, source.durationSeconds), videoDuration);
         String title = source.title;
         String performer = source.performer;
         if (kind == -1) {
@@ -3948,6 +3955,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 kind = SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
             } else if (mimeType.startsWith("video/")) {
                 kind = SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO;
+                if (videoDuration > 0) {
+                    durationSeconds = Math.max(durationSeconds, videoDuration);
+                }
             } else if (mimeType.startsWith("audio/")) {
                 kind = SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO;
                 MediaMetadataRetriever retriever = null;

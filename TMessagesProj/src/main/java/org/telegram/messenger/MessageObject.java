@@ -496,7 +496,7 @@ public class MessageObject {
     public boolean restoreReadyForkSecureMedia() {
         syncForkSecureMediaUiState();
         return !TextUtils.isEmpty(forkSecureMediaPath)
-                && new File(forkSecureMediaPath).isFile();
+                && (attachPathExists || mediaExists || new File(forkSecureMediaPath).isFile());
     }
 
     /**
@@ -951,12 +951,40 @@ public class MessageObject {
         if (state == null) {
             return;
         }
-        if (!TextUtils.isEmpty(state.path) && !new File(state.path).isFile()) {
+        if (!TextUtils.isEmpty(state.path) && !TextUtils.equals(forkSecureMediaPath, state.path) && state.fileSize <= 0 && !new File(state.path).isFile()) {
             forkSecureMediaPath = null;
             forkSecureMediaPending = true;
             return;
         }
+        if (isForkSecureMediaUiStateApplied(state)) {
+            return;
+        }
         applyForkSecureMediaUiState(state);
+    }
+
+    private boolean isForkSecureMediaUiStateApplied(ForkSecureMediaUiState state) {
+        if (state == null) {
+            return true;
+        }
+        if (forkSecureMediaKind != state.kind
+                || !TextUtils.equals(forkSecureMediaPath, state.path)
+                || forkSecureMediaWidth != state.width
+                || forkSecureMediaHeight != state.height
+                || forkSecureMediaPending != state.pending
+                || forkSecureMediaPresentation != state.presentation
+                || forkSecureMediaDurationSeconds != state.durationSeconds
+                || !TextUtils.equals(forkSecureAlbumId, state.albumId)) {
+            return false;
+        }
+        if (state.kind == FORK_SECURE_MEDIA_KIND_PHOTO) {
+            return type == TYPE_PHOTO && photoThumbs != null && !photoThumbs.isEmpty();
+        } else if (state.kind == FORK_SECURE_MEDIA_KIND_FILE) {
+            if (state.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
+                    || (!TextUtils.isEmpty(state.mime) && state.mime.startsWith("video/"))) {
+                return (type == TYPE_VIDEO || type == TYPE_GIF) && photoThumbs != null && !photoThumbs.isEmpty();
+            }
+        }
+        return true;
     }
 
     private void applyForkSecureMediaUiState(ForkSecureMediaUiState state) {
@@ -991,10 +1019,12 @@ public class MessageObject {
             if (state.kind == FORK_SECURE_MEDIA_KIND_STICKER
                     || state.kind == FORK_SECURE_MEDIA_KIND_PHOTO
                     || state.kind == FORK_SECURE_MEDIA_KIND_FILE) {
-                messageText = "";
-                messageTextShort = null;
-                messageTextForReply = null;
-                resetLayout();
+                if (!TextUtils.isEmpty(messageText)) {
+                    messageText = "";
+                    messageTextShort = null;
+                    messageTextForReply = null;
+                    resetLayout();
+                }
                 if (!TextUtils.isEmpty(state.caption)
                         && !state.caption.startsWith("TGS1:")
                         && !state.caption.startsWith("FSC1:")
@@ -1127,13 +1157,13 @@ public class MessageObject {
         } else if (state.kind == FORK_SECURE_MEDIA_KIND_PHOTO) {
             type = TYPE_PHOTO;
             File pFile = !TextUtils.isEmpty(state.path) ? new File(state.path) : null;
-            boolean hasFile = pFile != null && pFile.isFile();
+            boolean hasFile = !TextUtils.isEmpty(state.path) && (state.fileSize > 0 || (pFile != null && pFile.isFile()));
             if (state.width > 0 && state.height > 0) {
                 TLRPC.TL_photoSize localPhoto = new TLRPC.TL_photoSize();
                 localPhoto.type = "x";
                 localPhoto.w = state.width;
                 localPhoto.h = state.height;
-                localPhoto.size = hasFile ? (int) Math.min(Integer.MAX_VALUE, pFile.length()) : 0;
+                localPhoto.size = hasFile ? (int) Math.min(Integer.MAX_VALUE, state.fileSize > 0 ? state.fileSize : (pFile != null ? pFile.length() : 0)) : 0;
                 localPhoto.location = new TLRPC.TL_fileLocationUnavailable();
                 photoThumbs = new ArrayList<>();
                 photoThumbs.add(localPhoto);
@@ -1147,7 +1177,7 @@ public class MessageObject {
                 || (!TextUtils.isEmpty(state.mime) && state.mime.startsWith("video/"))) {
             type = TYPE_VIDEO;
             File pFile = !TextUtils.isEmpty(state.path) ? new File(state.path) : null;
-            boolean hasFile = pFile != null && pFile.isFile();
+            boolean hasFile = !TextUtils.isEmpty(state.path) && (state.fileSize > 0 || (pFile != null && pFile.isFile()));
             if (getDocument() != null) {
                 TLRPC.Document document = getDocument();
                 document.mime_type = TextUtils.isEmpty(state.mime) ? "video/mp4" : state.mime;
@@ -1162,9 +1192,12 @@ public class MessageObject {
                     video = new TLRPC.TL_documentAttributeVideo();
                     document.attributes.add(video);
                 }
-                video.w = state.width > 0 ? state.width : 1;
-                video.h = state.height > 0 ? state.height : 1;
-                video.duration = Math.max(0, state.durationSeconds);
+                int width = state.width > 0 ? state.width : (forkSecureMediaWidth > 0 ? forkSecureMediaWidth : 1);
+                int height = state.height > 0 ? state.height : (forkSecureMediaHeight > 0 ? forkSecureMediaHeight : 1);
+                int duration = Math.max(state.durationSeconds, Math.max(0, forkSecureMediaDurationSeconds));
+                video.w = width;
+                video.h = height;
+                video.duration = duration;
                 video.supports_streaming = true;
                 if (hasFile && (video.w <= 1 || video.h <= 1 || video.duration <= 0)) {
                     SendMessagesHelper.fillVideoAttribute(state.path, video, null);
@@ -1178,7 +1211,7 @@ public class MessageObject {
                     localVideo.type = "x";
                     localVideo.w = forkSecureMediaWidth;
                     localVideo.h = forkSecureMediaHeight;
-                    localVideo.size = hasFile ? (int) Math.min(Integer.MAX_VALUE, pFile.length()) : 0;
+                    localVideo.size = hasFile ? (int) Math.min(Integer.MAX_VALUE, state.fileSize > 0 ? state.fileSize : (pFile != null ? pFile.length() : 0)) : 0;
                     localVideo.location = new TLRPC.TL_fileLocationUnavailable();
                     photoThumbs = new ArrayList<>();
                     photoThumbs.add(localVideo);
@@ -1308,6 +1341,7 @@ public class MessageObject {
         final byte[] waveform;
         final String albumId;
         final boolean pending;
+        final long fileSize;
 
         ForkSecureMediaUiState(
                 String path,
@@ -1425,6 +1459,17 @@ public class MessageObject {
             this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
             this.albumId = TextUtils.isEmpty(albumId) ? null : albumId;
             this.pending = pending;
+            long size = 0;
+            if (!TextUtils.isEmpty(path)) {
+                try {
+                    File f = new File(path);
+                    if (f.isFile()) {
+                        size = f.length();
+                    }
+                } catch (Throwable ignore) {
+                }
+            }
+            this.fileSize = size;
         }
     }
     public CharSequence youtubeDescription;
@@ -12461,7 +12506,6 @@ public class MessageObject {
     }
 
     public boolean isAnyKindOfSticker() {
-        syncForkSecureMediaUiState();
         return forkSecureMediaKind == FORK_SECURE_MEDIA_KIND_STICKER
                 && (forkSecureMediaPending
                         || !TextUtils.isEmpty(forkSecureMediaPath))
