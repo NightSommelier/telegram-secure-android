@@ -487,6 +487,15 @@ public class MessageObject {
         }
     }
 
+    public static void evictForkSecureMediaUiCache(String carrier) {
+        if (TextUtils.isEmpty(carrier)) {
+            return;
+        }
+        synchronized (forkSecureMediaUiCache) {
+            forkSecureMediaUiCache.remove(carrier);
+        }
+    }
+
     /**
      * Restores a process-local media result that was already authenticated for this exact carrier.
      *

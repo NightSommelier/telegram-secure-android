@@ -14528,34 +14528,39 @@ public class MessagesStorage extends BaseController {
         AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.quickRepliesUpdated));
     }
 
-    private void forgetForkSecureLocalMessage(long dialogId, TLRPC.Message message) {
+    private static class ForkSecureMessageDeletion {
+        final long dialogId;
+        final String carrier;
+        final String attachPath;
+
+        ForkSecureMessageDeletion(long dialogId, String carrier, String attachPath) {
+            this.dialogId = dialogId;
+            this.carrier = carrier;
+            this.attachPath = attachPath;
+        }
+    }
+
+    private static void forgetForkSecureLocalMessage(int currentAccount, long dialogId, String carrier, String attachPath) {
         if ((!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId))
-                || message == null
-                || !SecureCarrierCodec.isMarked(message.message)) {
+                || TextUtils.isEmpty(carrier)
+                || !SecureCarrierCodec.isMarked(carrier)) {
             return;
         }
+        MessageObject.evictForkSecureMediaUiCache(carrier);
         try {
             new SecureLocalMessageCache(
                     ApplicationLoader.applicationContext,
                     currentAccount,
-                    dialogId).forget(message.message);
+                    dialogId).forget(carrier);
         } catch (Exception error) {
             // Telegram's database delete must still complete. A failed local-cache commit is
             // surfaced in logs and must never restore or resend the deleted carrier.
             FileLog.e(error);
         }
-        try {
-            new SecureMediaIndex(
-                    ApplicationLoader.applicationContext,
-                    currentAccount,
-                    dialogId).forget(message.message);
-        } catch (Exception error) {
-            FileLog.e(error);
-        }
-        if (message.attachPath != null && !message.attachPath.isEmpty()) {
-            if (message.attachPath.contains("fork-secure") || message.attachPath.endsWith(".bin")) {
+        if (attachPath != null && !attachPath.isEmpty()) {
+            if (attachPath.contains("fork-secure") || attachPath.endsWith(".bin")) {
                 try {
-                    new java.io.File(message.attachPath).delete();
+                    new java.io.File(attachPath).delete();
                 } catch (Exception ignore) {
                 }
             }
@@ -14566,22 +14571,25 @@ public class MessagesStorage extends BaseController {
         if (!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId)) {
             return;
         }
-        try {
-            new SecureLocalMessageCache(
-                    ApplicationLoader.applicationContext,
-                    currentAccount,
-                    dialogId).forgetPeer();
-        } catch (Exception error) {
-            FileLog.e(error);
-        }
-        try {
-            new SecureMediaIndex(
-                    ApplicationLoader.applicationContext,
-                    currentAccount,
-                    dialogId).forgetPeer();
-        } catch (Exception error) {
-            FileLog.e(error);
-        }
+        final int account = currentAccount;
+        Utilities.globalQueue.postRunnable(() -> {
+            try {
+                new SecureLocalMessageCache(
+                        ApplicationLoader.applicationContext,
+                        account,
+                        dialogId).forgetPeer();
+            } catch (Exception error) {
+                FileLog.e(error);
+            }
+            try {
+                new SecureMediaIndex(
+                        ApplicationLoader.applicationContext,
+                        account,
+                        dialogId).forgetPeer();
+            } catch (Exception error) {
+                FileLog.e(error);
+            }
+        });
     }
 
     private ArrayList<Long> markMessagesAsDeletedInternal(long dialogId, ArrayList<Integer> messages, boolean deleteFiles, int mode, int threadMessageId) {
@@ -14633,6 +14641,7 @@ public class MessagesStorage extends BaseController {
                 String ids = TextUtils.join(",", messages);
 
                 ArrayList<Long> dialogsToUpdate = new ArrayList<>();
+                ArrayList<ForkSecureMessageDeletion> secureDeletions = new ArrayList<>();
 
                 cursor = database.queryFinalized(String.format(Locale.US, "SELECT uid, data FROM scheduled_messages_v2 WHERE mid IN(%s) AND uid = %d", ids, dialogId));
                 try {
@@ -14648,7 +14657,9 @@ public class MessagesStorage extends BaseController {
                                         data, data.readInt32(false), false);
                                 if (message != null) {
                                     message.readAttachPath(data, getUserConfig().getClientUserId());
-                                    forgetForkSecureLocalMessage(did, message);
+                                    if (SecureCarrierCodec.isMarked(message.message)) {
+                                        secureDeletions.add(new ForkSecureMessageDeletion(did, message.message, message.attachPath));
+                                    }
                                 }
                                 data.reuse();
                             }
@@ -14663,6 +14674,15 @@ public class MessagesStorage extends BaseController {
                 database.executeFast(String.format(Locale.US, "DELETE FROM scheduled_messages_v2 WHERE mid IN(%s) AND uid = %d", ids, dialogId)).stepThis().dispose();
                 for (int a = 0, N = dialogsToUpdate.size(); a < N; a++) {
                     broadcastScheduledMessagesChange(dialogsToUpdate.get(a));
+                }
+                if (!secureDeletions.isEmpty()) {
+                    final int account = currentAccount;
+                    Utilities.globalQueue.postRunnable(() -> {
+                        for (int i = 0; i < secureDeletions.size(); i++) {
+                            ForkSecureMessageDeletion d = secureDeletions.get(i);
+                            forgetForkSecureLocalMessage(account, d.dialogId, d.carrier, d.attachPath);
+                        }
+                    });
                 }
             } else {
                 long currentUser = getUserConfig().getClientUserId();
@@ -14679,6 +14699,7 @@ public class MessagesStorage extends BaseController {
                 ArrayList<Pair<Long, Integer>> idsToDelete = new ArrayList<>();
                 ArrayList<TopicsController.TopicUpdate> topicUpdatesInUi = null;
                 ArrayList<TLRPC.Message> deletedMessages = currentUser == dialogId || dialogId == 0 ? new ArrayList<>() : null;
+                ArrayList<ForkSecureMessageDeletion> secureDeletions = new ArrayList<>();
 
                 if (dialogId != 0) {
                     cursor = database.queryFinalized(String.format(Locale.US, "SELECT uid, data, read_state, out, mention, mid FROM messages_v2 WHERE mid IN(%s) AND uid = %d", ids, dialogId));
@@ -14725,8 +14746,8 @@ public class MessagesStorage extends BaseController {
                         if (data != null) {
                             TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
                             message.readAttachPath(data, currentUser);
-                            if (needsSecureCacheData) {
-                                forgetForkSecureLocalMessage(did, message);
+                            if (needsSecureCacheData && SecureCarrierCodec.isMarked(message.message)) {
+                                secureDeletions.add(new ForkSecureMessageDeletion(did, message.message, message.attachPath));
                             }
                             if (deletedMessages != null) {
                                 deletedMessages.add(message);
@@ -14853,6 +14874,15 @@ public class MessagesStorage extends BaseController {
                 deleteFromDownloadQueue(idsToDelete, true);
                 AndroidUtilities.runOnUIThread(() -> getFileLoader().cancelLoadFiles(namesToDelete));
                 getFileLoader().deleteFiles(filesToDelete, 0);
+                if (!secureDeletions.isEmpty()) {
+                    final int account = currentAccount;
+                    Utilities.globalQueue.postRunnable(() -> {
+                        for (int i = 0; i < secureDeletions.size(); i++) {
+                            ForkSecureMessageDeletion d = secureDeletions.get(i);
+                            forgetForkSecureLocalMessage(account, d.dialogId, d.carrier, d.attachPath);
+                        }
+                    });
+                }
 
                 for (int a = 0; a < dialogsToUpdate.size(); a++) {
                     long did = dialogsToUpdate.keyAt(a);

@@ -4457,6 +4457,8 @@ public class MediaDataController extends BaseController {
         });
     }
 
+    private final java.util.HashSet<Long> syncedForkSecureMediaDialogs = new java.util.HashSet<>();
+
     private int[] adjustForkSecureMediaCounts(
             long dialogId, long topicId, int[] source) {
         int[] result = source.clone();
@@ -4476,7 +4478,13 @@ public class MediaDataController extends BaseController {
             int secureRound = index.count(SecureMediaIndex.KIND_ROUND_VIDEO);
             int secureFiles = index.count(SecureMediaIndex.KIND_FILE);
 
-            syncForkSecureMediaDatabase(index, dialogId);
+            boolean shouldSync;
+            synchronized (syncedForkSecureMediaDialogs) {
+                shouldSync = syncedForkSecureMediaDialogs.add(dialogId);
+            }
+            if (shouldSync) {
+                syncForkSecureMediaDatabase(index, dialogId);
+            }
 
             int dbUrlCount = 0;
             try {

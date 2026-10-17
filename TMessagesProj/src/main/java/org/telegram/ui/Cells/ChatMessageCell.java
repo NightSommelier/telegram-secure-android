@@ -10470,8 +10470,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                                     ImageLocation.getForVideoPath(
                                             messageObject.forkSecureMediaPath),
                                     filter,
-                                    ImageLocation.getForPath(
-                                            "vthumb://0:" + messageObject.forkSecureMediaPath),
+                                    null,
                                     currentPhotoFilter,
                                     null,
                                     messageObject.getDocument() == null
@@ -10503,40 +10502,27 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                             && messageObject.type != MessageObject.TYPE_GIF) {
                         boolean secureAlbumVideo = isForkSecureAlbumVideo(messageObject);
                         boolean secureVideoAutoPlay = !secureAlbumVideo && SharedConfig.isAutoplayVideo();
+                        photoImage.setAllowDecodeSingleFrame(true);
+                        photoImage.setAllowStartAnimation(secureVideoAutoPlay);
+                        if (!secureVideoAutoPlay) {
+                            photoImage.stopAnimation();
+                        }
+                        String videoFilter = secureVideoAutoPlay ? ImageLoader.AUTOPLAY_FILTER : null;
+                        photoImage.setImage(
+                                ImageLocation.getForVideoPath(
+                                        messageObject.forkSecureMediaPath),
+                                videoFilter,
+                                null,
+                                null,
+                                null,
+                                messageObject.getDocument() == null
+                                        ? 0 : messageObject.getDocument().size,
+                                null,
+                                messageObject,
+                                0);
                         if (secureVideoAutoPlay) {
-                            photoImage.setAllowDecodeSingleFrame(true);
-                            photoImage.setAllowStartAnimation(true);
-                            photoImage.setImage(
-                                    ImageLocation.getForVideoPath(
-                                            messageObject.forkSecureMediaPath),
-                                    ImageLoader.AUTOPLAY_FILTER,
-                                    ImageLocation.getForPath(
-                                            "vthumb://0:" + messageObject.forkSecureMediaPath),
-                                    currentPhotoFilter,
-                                    null,
-                                    messageObject.getDocument() == null
-                                            ? 0 : messageObject.getDocument().size,
-                                    null,
-                                    messageObject,
-                                    0);
                             autoPlayingMedia = true;
                             photoImage.startAnimation();
-                        } else {
-                            photoImage.setAllowDecodeSingleFrame(false);
-                            photoImage.setAllowStartAnimation(false);
-                            photoImage.stopAnimation();
-                            photoImage.setImage(
-                                    ImageLocation.getForPath(
-                                            "vthumb://0:" + messageObject.forkSecureMediaPath),
-                                    currentPhotoFilter,
-                                    null,
-                                    null,
-                                    null,
-                                    messageObject.getDocument() == null
-                                            ? 0 : messageObject.getDocument().size,
-                                    null,
-                                    messageObject,
-                                    0);
                         }
                     } else if (messageObject.type == MessageObject.TYPE_STORY || messageObject.type == MessageObject.TYPE_STORY_MENTION) {
                         TL_stories.StoryItem storyItem = messageObject.messageOwner.media.storyItem;

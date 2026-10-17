@@ -9580,15 +9580,17 @@ public class MessagesController extends BaseController implements NotificationCe
                     cursor.dispose();
                 }
                 if (!digests.isEmpty()) {
-                    AndroidUtilities.runOnUIThread(() -> {
+                    Utilities.globalQueue.postRunnable(() -> {
                         try {
                             SecureChatEngine secureChat = new SecureChatEngine(context, currentAccount, dialogId);
                             if (secureChat.isPaired()) {
                                 String controlCarrier = secureChat.encryptDeleteControl(digests);
-                                SendMessagesHelper.SendMessageParams params = new SendMessagesHelper.SendMessageParams();
-                                params.message = controlCarrier;
-                                params.peer = dialogId;
-                                SendMessagesHelper.getInstance(currentAccount).sendMessage(params);
+                                AndroidUtilities.runOnUIThread(() -> {
+                                    SendMessagesHelper.SendMessageParams params = new SendMessagesHelper.SendMessageParams();
+                                    params.message = controlCarrier;
+                                    params.peer = dialogId;
+                                    SendMessagesHelper.getInstance(currentAccount).sendMessage(params);
+                                });
                             }
                         } catch (Exception e) {
                             FileLog.e(e);
