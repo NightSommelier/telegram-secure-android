@@ -368,6 +368,18 @@ public class MessageObject {
                 null);
     }
 
+    public static long secureAlbumGroupId(String albumId) {
+        if (TextUtils.isEmpty(albumId)) {
+            return 0;
+        }
+        long value = 0xcbf29ce484222325L;
+        for (int i = 0; i < albumId.length(); i++) {
+            value ^= albumId.charAt(i);
+            value *= 0x100000001b3L;
+        }
+        return value == 0 ? 1L : value;
+    }
+
     public void markForkSecureMediaReady(
             String path,
             int kind,
@@ -398,6 +410,7 @@ public class MessageObject {
                         title,
                         performer,
                         waveform,
+                        forkSecureAlbumId,
                         false);
         synchronized (forkSecureMediaUiCache) {
             putForkSecureMediaUiState(messageOwner.message, state);
@@ -419,6 +432,38 @@ public class MessageObject {
             String title,
             String performer,
             byte[] waveform) {
+        cacheOutgoingForkSecureMedia(
+                carrier,
+                path,
+                kind,
+                width,
+                height,
+                name,
+                mime,
+                caption,
+                presentation,
+                durationSeconds,
+                title,
+                performer,
+                waveform,
+                null);
+    }
+
+    public static void cacheOutgoingForkSecureMedia(
+            String carrier,
+            String path,
+            int kind,
+            int width,
+            int height,
+            String name,
+            String mime,
+            String caption,
+            int presentation,
+            int durationSeconds,
+            String title,
+            String performer,
+            byte[] waveform,
+            String albumId) {
         if (TextUtils.isEmpty(carrier) || TextUtils.isEmpty(path)) {
             return;
         }
@@ -435,6 +480,7 @@ public class MessageObject {
                 title,
                 performer,
                 waveform,
+                albumId,
                 false);
         synchronized (forkSecureMediaUiCache) {
             putForkSecureMediaUiState(carrier, state);
@@ -550,6 +596,7 @@ public class MessageObject {
                 title != null ? title : "",
                 performer != null ? performer : "",
                 waveform,
+                forkSecureAlbumId,
                 !plaintext.isFile());
         synchronized (forkSecureMediaUiCache) {
             putForkSecureMediaUiState(messageOwner.message, state);
@@ -925,6 +972,9 @@ public class MessageObject {
         forkSecureMediaTitle = state.title;
         forkSecureMediaPerformer = state.performer;
         forkSecureMediaWaveform = state.waveform != null ? state.waveform.clone() : null;
+        if (!TextUtils.isEmpty(state.albumId)) {
+            forkSecureAlbumId = state.albumId;
+        }
         forkSecureMediaPending = state.pending;
         if (forkSecureMediaWaveform != null && getDocument() != null) {
             for (int a = 0; a < getDocument().attributes.size(); a++) {
@@ -1076,8 +1126,74 @@ public class MessageObject {
             type = TYPE_MUSIC;
         } else if (state.kind == FORK_SECURE_MEDIA_KIND_PHOTO) {
             type = TYPE_PHOTO;
-        } else if (!TextUtils.isEmpty(state.mime) && state.mime.startsWith("video/")) {
+            File pFile = !TextUtils.isEmpty(state.path) ? new File(state.path) : null;
+            boolean hasFile = pFile != null && pFile.isFile();
+            if (state.width > 0 && state.height > 0) {
+                TLRPC.TL_photoSize localPhoto = new TLRPC.TL_photoSize();
+                localPhoto.type = "x";
+                localPhoto.w = state.width;
+                localPhoto.h = state.height;
+                localPhoto.size = hasFile ? (int) Math.min(Integer.MAX_VALUE, pFile.length()) : 0;
+                localPhoto.location = new TLRPC.TL_fileLocationUnavailable();
+                photoThumbs = new ArrayList<>();
+                photoThumbs.add(localPhoto);
+                photoThumbsObject = getDocument();
+            }
+            if (hasFile) {
+                mediaExists = true;
+                attachPathExists = true;
+            }
+        } else if (state.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
+                || (!TextUtils.isEmpty(state.mime) && state.mime.startsWith("video/"))) {
             type = TYPE_VIDEO;
+            File pFile = !TextUtils.isEmpty(state.path) ? new File(state.path) : null;
+            boolean hasFile = pFile != null && pFile.isFile();
+            if (getDocument() != null) {
+                TLRPC.Document document = getDocument();
+                document.mime_type = TextUtils.isEmpty(state.mime) ? "video/mp4" : state.mime;
+                TLRPC.TL_documentAttributeVideo video = null;
+                for (int a = 0; a < document.attributes.size(); a++) {
+                    if (document.attributes.get(a) instanceof TLRPC.TL_documentAttributeVideo) {
+                        video = (TLRPC.TL_documentAttributeVideo) document.attributes.get(a);
+                        break;
+                    }
+                }
+                if (video == null) {
+                    video = new TLRPC.TL_documentAttributeVideo();
+                    document.attributes.add(video);
+                }
+                video.w = state.width > 0 ? state.width : 1;
+                video.h = state.height > 0 ? state.height : 1;
+                video.duration = Math.max(0, state.durationSeconds);
+                video.supports_streaming = true;
+                if (hasFile && (video.w <= 1 || video.h <= 1 || video.duration <= 0)) {
+                    SendMessagesHelper.fillVideoAttribute(state.path, video, null);
+                    if (video.w > 0 && video.h > 0) {
+                        forkSecureMediaWidth = video.w;
+                        forkSecureMediaHeight = video.h;
+                    }
+                }
+                if (forkSecureMediaWidth > 0 && forkSecureMediaHeight > 0) {
+                    TLRPC.TL_photoSize localVideo = new TLRPC.TL_photoSize();
+                    localVideo.type = "x";
+                    localVideo.w = forkSecureMediaWidth;
+                    localVideo.h = forkSecureMediaHeight;
+                    localVideo.size = hasFile ? (int) Math.min(Integer.MAX_VALUE, pFile.length()) : 0;
+                    localVideo.location = new TLRPC.TL_fileLocationUnavailable();
+                    photoThumbs = new ArrayList<>();
+                    photoThumbs.add(localVideo);
+                    photoThumbsObject = document;
+                    if (document.thumbs == null) {
+                        document.thumbs = new ArrayList<>();
+                    }
+                    document.thumbs.clear();
+                    document.thumbs.add(localVideo);
+                }
+            }
+            if (hasFile) {
+                mediaExists = true;
+                attachPathExists = true;
+            }
         } else if (state.kind == FORK_SECURE_MEDIA_KIND_FILE) {
             type = TYPE_FILE;
             if (getDocument() != null) {
@@ -1190,6 +1306,7 @@ public class MessageObject {
         final String title;
         final String performer;
         final byte[] waveform;
+        final String albumId;
         final boolean pending;
 
         ForkSecureMediaUiState(
@@ -1213,6 +1330,7 @@ public class MessageObject {
                     0,
                     "",
                     "",
+                    null,
                     null,
                     pending);
         }
@@ -1243,6 +1361,7 @@ public class MessageObject {
                     title,
                     performer,
                     null,
+                    null,
                     pending);
         }
 
@@ -1260,6 +1379,38 @@ public class MessageObject {
                 String performer,
                 byte[] waveform,
                 boolean pending) {
+            this(
+                    path,
+                    kind,
+                    width,
+                    height,
+                    name,
+                    mime,
+                    caption,
+                    presentation,
+                    durationSeconds,
+                    title,
+                    performer,
+                    waveform,
+                    null,
+                    pending);
+        }
+
+        ForkSecureMediaUiState(
+                String path,
+                int kind,
+                int width,
+                int height,
+                String name,
+                String mime,
+                String caption,
+                int presentation,
+                int durationSeconds,
+                String title,
+                String performer,
+                byte[] waveform,
+                String albumId,
+                boolean pending) {
             this.path = path;
             this.kind = kind;
             this.width = width;
@@ -1272,6 +1423,7 @@ public class MessageObject {
             this.title = title;
             this.performer = performer;
             this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
+            this.albumId = TextUtils.isEmpty(albumId) ? null : albumId;
             this.pending = pending;
         }
     }
@@ -2408,7 +2560,6 @@ public class MessageObject {
             boolean forceCalc = false;
             boolean needShare = false;
             boolean isMusic = false;
-            boolean secureVisualLayout = count > 4;
             hasSibling = false;
 
             hasCaption = false;
@@ -2465,9 +2616,6 @@ public class MessageObject {
                                         && messageObject.forkSecureMediaMime
                                                 .startsWith("video/")
                                 || messageObject.isVideo());
-                if (!secureVisualMedia) {
-                    secureVisualLayout = false;
-                }
                 if (secureVisualMedia) {
                     // Secure manifests authenticate dimensions before the plaintext cache is
                     // ready. Use them immediately so the upload/decrypt transition has the same
@@ -2734,39 +2882,8 @@ public class MessageObject {
                     }
                 }
 
-                if (secureVisualLayout) {
-                    /*
-                     * The encrypted transport has no server-side visual layout to reuse. Keep
-                     * large protected albums deterministic: preserve timeline order and split
-                     * them into balanced rows of at most three cells (5 = 2+3, 7 = 2+2+3,
-                     * 9 = 3+3+3, 10 = 2+2+3+3). This avoids the native first-fit layouts such
-                     * as 1+2+3+3, which leave visible empty spans while messages are replaced
-                     * by their server acknowledgements.
-                     */
-                    int rows = (count + 2) / 3;
-                    int baseCount = count / rows;
-                    int extraCells = count % rows;
-                    int[] lineCounts = new int[rows];
-                    float[] heights = new float[rows];
-                    int start = 0;
-                    for (int i = 0; i < rows; i++) {
-                        int lineCount = baseCount + (i >= rows - extraCells ? 1 : 0);
-                        lineCounts[i] = lineCount;
-                        heights[i] = multiHeight(croppedRatios, start, start + lineCount);
-                        start += lineCount;
-                    }
-                    MessageGroupedLayoutAttempt balanced =
-                            new MessageGroupedLayoutAttempt(1, 1, 1.0f, 1.0f);
-                    balanced.lineCounts = lineCounts;
-                    balanced.heights = heights;
-                    attempts.clear();
-                    attempts.add(balanced);
-                }
-
                 MessageGroupedLayoutAttempt optimal = null;
-                // The balanced secure candidate above is intentional; regular Telegram albums
-                // preserve the upstream first-fit behavior.
-                float optimalDiff = secureVisualLayout ? Float.MAX_VALUE : 0.0f;
+                float optimalDiff = 0.0f;
                 float maxHeight = maxSizeWidth / 3 * 4;
                 for (int a = 0; a < attempts.size(); a++) {
                     MessageGroupedLayoutAttempt attempt = attempts.get(a);
@@ -2886,8 +3003,11 @@ public class MessageObject {
                     break;
                 }
                 hasSecureMedia = true;
+                boolean isVideoMedia = messageObject.isVideo()
+                        || (messageObject.forkSecureMediaMime != null
+                                && messageObject.forkSecureMediaMime.startsWith("video/"));
                 if (messageObject.forkSecureMediaKind != FORK_SECURE_MEDIA_KIND_PHOTO
-                        && !messageObject.isVideo()) {
+                        && !isVideoMedia) {
                     secureVisualGroup = false;
                     break;
                 }

@@ -3421,6 +3421,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             ArrayList<String> encryptedPaths = new ArrayList<>();
             ArrayList<String> opaqueOriginalPaths = new ArrayList<>();
             ArrayList<String> carriers = new ArrayList<>();
+            ArrayList<String> albumIds = new ArrayList<>();
             String currentAlbumId = null;
             for (int i = 0; i < sources.size(); i++) {
                 ForkSecureResolvedSource resolved = null;
@@ -3497,6 +3498,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         height = side;
                         mimeType = "video/mp4";
                     }
+                    String itemAlbumId = sources.size() > 1
+                            ? (currentAlbumId == null || i % 10 == 0
+                                    ? (currentAlbumId = newForkSecureAlbumId())
+                                    : currentAlbumId)
+                            : null;
                     SecureContentCodec.Attachment manifest =
                             SecureMediaCrypto.encryptAttachmentFile(
                                     resolved.file,
@@ -3506,12 +3512,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                     SecureContentCodec.encodeCaption(
                                             resolved.caption,
                                             invertMedia,
-                                            sources.size() > 1
-                                                    ? (currentAlbumId == null
-                                                            || i % 10 == 0
-                                                            ? (currentAlbumId = newForkSecureAlbumId())
-                                                            : currentAlbumId)
-                                                    : null),
+                                            itemAlbumId),
                                     width,
                                     height,
                                     resolved.photo,
@@ -3555,6 +3556,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     opaqueOriginalPaths.add(encryptedFile.getAbsolutePath() + '.'
                             + Long.toUnsignedString(Utilities.random.nextLong()));
                     carriers.add(carrier);
+                    albumIds.add(itemAlbumId);
                     File localPlaintextFile = resolved.file;
                     if (resolved.temporary) {
                         File persistentDir = new File(
@@ -3586,7 +3588,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             presentation.durationSeconds,
                             presentation.title,
                             presentation.performer,
-                            presentation.waveform);
+                            presentation.waveform,
+                            itemAlbumId);
                     try {
                         int indexKind;
                         if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_FILE) {
@@ -3623,7 +3626,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 SecureContentCodec.encodeCaption(
                                         SecureContentCodec.displayCaption(resolved.caption),
                                         invertMedia,
-                                        null),
+                                        itemAlbumId),
                                 width,
                                 height));
                     } catch (Throwable e) {
@@ -3643,10 +3646,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             }
             if (!encryptedPaths.isEmpty()) {
                 AndroidUtilities.runOnUIThread(() -> prepareForkSecureDocumentBatch(
-                        accountInstance, encryptedPaths, opaqueOriginalPaths, carriers, dialogId,
-                        replyToMsg, replyToTopMsg, storyItem, quote, notify, scheduleDate,
-                        scheduleRepeatPeriod, quickReplyShortcut, quickReplyShortcutId, effectId,
-                        invertMedia, payStars, monoForumPeerId, suggestionParams));
+                        accountInstance, encryptedPaths, opaqueOriginalPaths, carriers, albumIds,
+                        dialogId, replyToMsg, replyToTopMsg, storyItem, quote, notify,
+                        scheduleDate, scheduleRepeatPeriod, quickReplyShortcut,
+                        quickReplyShortcutId, effectId, invertMedia, payStars, monoForumPeerId,
+                        suggestionParams));
             }
         });
     }
@@ -3654,7 +3658,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     @UiThread
     private static void prepareForkSecureDocumentBatch(
             AccountInstance accountInstance, ArrayList<String> encryptedPaths,
-            ArrayList<String> opaqueOriginalPaths, ArrayList<String> carriers, long dialogId,
+            ArrayList<String> opaqueOriginalPaths, ArrayList<String> carriers,
+            ArrayList<String> albumIds, long dialogId,
             MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem,
             ChatActivity.ReplyQuote quote, boolean notify, int scheduleDate,
             int scheduleRepeatPeriod, String quickReplyShortcut, int quickReplyShortcutId,
@@ -3670,7 +3675,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     if (groupId[0] != 0) {
                         finishGroup(accountInstance, groupId[0], scheduleDate);
                     }
-                    groupId[0] = Utilities.random.nextLong();
+                    String albumId = albumIds != null && i < albumIds.size() ? albumIds.get(i) : null;
+                    groupId[0] = MessageObject.secureAlbumGroupId(albumId);
+                    if (groupId[0] == 0) {
+                        groupId[0] = Utilities.random.nextLong();
+                    }
                     if (groupId[0] == 0) groupId[0] = 1;
                     mediaCount = 0;
                 }

@@ -21377,11 +21377,13 @@ public class ChatActivity extends BaseFragment implements
             MessageObject message, SecureSavedMessagesKeyStore.KeyMaterial key) {
         if (key == null || message == null || message.messageOwner == null
                 || !SecureCarrierCodec.isMarked(message.messageOwner.message)
-                || message.forkSecureVerified
-                && !TextUtils.equals(message.messageText, message.messageOwner.message)) {
+                || !needsCachedSecureTextOverlay(message)) {
             return;
         }
         try {
+            if (restorePreparedSecureSticker(message)) {
+                return;
+            }
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(
                     message.messageOwner.message);
             if (decoded == null || decoded.type != SecureCarrierCodec.TYPE_SAVED_MESSAGE) {
@@ -22209,8 +22211,9 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void updateSecureStickerRow(MessageObject message) {
-        if (fragmentView != null && chatAdapter != null) {
-            chatAdapter.updateRowWithMessageObject(message, true, true);
+        if (fragmentView != null && chatAdapter != null && messages.indexOf(message) >= 0) {
+            chatAdapter.updateRowWithMessageObject(
+                    message, false, message != null && message.getGroupId() == 0);
         }
     }
 
@@ -22584,7 +22587,11 @@ public class ChatActivity extends BaseFragment implements
             }
             return result;
         }
-        for (MessageObject candidate : messages) {
+        // ChatActivity.messages is ordered newest-to-oldest (index 0 is bottom of chat),
+        // whereas GroupedMessages.messages must be ordered oldest-to-newest to match native
+        // Telegram's messagesDidLoad and processNewMessages album order.
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            MessageObject candidate = messages.get(i);
             if (candidate == null || candidate.messageOwner == null
                     || !candidate.isForkSecureCarrier()) {
                 continue;
@@ -22625,10 +22632,11 @@ public class ChatActivity extends BaseFragment implements
         for (MessageObject member : members) {
             boolean photo = member.forkSecureMediaKind
                     == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO;
-            boolean video = member.forkSecureMediaKind
-                    == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
-                    && member.forkSecureMediaMime != null
-                    && member.forkSecureMediaMime.startsWith("video/");
+            boolean video = member.isVideo()
+                    || (member.forkSecureMediaKind
+                            == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
+                            && member.forkSecureMediaMime != null
+                            && member.forkSecureMediaMime.startsWith("video/"));
             if (!TextUtils.equals(albumId, member.forkSecureAlbumId)
                     || (!photo && !video)
                     || member.forkSecureMediaWidth <= 0
@@ -22645,6 +22653,25 @@ public class ChatActivity extends BaseFragment implements
             return false;
         }
         long nativeGroupId = rememberSecureNativeGroupId(message);
+        long groupId = secureAlbumGroupId(message.forkSecureAlbumId);
+        if (groupId == 0) {
+            return false;
+        }
+        if (messages.indexOf(message) < 0) {
+            // Called inside applySecureTextOverlay before messagesDidLoad or processNewMessages
+            // has inserted this batch into ChatActivity.messages and groupedMessagesMap.
+            // Assign the deterministic groupId now so native Telegram's loop groups and
+            // calculates the album in one pass without duplicating members.
+            message.messageOwner.grouped_id = groupId;
+            message.messageOwner.flags |= 131072;
+            if (message.localSentGroupId != 0) {
+                message.localSentGroupId = groupId;
+            }
+            if (message.localGroupId != 0) {
+                message.localGroupId = groupId;
+            }
+            return false;
+        }
         ArrayList<MessageObject> members = collectSecureNativeAlbumMembers(
                 message, nativeGroupId, message.forkSecureAlbumId);
         if (nativeGroupId != 0 && members.size() > 1
@@ -22659,24 +22686,24 @@ public class ChatActivity extends BaseFragment implements
         if (members.isEmpty()) {
             members.add(message);
         }
-        // collectSecureNativeAlbumMembers walks the chat timeline. Keep that order: sorting by
-        // transient local/server ids changes the relation between adapter rows and positions,
-        // which creates empty gaps while acknowledgements arrive.
-        long groupId = secureAlbumGroupId(message.forkSecureAlbumId);
-        if (groupId == 0) {
-            return false;
-        }
-        if (nativeGroupId != 0 && nativeGroupId != groupId) {
-            groupedMessagesMap.remove(nativeGroupId);
-        }
         MessageObject.GroupedMessages groupedMessages = groupedMessagesMap.get(groupId);
+        if (groupedMessages == null && nativeGroupId != 0) {
+            groupedMessages = groupedMessagesMap.get(nativeGroupId);
+        }
+        if (groupedMessages == null && message.getGroupId() != 0) {
+            groupedMessages = groupedMessagesMap.get(message.getGroupId());
+        }
         if (groupedMessages == null) {
             groupedMessages = new MessageObject.GroupedMessages();
-            groupedMessages.groupId = groupId;
             groupedMessages.reversed = reversed;
-            groupedMessagesMap.put(groupId, groupedMessages);
         }
-        boolean changed = groupedMessages.messages.size() != members.size();
+        groupedMessages.groupId = groupId;
+        groupedMessagesMap.put(groupId, groupedMessages);
+        if (nativeGroupId != 0) {
+            groupedMessagesMap.put(nativeGroupId, groupedMessages);
+        }
+        boolean changed = groupedMessages.isDocuments
+                || groupedMessages.messages.size() != members.size();
         if (!changed) {
             for (int i = 0; i < members.size(); i++) {
                 if (groupedMessages.messages.get(i).getId() != members.get(i).getId()) {
@@ -22687,6 +22714,21 @@ public class ChatActivity extends BaseFragment implements
         }
         groupedMessages.messages.clear();
         for (MessageObject member : members) {
+            long oldMemberGroupId = member.getGroupId();
+            if (oldMemberGroupId != 0) {
+                groupedMessagesMap.put(oldMemberGroupId, groupedMessages);
+            }
+            if (member.localSentGroupId != 0) {
+                groupedMessagesMap.put(member.localSentGroupId, groupedMessages);
+                member.localSentGroupId = groupId;
+            }
+            if (member.localGroupId != 0) {
+                groupedMessagesMap.put(member.localGroupId, groupedMessages);
+                member.localGroupId = groupId;
+            }
+            if (member.messageOwner.grouped_id != 0) {
+                groupedMessagesMap.put(member.messageOwner.grouped_id, groupedMessages);
+            }
             member.messageOwner.grouped_id = groupId;
             member.messageOwner.flags |= 131072;
             groupedMessages.messages.add(member);
@@ -22702,6 +22744,7 @@ public class ChatActivity extends BaseFragment implements
                     geometryChanged = true;
                     break;
                 }
+                groupedMessages.positionsArray.put(member.getId(), position);
                 float expectedAspectRatio = member.forkSecureMediaWidth
                         / (float) member.forkSecureMediaHeight;
                 if (Math.abs(position.aspectRatio - expectedAspectRatio) > 0.001f) {
@@ -22709,19 +22752,17 @@ public class ChatActivity extends BaseFragment implements
                     break;
                 }
             }
-            if (!geometryChanged && TextUtils.isEmpty(message.forkSecureMediaPath)) {
+            if (!geometryChanged) {
                 return true;
             }
-            changed = geometryChanged;
+            changed = true;
         }
-        // Manifest dimensions are complete before this point, so calculate only when the
-        // authenticated geometry changed. A ready plaintext path still requires a full adapter
-        // refresh: the initial send can already have bound cells with the old native-document
-        // positions, while reopening the chat rebuilds them correctly by accident.
         if (changed) {
             groupedMessages.calculate();
-        }
-        if (changed || !TextUtils.isEmpty(message.forkSecureMediaPath)) {
+            if (chatLayoutManager != null && chatLayoutManager.getSpanSizeLookup() != null) {
+                chatLayoutManager.getSpanSizeLookup().invalidateSpanIndexCache();
+                chatLayoutManager.getSpanSizeLookup().invalidateSpanGroupIndexCache();
+            }
             if (chatAdapter != null) {
                 chatAdapter.notifyDataSetChanged(true);
             }
@@ -22730,12 +22771,7 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private static long secureAlbumGroupId(String albumId) {
-        long value = 0xcbf29ce484222325L;
-        for (int i = 0; i < albumId.length(); i++) {
-            value ^= albumId.charAt(i);
-            value *= 0x100000001b3L;
-        }
-        return value == 0 ? 1 : value;
+        return MessageObject.secureAlbumGroupId(albumId);
     }
 
     private static String secureAttachmentExtension(String mimeType) {
@@ -25599,6 +25635,17 @@ public class ChatActivity extends BaseFragment implements
                         MessageObject.GroupedMessages oldGroup = groupedMessagesMap.get(obj.getGroupId());
                         if (oldGroup != null) {
                             groupedMessagesMap.put(newMsgObj.grouped_id, oldGroup);
+                            if (grouped_id != 0) {
+                                groupedMessagesMap.put(grouped_id, oldGroup);
+                            }
+                            MessageObject.GroupedMessagePosition oldPos = oldGroup.positions.get(obj);
+                            if (oldPos == null) {
+                                oldPos = oldGroup.positionsArray.get(msgId);
+                            }
+                            if (oldPos != null) {
+                                oldGroup.positionsArray.remove(msgId);
+                                oldGroup.positionsArray.put(newMsgId, oldPos);
+                            }
                         }
                         obj.localSentGroupId = obj.messageOwner.grouped_id;
                         obj.messageOwner.grouped_id = grouped_id;
@@ -25650,7 +25697,10 @@ public class ChatActivity extends BaseFragment implements
                             break;
                         }
                     }
-                    chatAdapter.updateRowWithMessageObject(obj, animateSendingViews.contains(cell), obj.isForkSecureCarrier());
+                    chatAdapter.updateRowWithMessageObject(
+                            obj,
+                            animateSendingViews.contains(cell),
+                            obj.isForkSecureCarrier() && obj.getGroupId() == 0);
                 }
                 if (chatLayoutManager != null) {
                     if (mediaUpdated && chatLayoutManager.findFirstVisibleItemPosition() == 0) {
@@ -25676,7 +25726,8 @@ public class ChatActivity extends BaseFragment implements
                     obj.generateLayout(null);
                 }
                 if (chatAdapter != null) {
-                    chatAdapter.updateRowWithMessageObject(obj, false, obj.isForkSecureCarrier());
+                    chatAdapter.updateRowWithMessageObject(
+                            obj, false, obj.isForkSecureCarrier() && obj.getGroupId() == 0);
                 }
             }
         } else if (id == NotificationCenter.messageSendError) {
