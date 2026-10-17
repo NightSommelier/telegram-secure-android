@@ -4174,10 +4174,6 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (messages == null || messages.isEmpty()) {
             return 0;
         }
-        if (isForkSecureProtectedPeer(peer)) {
-            showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
-            return 0;
-        }
         for (int i = 0; i < messages.size(); i++) {
             MessageObject msg = messages.get(i);
             if (msg != null && msg.isForkSecureCarrier()) {

@@ -177,6 +177,59 @@ public final class SecureHistoryBackupManagerTest {
         }
     }
 
+    @Test
+    public void restoreReplacesExistingStateAndClearsFailedDecryptCache() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        long peer = positiveRandomLong();
+        long temporaryPeer = positiveRandomLong();
+        char[] password = "test-replace-history-password".toCharArray();
+        byte[] archive = null;
+        String carrier = carrier();
+        String temporaryCarrier = carrier();
+        try {
+            clean(context, peer);
+            clean(context, temporaryPeer);
+            SecureLocalTextStore text =
+                    new SecureLocalTextStore(context, ACCOUNT, peer);
+            text.rememberIncoming(carrier, "restored after failed decrypt");
+            SecureChatState state = new SecureChatState(context);
+            state.markPaired(ACCOUNT, peer);
+
+            archive = SecureHistoryBackupManager.exportArchive(
+                    context, ACCOUNT, OWNER, password);
+
+            // Simulate user resetting identity and creating temporary state + failed decrypts before restore
+            SecureChatEngine.resetOwnIdentity(context);
+            new SecureLocalMessageCache(context, ACCOUNT, peer).forgetPeer();
+            SecureChatEngine engineBeforeRestore = new SecureChatEngine(context, ACCOUNT, peer);
+            expectFailure(() -> engineBeforeRestore.decryptText(carrier));
+
+            SecureLocalTextStore tempText =
+                    new SecureLocalTextStore(context, ACCOUNT, temporaryPeer);
+            tempText.rememberOutgoing(temporaryCarrier, "temporary outgoing");
+            state.markWaiting(ACCOUNT, temporaryPeer);
+
+            SecureHistoryBackupManager.RestoreResult restored =
+                    SecureHistoryBackupManager.restoreArchive(
+                            context, ACCOUNT, OWNER, archive, password);
+            assertEquals(1, restored.restoredMessages);
+            assertEquals(1, restored.pausedChats);
+            assertNull(tempText.loadOutgoing(temporaryCarrier));
+            assertFalse(state.isWaiting(ACCOUNT, temporaryPeer));
+            assertTrue(state.isPaused(ACCOUNT, peer));
+
+            SecureChatEngine engineAfterRestore = new SecureChatEngine(context, ACCOUNT, peer);
+            assertEquals("restored after failed decrypt", engineAfterRestore.decryptText(carrier));
+        } finally {
+            Arrays.fill(password, '\0');
+            if (archive != null) {
+                Arrays.fill(archive, (byte) 0);
+            }
+            clean(context, peer);
+            clean(context, temporaryPeer);
+        }
+    }
+
     private static void clean(Context context, long peer) throws Exception {
         try {
             SecureChatEngine.resetOwnIdentity(context);

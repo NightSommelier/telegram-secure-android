@@ -2966,6 +2966,10 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
     private static final android.util.LruCache<String, CharSequence> forkSecurePreviewCache =
             new android.util.LruCache<>(512);
 
+    public static void clearForkSecurePreviewCache() {
+        forkSecurePreviewCache.evictAll();
+    }
+
     /**
      * Resolves Fork-Secure carriers only for ordinary one-to-one user dialogs.
      * Native Telegram Secret Chats, groups, bots, self, and service dialogs never enter this path.

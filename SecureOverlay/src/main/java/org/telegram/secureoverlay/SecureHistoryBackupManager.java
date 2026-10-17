@@ -29,6 +29,7 @@ public final class SecureHistoryBackupManager {
     private static final String[] PROTOCOL_ROOTS = {
             "identity",
             "registration",
+            "counter",
             "prekey",
             "signed",
             "kyber",
@@ -137,16 +138,13 @@ public final class SecureHistoryBackupManager {
                 throw new SecurityException(
                         "secure history backup belongs to a different Telegram account");
             }
+            if (SecureIdentityBackupManager.getPreparedImport(appContext) != null) {
+                throw new IllegalStateException(
+                        "identity recovery is already prepared");
+            }
             SecureChatState chatState = new SecureChatState(appContext);
             KeystoreEncryptedBlobStore blobs =
                     new KeystoreEncryptedBlobStore(appContext);
-            if (chatState.hasAnySecureConversationState()
-                    || KeystoreSignalProtocolStore.hasRemoteProtocolState(appContext)
-                    || hasLocalHistory(blobs)
-                    || SecureIdentityBackupManager.getPreparedImport(appContext) != null) {
-                throw new IllegalStateException(
-                        "secure history restore requires an unused secure installation");
-            }
             SecureRecoveryGenerationStore recoveryStore =
                     new SecureRecoveryGenerationStore(appContext);
             SecureRecoveryGenerationStore.Record current =
@@ -240,6 +238,8 @@ public final class SecureHistoryBackupManager {
             new SecureChatState(context).restorePausedPeers(
                     marker.account, marker.generation, marker.peers);
             new KeystoreSignalProtocolStore(context).ensureLocalPreKeyMaterial();
+            SecureLocalTextStore.evictDisplayPrefixes(HISTORY_PREFIXES);
+            SecureChatEngine.clearFailedDecryptCache();
             blobs.delete(MARKER);
             return new RestoreResult(
                     marker.generation,

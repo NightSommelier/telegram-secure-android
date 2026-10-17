@@ -14495,8 +14495,8 @@ public class ChatActivity extends BaseFragment implements
                 break;
             }
         }
-        if (containsForkSecure || isForkSecureContentProtected()) {
-            forwardForkSecureMessages(arrayList, hideCaption, notify, scheduleDate);
+        if (containsForkSecure) {
+            forwardForkSecureMessages(dialog_id, arrayList, hideCaption, notify, scheduleDate);
             return;
         }
         if (!checkSlowModeAlert()) {
@@ -14556,22 +14556,28 @@ public class ChatActivity extends BaseFragment implements
      * (fwd_from) or source carriers are leaked to MTProto.
      */
     private void forwardForkSecureMessages(
-            ArrayList<MessageObject> messagesToForward, boolean hideCaption, boolean notify, int scheduleDate) {
-        final boolean savedMessages = isForkSecureSavedMessagesChat();
+            long targetDialogId,
+            ArrayList<MessageObject> messagesToForward,
+            boolean hideCaption,
+            boolean notify,
+            int scheduleDate) {
+        final boolean savedMessages = targetDialogId == getUserConfig().getClientUserId();
         final SecureChatEngine targetChat;
         if (savedMessages) {
-            if (!isSavedMessagesSecureModeEnabled()) {
+            if (!SecureSavedMessagesSettings.isSecureByDefault(getContext(), currentAccount)) {
                 showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
                 return;
             }
             targetChat = null;
         } else {
-            if (!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) {
+            if (!DialogObject.isUserDialog(targetDialogId) && !DialogObject.isChatDialog(targetDialogId)) {
                 showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
                 return;
             }
             try {
-                targetChat = getSecureChatEngine();
+                targetChat = targetDialogId == dialog_id
+                        ? getSecureChatEngine()
+                        : new SecureChatEngine(getContext(), currentAccount, targetDialogId);
                 if (targetChat == null || targetChat.getMode() != SecureChatEngine.Mode.PROTECTED) {
                     showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
                     return;
@@ -14582,7 +14588,7 @@ public class ChatActivity extends BaseFragment implements
                 return;
             }
         }
-        if (!checkSlowModeAlert()) {
+        if (targetDialogId == dialog_id && !checkSlowModeAlert()) {
             return;
         }
         try {
@@ -14594,6 +14600,7 @@ public class ChatActivity extends BaseFragment implements
                 }
                 if (sourceMessage.isForkSecureCarrier()) {
                     if (!DialogObject.isUserDialog(sourceMessage.getDialogId())
+                            && !DialogObject.isChatDialog(sourceMessage.getDialogId())
                             && sourceMessage.getDialogId() != getUserConfig().getClientUserId()) {
                         showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
                         return;
@@ -14629,7 +14636,9 @@ public class ChatActivity extends BaseFragment implements
                                 return;
                             }
                         } else if (!(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaContact)
-                                && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaGeo)) {
+                                && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaGeo)
+                                && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaWebPage)
+                                && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaEmpty)) {
                             showForkSecureForwardError(R.string.ForkSecureForwardFailed);
                             return;
                         }
@@ -14637,13 +14646,14 @@ public class ChatActivity extends BaseFragment implements
                 }
             }
 
-            if ((scheduleDate != 0) == (chatMode == MODE_SCHEDULED)) {
+            if (targetDialogId == dialog_id && (scheduleDate != 0) == (chatMode == MODE_SCHEDULED)) {
                 waitingForSendingMessageLoad = true;
                 if (chatAdapter != null) {
                     chatAdapter.checkRemoveBotForumRowsStartThreadRow(true);
                 }
             }
 
+            MessageObject targetThreadMessage = targetDialogId == dialog_id ? getThreadMessage() : null;
             for (int i = 0; i < messagesToForward.size(); i++) {
                 MessageObject sourceMessage = messagesToForward.get(i);
                 if (sourceMessage.isForkSecureCarrier()) {
@@ -14669,11 +14679,11 @@ public class ChatActivity extends BaseFragment implements
                                 sourceMessage.forkSecureMediaDurationSeconds,
                                 sourceMessage.forkSecureMediaTitle,
                                 sourceMessage.forkSecureMediaPerformer,
-                                dialog_id,
-                                getThreadMessage(),
+                                targetDialogId,
+                                targetThreadMessage,
                                 notify,
                                 scheduleDate,
-                                getMessageChatSendParams());
+                                targetDialogId == dialog_id ? getMessageChatSendParams() : null);
                     } else {
                         SecureContentCodec.Contact contact = null;
                         SecureContentCodec.GeoLocation location = null;
@@ -14714,18 +14724,20 @@ public class ChatActivity extends BaseFragment implements
                         }
 
                         if (contact != null) {
-                            sendForkSecureForwardedContact(contact, savedMessages, targetChat, notify, scheduleDate);
+                            sendForkSecureForwardedContact(targetDialogId, contact, savedMessages, targetChat, notify, scheduleDate);
                         } else if (location != null) {
-                            sendForkSecureForwardedLocation(location, savedMessages, targetChat, notify, scheduleDate);
+                            sendForkSecureForwardedLocation(targetDialogId, location, savedMessages, targetChat, notify, scheduleDate);
                         } else if (!TextUtils.isEmpty(plaintext)
                                 && !SecureChatEngine.isPairingAcknowledgementDisplay(plaintext)
                                 && !SecureChatEngine.isPairingRejectionDisplay(plaintext)) {
-                            sendForkSecureForwardedText(plaintext, savedMessages, targetChat, notify, scheduleDate);
+                            sendForkSecureForwardedText(targetDialogId, plaintext, savedMessages, targetChat, notify, scheduleDate);
                         }
                     }
                 } else {
-                    // Plain message forwarded into protected chat
-                    if (sourceMessage.messageOwner != null && sourceMessage.messageOwner.media != null) {
+                    // Plain message forwarded alongside a secure batch into protected chat
+                    if (sourceMessage.messageOwner != null && sourceMessage.messageOwner.media != null
+                            && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaWebPage)
+                            && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaEmpty)) {
                         if (sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaPhoto) {
                             File file = FileLoader.getInstance(currentAccount).getPathToMessage(sourceMessage.messageOwner);
                             if (file != null && file.exists()) {
@@ -14735,8 +14747,8 @@ public class ChatActivity extends BaseFragment implements
                                         file.getAbsolutePath(),
                                         null,
                                         null,
-                                        dialog_id,
-                                        getThreadMessage(),
+                                        targetDialogId,
+                                        targetThreadMessage,
                                         null,
                                         null,
                                         null,
@@ -14751,7 +14763,7 @@ public class ChatActivity extends BaseFragment implements
                                         0,
                                         false,
                                         caption,
-                                        getMessageChatSendParams(),
+                                        targetDialogId == dialog_id ? getMessageChatSendParams() : null,
                                         0,
                                         0);
                             }
@@ -14770,11 +14782,11 @@ public class ChatActivity extends BaseFragment implements
                                         0,
                                         "",
                                         "",
-                                        dialog_id,
-                                        getThreadMessage(),
+                                        targetDialogId,
+                                        targetThreadMessage,
                                         notify,
                                         scheduleDate,
-                                        getMessageChatSendParams());
+                                        targetDialogId == dialog_id ? getMessageChatSendParams() : null);
                             }
                         } else if (sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaContact) {
                             TLRPC.TL_messageMediaContact c = (TLRPC.TL_messageMediaContact) sourceMessage.messageOwner.media;
@@ -14783,7 +14795,7 @@ public class ChatActivity extends BaseFragment implements
                                     c.first_name != null ? c.first_name : "",
                                     c.last_name != null ? c.last_name : "",
                                     c.vcard != null ? c.vcard : "");
-                            sendForkSecureForwardedContact(contact, savedMessages, targetChat, notify, scheduleDate);
+                            sendForkSecureForwardedContact(targetDialogId, contact, savedMessages, targetChat, notify, scheduleDate);
                         } else if (sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaGeo) {
                             TLRPC.TL_messageMediaGeo g = (TLRPC.TL_messageMediaGeo) sourceMessage.messageOwner.media;
                             if (g.geo != null) {
@@ -14792,19 +14804,21 @@ public class ChatActivity extends BaseFragment implements
                                         g.geo._long,
                                         g.geo.accuracy_radius,
                                         g.period);
-                                sendForkSecureForwardedLocation(location, savedMessages, targetChat, notify, scheduleDate);
+                                sendForkSecureForwardedLocation(targetDialogId, location, savedMessages, targetChat, notify, scheduleDate);
                             }
                         }
                     } else if (sourceMessage.messageOwner != null && !TextUtils.isEmpty(sourceMessage.messageOwner.message)) {
                         String plaintext = sourceMessage.messageOwner.message;
-                        sendForkSecureForwardedText(plaintext, savedMessages, targetChat, notify, scheduleDate);
+                        sendForkSecureForwardedText(targetDialogId, plaintext, savedMessages, targetChat, notify, scheduleDate);
                     }
                 }
             }
-            AndroidUtilities.runOnUIThread(() -> {
-                waitingForSendingMessageLoad = false;
-                hideFieldPanel(true);
-            });
+            if (targetDialogId == dialog_id) {
+                AndroidUtilities.runOnUIThread(() -> {
+                    waitingForSendingMessageLoad = false;
+                    hideFieldPanel(true);
+                });
+            }
         } catch (Exception error) {
             FileLog.e(error);
             showForkSecureForwardError(R.string.ForkSecureForwardFailed);
@@ -14812,7 +14826,7 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void sendForkSecureForwardedText(
-            String plaintext, boolean savedMessages, SecureChatEngine targetChat, boolean notify, int scheduleDate) {
+            long targetDialogId, String plaintext, boolean savedMessages, SecureChatEngine targetChat, boolean notify, int scheduleDate) {
         String encryptedText;
         if (savedMessages) {
             SecureSavedMessagesKeyStore.KeyMaterial targetKey = getSavedMessagesKeyMaterial();
@@ -14827,11 +14841,11 @@ public class ChatActivity extends BaseFragment implements
         } else {
             encryptedText = targetChat.encryptText(plaintext);
         }
-        dispatchForkSecureForwardedCarrier(encryptedText, notify, scheduleDate);
+        dispatchForkSecureForwardedCarrier(targetDialogId, encryptedText, notify, scheduleDate);
     }
 
     private void sendForkSecureForwardedContact(
-            SecureContentCodec.Contact contact, boolean savedMessages, SecureChatEngine targetChat, boolean notify, int scheduleDate) {
+            long targetDialogId, SecureContentCodec.Contact contact, boolean savedMessages, SecureChatEngine targetChat, boolean notify, int scheduleDate) {
         String encryptedText;
         if (savedMessages) {
             SecureSavedMessagesKeyStore.KeyMaterial targetKey = getSavedMessagesKeyMaterial();
@@ -14846,11 +14860,11 @@ public class ChatActivity extends BaseFragment implements
         } else {
             encryptedText = targetChat.encryptContact(contact);
         }
-        dispatchForkSecureForwardedCarrier(encryptedText, notify, scheduleDate);
+        dispatchForkSecureForwardedCarrier(targetDialogId, encryptedText, notify, scheduleDate);
     }
 
     private void sendForkSecureForwardedLocation(
-            SecureContentCodec.GeoLocation location, boolean savedMessages, SecureChatEngine targetChat, boolean notify, int scheduleDate) {
+            long targetDialogId, SecureContentCodec.GeoLocation location, boolean savedMessages, SecureChatEngine targetChat, boolean notify, int scheduleDate) {
         String encryptedText;
         if (savedMessages) {
             SecureSavedMessagesKeyStore.KeyMaterial targetKey = getSavedMessagesKeyMaterial();
@@ -14865,16 +14879,16 @@ public class ChatActivity extends BaseFragment implements
         } else {
             encryptedText = targetChat.encryptLocation(location);
         }
-        dispatchForkSecureForwardedCarrier(encryptedText, notify, scheduleDate);
+        dispatchForkSecureForwardedCarrier(targetDialogId, encryptedText, notify, scheduleDate);
     }
 
-    private void dispatchForkSecureForwardedCarrier(String encryptedCarrier, boolean notify, int scheduleDate) {
+    private void dispatchForkSecureForwardedCarrier(long targetDialogId, String encryptedCarrier, boolean notify, int scheduleDate) {
         SendMessagesHelper.SendMessageParams params =
                 SendMessagesHelper.SendMessageParams.of(
                         encryptedCarrier,
-                        dialog_id,
+                        targetDialogId,
                         null,
-                        getThreadMessage(),
+                        targetDialogId == dialog_id ? getThreadMessage() : null,
                         null,
                         false,
                         null,
@@ -14885,10 +14899,12 @@ public class ChatActivity extends BaseFragment implements
                         0,
                         null,
                         false);
-        params.quick_reply_shortcut = quickReplyShortcut;
-        params.quick_reply_shortcut_id = getQuickReplyId();
-        params.monoForumPeer = getSendMonoForumPeerId();
-        params.suggestionParams = getSendMessageSuggestionParams();
+        if (targetDialogId == dialog_id) {
+            params.quick_reply_shortcut = quickReplyShortcut;
+            params.quick_reply_shortcut_id = getQuickReplyId();
+            params.monoForumPeer = getSendMonoForumPeerId();
+            params.suggestionParams = getSendMessageSuggestionParams();
+        }
         getSendMessagesHelper().sendMessage(params);
     }
 
@@ -37709,6 +37725,14 @@ public class ChatActivity extends BaseFragment implements
 
                 messagePreviewParams = null;
                 hideFieldPanel(false);
+                boolean containsForkSecure = false;
+                for (int i = 0; i < fmessages.size(); i++) {
+                    MessageObject fmsg = fmessages.get(i);
+                    if (fmsg != null && fmsg.isForkSecureCarrier()) {
+                        containsForkSecure = true;
+                        break;
+                    }
+                }
                 for (int a = 0; a < dids.size(); a++) {
                     final long did = dids.get(a).dialogId;
                     final Long price = prices == null ? (Long) 0L : prices.get(did);
@@ -37720,7 +37744,11 @@ public class ChatActivity extends BaseFragment implements
                         params.suggestionParams = messageSuggestionParams;
                         getSendMessagesHelper().sendMessage(params);
                     }
-                    getSendMessagesHelper().sendMessage(fmessages, did, false, false, notify, scheduleDate, scheduleRepeatPeriod, null, -1, price == null ? 0 : price, getSendMonoForumPeerId(), getSendMessageSuggestionParams());
+                    if (containsForkSecure) {
+                        forwardForkSecureMessages(did, fmessages, false, notify, scheduleDate);
+                    } else {
+                        getSendMessagesHelper().sendMessage(fmessages, did, false, false, notify, scheduleDate, scheduleRepeatPeriod, null, -1, price == null ? 0 : price, getSendMonoForumPeerId(), getSendMessageSuggestionParams());
+                    }
                 }
                 fragment.finishFragment();
                 createUndoView();

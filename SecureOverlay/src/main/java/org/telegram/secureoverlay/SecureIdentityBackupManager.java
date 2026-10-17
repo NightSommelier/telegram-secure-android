@@ -249,6 +249,7 @@ public final class SecureIdentityBackupManager {
         new SecureRecoveryGenerationStore(context)
                 .replaceLocalAfterRecovery(stage.recovery);
         new KeystoreSignalProtocolStore(context).ensureLocalPreKeyMaterial();
+        SecureChatEngine.clearFailedDecryptCache();
         try {
             new KeystoreEncryptedBlobStore(context).deleteAll(MARKER, STAGED);
         } catch (KeystoreEncryptedBlobStore.StateStoreException error) {

@@ -27,6 +27,7 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
+import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.Utilities;
@@ -42,6 +43,7 @@ import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.Cells.DialogCell;
 import org.telegram.ui.Cells.HeaderCell;
 import org.telegram.ui.Cells.TextCheckCell;
 import org.telegram.ui.Cells.TextDetailSettingsCell;
@@ -1115,6 +1117,8 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                             R.string.ForkSecureHistoryBackupImportFailed);
                     return;
                 }
+                DialogCell.clearForkSecurePreviewCache();
+                getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
                 refreshState();
                 if (getContext() == null) {
                     return;
@@ -1235,6 +1239,8 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                     showBackupError(R.string.ForkSecureBackupRestoreFailed);
                     return;
                 }
+                DialogCell.clearForkSecurePreviewCache();
+                getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
                 refreshState();
                 showDialog(new AlertDialog.Builder(getContext(), getResourceProvider())
                         .setTitle(getString(R.string.ForkSecureRestoreCompleteTitle))
@@ -1342,6 +1348,8 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
         }
         try {
             String fingerprint = SecureChatEngine.resetOwnIdentity(context);
+            DialogCell.clearForkSecurePreviewCache();
+            getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
             refreshState();
             showDialog(new AlertDialog.Builder(context, getResourceProvider())
                     .setTitle(getString(R.string.ForkSecureNewIdentityTitle))

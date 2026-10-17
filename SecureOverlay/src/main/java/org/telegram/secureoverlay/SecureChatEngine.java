@@ -218,6 +218,7 @@ public final class SecureChatEngine {
             SignalProtocolAddress senderAddress =
                     new SignalProtocolAddress("telegram-user-" + senderUserId, 1);
             sessions.processGroupDistributionMessage(senderAddress, decoded.payload);
+            clearFailedDecryptCache();
             if (peerUserId < 0 && !isPaired()) {
                 enableGroup();
             }
@@ -965,6 +966,12 @@ public final class SecureChatEngine {
         }
     }
 
+    public static void clearFailedDecryptCache() {
+        synchronized (failedDecryptCarriers) {
+            failedDecryptCarriers.clear();
+        }
+    }
+
     /** Decrypts a recognized message. Successful first contact activates secure mode for the recipient. */
     public String decryptText(String carrier) {
         return decryptText(carrier, 0);
@@ -972,11 +979,6 @@ public final class SecureChatEngine {
 
     public String decryptText(String carrier, long senderUserId) {
         synchronized (DECRYPT_LOCK) {
-            synchronized (failedDecryptCarriers) {
-                if (failedDecryptCarriers.containsKey(carrier)) {
-                    throw new SecureChatException("cannot decrypt secure text (previously failed)", null);
-                }
-            }
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
             if (decoded == null) return null;
             if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
@@ -993,6 +995,11 @@ public final class SecureChatEngine {
                         state.markPaired(account, peerUserId);
                     }
                     return cached;
+                }
+                synchronized (failedDecryptCarriers) {
+                    if (failedDecryptCarriers.containsKey(carrier)) {
+                        throw new SecureChatException("cannot decrypt secure text (previously failed)", null);
+                    }
                 }
                 int libsignalType;
                 if (decoded.type == SecureCarrierCodec.TYPE_PREKEY) {
@@ -1463,6 +1470,7 @@ public final class SecureChatEngine {
         KeystoreSignalProtocolStore.resetProtocolState(appContext);
         SecureChatState chatState = new SecureChatState(appContext);
         chatState.resetForNewIdentity();
+        clearFailedDecryptCache();
         new SecureRecoveryGenerationStore(appContext)
                 .advanceLocalIdentity(generationForEpoch(chatState.getIdentityEpoch()));
         return fingerprint(new KeystoreSignalProtocolStore(appContext)
