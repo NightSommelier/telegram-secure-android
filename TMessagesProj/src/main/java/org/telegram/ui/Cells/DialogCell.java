@@ -2965,9 +2965,55 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
 
     private static final android.util.LruCache<String, CharSequence> forkSecurePreviewCache =
             new android.util.LruCache<>(512);
+    private static final java.util.HashSet<String> forkSecurePreviewsInFlight =
+            new java.util.HashSet<>();
 
     public static void clearForkSecurePreviewCache() {
         forkSecurePreviewCache.evictAll();
+        synchronized (forkSecurePreviewsInFlight) {
+            forkSecurePreviewsInFlight.clear();
+        }
+    }
+
+    private static CharSequence formatForkSecureDialogPreview(SecureChatEngine.DialogPreview preview) {
+        if (preview == null) {
+            return null;
+        }
+        if (preview.kind == SecureChatEngine.DialogPreview.Kind.PLAINTEXT) {
+            return LocaleController.formatString(
+                    R.string.ForkSecureTextPreview, preview.plaintext);
+        } else if (preview.kind == SecureChatEngine.DialogPreview.Kind.PAIRING_ACK) {
+            return LocaleController.getString(R.string.ForkSecurePairingConfirmed);
+        } else if (preview.kind
+                == SecureChatEngine.DialogPreview.Kind.PAIRING_REJECTED) {
+            return LocaleController.getString(R.string.ForkSecurePairingRejected);
+        } else if (preview.kind
+                == SecureChatEngine.DialogPreview.Kind.STATIC_STICKER) {
+            return LocaleController.getString(R.string.ForkSecureEncryptedSticker);
+        } else if (preview.kind
+                == SecureChatEngine.DialogPreview.Kind.PHOTO) {
+            return LocaleController.getString(R.string.ForkSecureEncryptedPhoto);
+        } else if (preview.kind
+                == SecureChatEngine.DialogPreview.Kind.FILE) {
+            return LocaleController.getString(R.string.ForkSecureEncryptedFile);
+        } else if (preview.kind
+                == SecureChatEngine.DialogPreview.Kind.PAIRING_OFFER_SENT) {
+            return LocaleController.getString(R.string.ForkSecurePairingOfferSent);
+        } else if (preview.kind
+                == SecureChatEngine.DialogPreview.Kind.PAIRING_OFFER_RECEIVED) {
+            return LocaleController.getString(R.string.ForkSecurePairingOfferReceived);
+        } else if (preview.kind
+                == SecureChatEngine.DialogPreview.Kind.GROUP_KEY_DISTRIBUTED) {
+            return LocaleController.getString(R.string.ForkSecureGroupKeyDistributed);
+        } else if (preview.kind
+                == SecureChatEngine.DialogPreview.Kind.GROUP_KEY_RECEIVED) {
+            return LocaleController.getString(R.string.ForkSecureGroupKeyReceived);
+        } else if (preview.kind
+                == SecureChatEngine.DialogPreview.Kind.CONTROL_DELETE) {
+            return "";
+        } else {
+            return LocaleController.getString(R.string.ForkSecureOutgoingUnavailable);
+        }
     }
 
     /**
@@ -3018,50 +3064,50 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                         new SecureChatEngine(getContext(), currentAccount, currentDialogId);
                 securePreviewPeerId = currentDialogId;
             }
+            // Use cacheOnly=true so list scrolling never blocks on Libsignal ratchet decryption.
             SecureChatEngine.DialogPreview preview = securePreviewEngine.resolveDialogPreview(
-                    carrier, message.isOutOwner(), message.getFromChatId());
-            if (preview == null) {
+                    carrier, message.isOutOwner(), message.getFromChatId(), true);
+            if (preview != null) {
+                CharSequence previewText = formatForkSecureDialogPreview(preview);
+                if (preview.kind == SecureChatEngine.DialogPreview.Kind.CONTROL_DELETE) {
+                    message.deleted = true;
+                }
+                forkSecurePreviewCache.put(cacheKey, previewText);
+                message.applyNewText(previewText);
                 return;
             }
-            CharSequence previewText;
-            if (preview.kind == SecureChatEngine.DialogPreview.Kind.PLAINTEXT) {
-                previewText = LocaleController.formatString(
-                        R.string.ForkSecureTextPreview, preview.plaintext);
-            } else if (preview.kind == SecureChatEngine.DialogPreview.Kind.PAIRING_ACK) {
-                previewText = getString(R.string.ForkSecurePairingConfirmed);
-            } else if (preview.kind
-                    == SecureChatEngine.DialogPreview.Kind.PAIRING_REJECTED) {
-                previewText = getString(R.string.ForkSecurePairingRejected);
-            } else if (preview.kind
-                    == SecureChatEngine.DialogPreview.Kind.STATIC_STICKER) {
-                previewText = getString(R.string.ForkSecureEncryptedSticker);
-            } else if (preview.kind
-                    == SecureChatEngine.DialogPreview.Kind.PHOTO) {
-                previewText = getString(R.string.ForkSecureEncryptedPhoto);
-            } else if (preview.kind
-                    == SecureChatEngine.DialogPreview.Kind.FILE) {
-                previewText = getString(R.string.ForkSecureEncryptedFile);
-            } else if (preview.kind
-                    == SecureChatEngine.DialogPreview.Kind.PAIRING_OFFER_SENT) {
-                previewText = getString(R.string.ForkSecurePairingOfferSent);
-            } else if (preview.kind
-                    == SecureChatEngine.DialogPreview.Kind.PAIRING_OFFER_RECEIVED) {
-                previewText = getString(R.string.ForkSecurePairingOfferReceived);
-            } else if (preview.kind
-                    == SecureChatEngine.DialogPreview.Kind.GROUP_KEY_DISTRIBUTED) {
-                previewText = getString(R.string.ForkSecureGroupKeyDistributed);
-            } else if (preview.kind
-                    == SecureChatEngine.DialogPreview.Kind.GROUP_KEY_RECEIVED) {
-                previewText = getString(R.string.ForkSecureGroupKeyReceived);
-            } else if (preview.kind
-                    == SecureChatEngine.DialogPreview.Kind.CONTROL_DELETE) {
-                previewText = "";
-                message.deleted = true;
-            } else {
-                previewText = getString(R.string.ForkSecureOutgoingUnavailable);
+            // Not in cache yet: resolve in background thread so UI thread never skips frames.
+            synchronized (forkSecurePreviewsInFlight) {
+                if (!forkSecurePreviewsInFlight.contains(cacheKey)) {
+                    forkSecurePreviewsInFlight.add(cacheKey);
+                    final int account = currentAccount;
+                    final long dialogId = currentDialogId;
+                    final long senderId = message.getFromChatId();
+                    final boolean isOut = message.isOutOwner();
+                    final Context appContext = getContext().getApplicationContext();
+                    Utilities.globalQueue.postRunnable(() -> {
+                        try {
+                            SecureChatEngine bgEngine = new SecureChatEngine(appContext, account, dialogId);
+                            SecureChatEngine.DialogPreview bgPreview = bgEngine.resolveDialogPreview(carrier, isOut, senderId, false);
+                            if (bgPreview != null) {
+                                CharSequence text = formatForkSecureDialogPreview(bgPreview);
+                                AndroidUtilities.runOnUIThread(() -> {
+                                    forkSecurePreviewCache.put(cacheKey, text);
+                                    NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+                                });
+                            }
+                        } catch (Throwable e) {
+                            if (BuildVars.LOGS_ENABLED) {
+                                FileLog.e(e);
+                            }
+                        } finally {
+                            synchronized (forkSecurePreviewsInFlight) {
+                                forkSecurePreviewsInFlight.remove(cacheKey);
+                            }
+                        }
+                    });
+                }
             }
-            forkSecurePreviewCache.put(cacheKey, previewText);
-            message.applyNewText(previewText);
         } catch (RuntimeException error) {
             CharSequence failedText = getString(R.string.ForkSecureMessageFailed);
             forkSecurePreviewCache.put(cacheKey, failedText);
@@ -3100,16 +3146,18 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         }
         if (!candidate.forkSecureMediaIndexChecked) {
             candidate.forkSecureMediaIndexChecked = true;
-            try {
-                SecureMediaIndex.Entry entry = new SecureMediaIndex(
-                        ApplicationLoader.applicationContext, currentAccount, currentDialogId)
-                        .find(candidate.getId(), candidate.messageOwner.message);
-                if (entry != null) {
-                    candidate.applyForkSecureMediaIndex(entry);
-                }
-            } catch (RuntimeException error) {
-                if (BuildVars.LOGS_ENABLED) {
-                    FileLog.d("DialogCell: secure media index lookup failed: " + error.getMessage());
+            if ((candidate.getDocument() != null || candidate.isPhoto()) && TextUtils.isEmpty(candidate.forkSecureMediaPath)) {
+                try {
+                    SecureMediaIndex.Entry entry = new SecureMediaIndex(
+                            ApplicationLoader.applicationContext, currentAccount, currentDialogId)
+                            .find(candidate.getId(), candidate.messageOwner.message);
+                    if (entry != null) {
+                        candidate.applyForkSecureMediaIndex(entry);
+                    }
+                } catch (RuntimeException error) {
+                    if (BuildVars.LOGS_ENABLED) {
+                        FileLog.d("DialogCell: secure media index lookup failed: " + error.getMessage());
+                    }
                 }
             }
         }

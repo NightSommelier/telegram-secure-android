@@ -266,18 +266,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
 
     @Override public List<Integer> getSubDeviceSessions(String name) { return Collections.emptyList(); }
     @Override public void storeSession(SignalProtocolAddress address, SessionRecord record) { put(key("session", address), record.serialize()); }
-    @Override public boolean containsSession(SignalProtocolAddress address) {
-        requireDevice(address);
-        try {
-            byte[] saved = blobs.get(key("session", address));
-            if (saved == null) {
-                return false;
-            }
-            return new SessionRecord(saved).hasSenderChain();
-        } catch (Exception e) {
-            return false;
-        }
-    }
+    @Override public boolean containsSession(SignalProtocolAddress address) { return has(key("session", address)); }
     @Override public void deleteSession(SignalProtocolAddress address) { remove(key("session", address)); }
     @Override public void deleteAllSessions(String name) { /* one-device policy: callers delete the explicit address */ }
 

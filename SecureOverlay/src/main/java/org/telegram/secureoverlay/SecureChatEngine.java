@@ -378,10 +378,7 @@ public final class SecureChatEngine {
     }
 
     public boolean isPaired() {
-        if (peerUserId < 0) {
-            return state.isPaired(account, peerUserId);
-        }
-        return state.isPaired(account, peerUserId) && store.containsSession(peerAddress);
+        return state.isPaired(account, peerUserId);
     }
 
     public Mode getMode() {
@@ -1096,6 +1093,11 @@ public final class SecureChatEngine {
     }
 
     public DialogPreview resolveDialogPreview(String carrier, boolean outgoing, long senderUserId) {
+        return resolveDialogPreview(carrier, outgoing, senderUserId, false);
+    }
+
+    public DialogPreview resolveDialogPreview(
+            String carrier, boolean outgoing, long senderUserId, boolean cacheOnly) {
         SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
         if (decoded == null) {
             return null;
@@ -1131,6 +1133,9 @@ public final class SecureChatEngine {
                         isControlDisplay(cached) ? null : cached);
             }
         } catch (Exception ignore) {
+        }
+        if (cacheOnly) {
+            return null;
         }
         String plaintext = decryptText(carrier, senderUserId);
         return new DialogPreview(

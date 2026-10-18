@@ -1094,6 +1094,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private float seekToProgressPending;
     private String shouldSavePositionForCurrentVideo;
     private String shouldSavePositionForCurrentVideoShortTerm;
+    private MessageObject currentPlayingForkSecureMessage;
     private static final HashMap<String, SavedVideoPosition> savedVideoPositions = new HashMap<>();
     private long lastSaveTime;
     private float seekToProgressPending2;
@@ -1607,13 +1608,18 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                         }
                     }
                     videoPlayerSeekbarView.invalidate();
-                    if (shouldSavePositionForCurrentVideo != null) {
+                    if (seekToProgressPending == 0 && shouldSavePositionForCurrentVideo != null) {
                         float value = progress;
-                        if (value >= 0 && SystemClock.elapsedRealtime() - lastSaveTime >= 1000) {
+                        if (value > 0.01f && value < 0.99f && SystemClock.elapsedRealtime() - lastSaveTime >= 1000) {
                             final String saveFor = shouldSavePositionForCurrentVideo;
                             lastSaveTime = SystemClock.elapsedRealtime();
-                            if (currentMessageObject != null) {
-                                currentMessageObject.cachedSavedTimestamp = value;
+                            savedVideoPositions.put(saveFor, new SavedVideoPosition(value, SystemClock.elapsedRealtime()));
+                            MessageObject activeMessage = currentMessageObject != null ? currentMessageObject : currentPlayingForkSecureMessage;
+                            if (activeMessage == null) {
+                                activeMessage = getForkSecureViewerMessage();
+                            }
+                            if (activeMessage != null) {
+                                activeMessage.cachedSavedTimestamp = value;
                             }
                             Utilities.globalQueue.postRunnable(() -> {
                                 SharedPreferences.Editor editor = ApplicationLoader.applicationContext.getSharedPreferences("media_saved_pos", Activity.MODE_PRIVATE).edit();
@@ -10325,6 +10331,49 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 currentMessageObject.forceSeekTo = -1;
             }
         }
+        MessageObject activePlayerMsg = currentMessageObject != null ? currentMessageObject : getForkSecureViewerMessage();
+        boolean isForkSecureMsg = activePlayerMsg != null && (activePlayerMsg.isForkSecureCarrier() || !TextUtils.isEmpty(activePlayerMsg.forkSecureMediaPath));
+        if (videoPlayer != null && playbackState == ExoPlayer.STATE_READY && (videoPlayer.getDuration() >= 10000 || (isForkSecureMsg && videoPlayer.getDuration() > 0)) && shouldSavePositionForCurrentVideo == null && shouldSavePositionForCurrentVideoShortTerm == null) {
+            if (activePlayerMsg != null) {
+                currentPlayingForkSecureMessage = currentMessageObject == null ? activePlayerMsg : null;
+                final long duration = videoPlayer.getDuration() / 1000L;
+                if (activePlayerMsg.forkSecureMediaDurationSeconds <= 0 && duration > 0) {
+                    activePlayerMsg.forkSecureMediaDurationSeconds = (int) duration;
+                }
+                final String name = getVideoPositionKey(activePlayerMsg, currentPlayingVideoFile);
+                if (!TextUtils.isEmpty(name)) {
+                    if (duration >= 10 || isForkSecureMsg) {
+                        SavedVideoPosition videoPosition = savedVideoPositions.get(name);
+                        if (activePlayerMsg.forceSeekTo < 0 && videoPosition != null) {
+                            float pos = videoPosition.position;
+                            if (pos > 0 && pos < 0.999f) {
+                                activePlayerMsg.forceSeekTo = pos;
+                                videoPlayerSeekbar.setProgress(pos);
+                            }
+                        }
+                        shouldSavePositionForCurrentVideoShortTerm = name;
+                    }
+                    if (duration >= 10 || isForkSecureMsg) {
+                        if (activePlayerMsg.forceSeekTo < 0) {
+                            SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("media_saved_pos", Activity.MODE_PRIVATE);
+                            float pos = preferences.getFloat(name, -1);
+                            if (pos > 0 && pos < 0.999f) {
+                                activePlayerMsg.forceSeekTo = pos;
+                                videoPlayerSeekbar.setProgress(pos);
+                            }
+                        }
+                        shouldSavePositionForCurrentVideo = name;
+                    }
+                }
+            }
+
+            MessageObject forceSeekMessage = currentMessageObject != null ? currentMessageObject : currentPlayingForkSecureMessage;
+            if (forceSeekMessage != null && forceSeekMessage.forceSeekTo >= 0) {
+                if (seekVideoOrWebToProgress(forceSeekMessage.forceSeekTo)) {
+                    forceSeekMessage.forceSeekTo = -1;
+                }
+            }
+        }
         if (isStreaming) {
             if (playbackState == ExoPlayer.STATE_BUFFERING && skipFirstBufferingProgress) {
                 if (playWhenReady) {
@@ -10358,15 +10407,16 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 FileLog.e(e);
             }
         }
-        if (playbackState == ExoPlayer.STATE_READY || playbackState == ExoPlayer.STATE_IDLE) {
+        if (playbackState == ExoPlayer.STATE_READY) {
             if (currentMessageObject != null && videoPlayer != null) {
                 videoPreviewFrame.open(currentMessageObject, videoPlayer);
             }
             if (seekToProgressPending != 0) {
-                seekVideoOrWebToProgress(seekToProgressPending);
-                seekToProgressPending = 0;
-                if (currentMessageObject != null && !FileLoader.getInstance(currentMessageObject.currentAccount).isLoadingVideoAny(currentMessageObject.getDocument())) {
-                    skipFirstBufferingProgress = true;
+                if (seekVideoOrWebToProgress(seekToProgressPending)) {
+                    seekToProgressPending = 0;
+                    if (currentMessageObject != null && !FileLoader.getInstance(currentMessageObject.currentAccount).isLoadingVideoAny(currentMessageObject.getDocument())) {
+                        skipFirstBufferingProgress = true;
+                    }
                 }
             }
         }
@@ -10469,12 +10519,23 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
     }
 
-    private void seekVideoOrWebToProgress(float progress) {
+    private boolean seekVideoOrWebToProgress(float progress) {
         if (videoPlayer != null) {
-            videoPlayer.seekTo((long) (progress * videoPlayer.getDuration()));
+            long duration = videoPlayer.getDuration();
+            if (duration > 0 && duration != C.TIME_UNSET) {
+                videoPlayer.seekTo((long) (progress * duration));
+                return true;
+            }
+            return false;
         } else if (photoViewerWebView != null) {
-            photoViewerWebView.seekTo((long) (progress * photoViewerWebView.getVideoDuration()));
+            long duration = photoViewerWebView.getVideoDuration();
+            if (duration > 0 && duration != C.TIME_UNSET) {
+                photoViewerWebView.seekTo((long) (progress * duration));
+                return true;
+            }
+            return false;
         }
+        return false;
     }
 
     private void preparePlayer(ArrayList<VideoPlayer.Quality> videoUrises, Uri uri, boolean playWhenReady, boolean preview, boolean livePhoto) {
@@ -10809,31 +10870,20 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             videoTimelineView.setProgress(videoTimelineView.getLeftProgress());
             videoPlayerSeekbar.setBufferedProgress(0);
 
-            if (currentMessageObject != null) {
-                final int duration = (int) currentMessageObject.getDuration();
-                final String name = currentMessageObject.getFileNameFast();
+            MessageObject playerMessageObject = currentMessageObject != null ? currentMessageObject : getForkSecureViewerMessage();
+            currentPlayingForkSecureMessage = currentMessageObject == null ? playerMessageObject : null;
+            if (playerMessageObject != null) {
+                final String name = getVideoPositionKey(playerMessageObject, uri);
                 if (!TextUtils.isEmpty(name)) {
-                    if (duration >= 10) {
-                        SavedVideoPosition videoPosition = savedVideoPositions.get(name);
-                        if (currentMessageObject.forceSeekTo < 0 && videoPosition != null) {
-                            float pos = videoPosition.position;
-                            if (pos > 0 && pos < 0.999f) {
-                                currentMessageObject.forceSeekTo = pos;
-                                videoPlayerSeekbar.setProgress(pos);
-                            }
+                    SavedVideoPosition videoPosition = savedVideoPositions.get(name);
+                    if (videoPosition != null && videoPosition.position > 0 && videoPosition.position < 0.999f) {
+                        videoPlayerSeekbar.setProgress(videoPosition.position);
+                    } else {
+                        SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("media_saved_pos", Activity.MODE_PRIVATE);
+                        float pos = preferences.getFloat(name, -1);
+                        if (pos > 0 && pos < 0.999f) {
+                            videoPlayerSeekbar.setProgress(pos);
                         }
-                        shouldSavePositionForCurrentVideoShortTerm = name;
-                    }
-                    if (duration >= 5 * 60) {
-                        if (currentMessageObject.forceSeekTo < 0) {
-                            SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("media_saved_pos", Activity.MODE_PRIVATE);
-                            float pos = preferences.getFloat(name, -1);
-                            if (pos > 0 && pos < 0.999f) {
-                                currentMessageObject.forceSeekTo = pos;
-                                videoPlayerSeekbar.setProgress(pos);
-                            }
-                        }
-                        shouldSavePositionForCurrentVideo = name;
                     }
                 }
             }
@@ -10896,9 +10946,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         loopItem.setEnabledByColor(playerLooping, 0xFFFFFFFF, 0xFF73B4EC);
         loopItem.setSelectorColor(playerLooping ? 0x0F73B4EC : 0x0fffffff);
 
-        if (currentMessageObject != null && currentMessageObject.forceSeekTo >= 0) {
-            seekToProgressPending = currentMessageObject.forceSeekTo;
-            currentMessageObject.forceSeekTo = -1;
+        MessageObject forceSeekMessage = currentMessageObject != null ? currentMessageObject : currentPlayingForkSecureMessage;
+        if (forceSeekMessage != null && forceSeekMessage.forceSeekTo >= 0) {
+            seekToProgressPending = forceSeekMessage.forceSeekTo;
+            forceSeekMessage.forceSeekTo = -1;
         }
 
         if (currentBotInlineResult != null && (currentBotInlineResult.type.equals("video") || MessageObject.isVideoDocument(currentBotInlineResult.document))) {
@@ -11114,15 +11165,46 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             cancelVideoPlayRunnable();
             AndroidUtilities.cancelRunOnUIThread(setLoadingRunnable);
             AndroidUtilities.cancelRunOnUIThread(hideActionBarRunnable);
+            MessageObject active = currentMessageObject != null ? currentMessageObject : currentPlayingForkSecureMessage;
+            if (active == null) {
+                active = getForkSecureViewerMessage();
+            }
+            boolean isForkSecure = active != null && (active.isForkSecureCarrier() || !TextUtils.isEmpty(active.forkSecureMediaPath));
+            if (shouldSavePositionForCurrentVideoShortTerm == null && (videoPlayer.getDuration() >= 10000 || (isForkSecure && videoPlayer.getDuration() > 0))) {
+                if (active != null) {
+                    String name = getVideoPositionKey(active, currentPlayingVideoFile);
+                    if (!TextUtils.isEmpty(name)) {
+                        shouldSavePositionForCurrentVideoShortTerm = name;
+                        shouldSavePositionForCurrentVideo = name;
+                    }
+                }
+            }
             if (shouldSavePositionForCurrentVideoShortTerm != null) {
-                final float progress = videoPlayer.getCurrentPosition() / (float) videoPlayer.getDuration();
+                float progress = videoPlayer.getDuration() > 0 ? videoPlayer.getCurrentPosition() / (float) videoPlayer.getDuration() : 0.0f;
+                if (progress >= 0.99f || videoPlayer.getPlaybackState() == ExoPlayer.STATE_ENDED) {
+                    progress = 0.0f;
+                }
                 savedVideoPositions.put(shouldSavePositionForCurrentVideoShortTerm, new SavedVideoPosition(progress, SystemClock.elapsedRealtime()));
-                if (currentMessageObject != null) {
-                    currentMessageObject.cachedSavedTimestamp = progress;
+                MessageObject activeMessage = active;
+                if (activeMessage != null) {
+                    activeMessage.cachedSavedTimestamp = progress;
+                }
+                if (shouldSavePositionForCurrentVideo != null) {
+                    final String saveFor = shouldSavePositionForCurrentVideo;
+                    final float saveProgress = progress;
+                    Utilities.globalQueue.postRunnable(() -> {
+                        SharedPreferences.Editor editor = ApplicationLoader.applicationContext.getSharedPreferences("media_saved_pos", Activity.MODE_PRIVATE).edit();
+                        if (saveProgress <= 0.0f) {
+                            editor.remove(saveFor).commit();
+                        } else {
+                            editor.putFloat(saveFor, saveProgress).commit();
+                        }
+                    });
                 }
             }
             videoPlayer.releasePlayer(true);
             videoPlayer = null;
+            currentPlayingForkSecureMessage = null;
         } else {
             playerWasPlaying = false;
         }
@@ -11130,11 +11212,28 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             AndroidUtilities.cancelRunOnUIThread(hideActionBarRunnable);
             if (shouldSavePositionForCurrentVideoShortTerm != null) {
                 float progress = getCurrentVideoPosition() / (float) getVideoDuration();
+                if (progress >= 0.99f) {
+                    progress = 0.0f;
+                }
                 savedVideoPositions.put(shouldSavePositionForCurrentVideoShortTerm, new SavedVideoPosition(progress, SystemClock.elapsedRealtime()));
-                if (currentMessageObject != null) {
-                    currentMessageObject.cachedSavedTimestamp = progress;
+                MessageObject activeMessage = currentMessageObject != null ? currentMessageObject : currentPlayingForkSecureMessage;
+                if (activeMessage != null) {
+                    activeMessage.cachedSavedTimestamp = progress;
+                }
+                if (shouldSavePositionForCurrentVideo != null) {
+                    final String saveFor = shouldSavePositionForCurrentVideo;
+                    final float saveProgress = progress;
+                    Utilities.globalQueue.postRunnable(() -> {
+                        SharedPreferences.Editor editor = ApplicationLoader.applicationContext.getSharedPreferences("media_saved_pos", Activity.MODE_PRIVATE).edit();
+                        if (saveProgress <= 0.0f) {
+                            editor.remove(saveFor).commit();
+                        } else {
+                            editor.putFloat(saveFor, saveProgress).commit();
+                        }
+                    });
                 }
             }
+            currentPlayingForkSecureMessage = null;
         }
 
         if (orientationEventListener != null) {
@@ -17387,6 +17486,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (messageObject == null || file == null || !file.isFile()) {
             return false;
         }
+        if (TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+            messageObject.forkSecureMediaPath = file.getAbsolutePath();
+        }
         Pair<Integer, Integer> orientation = AndroidUtilities.getImageOrientation(file);
         TLRPC.TL_documentAttributeVideo videoAttribute =
                 new TLRPC.TL_documentAttributeVideo();
@@ -17402,6 +17504,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 videoAttribute.w > 0 ? videoAttribute.w : width,
                 videoAttribute.h > 0 ? videoAttribute.h : height,
                 file.length()).setOrientation(orientation);
+        if (messageObject.forkSecureMediaDurationSeconds <= 0 && entry.duration > 0) {
+            messageObject.forkSecureMediaDurationSeconds = entry.duration;
+        }
         entry.caption = secureViewerCaption(messageObject);
         ArrayList<Object> photos = new ArrayList<>();
         photos.add(entry);
@@ -17494,6 +17599,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                         videoAttribute.h > 0
                                 ? videoAttribute.h : source.forkSecureMediaHeight,
                         file.length()).setOrientation(orientation);
+                if (source.forkSecureMediaDurationSeconds <= 0 && entry.duration > 0) {
+                    source.forkSecureMediaDurationSeconds = entry.duration;
+                }
             } else {
                 entry = new MediaController.PhotoEntry(
                         0,
@@ -19579,6 +19687,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         currentPathObject = null;
         forkSecureLocalViewerMessage = null;
         forkSecureLocalViewerMessages = null;
+        currentPlayingForkSecureMessage = null;
         forkSecureViewerPhotos = null;
         forkSecureViewerLocations.clear();
         forkSecureCaptionEditing = false;
@@ -20311,9 +20420,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     private void switchToNextIndex(int add, boolean init) {
-        if (currentMessageObject != null) {
+        if (currentMessageObject != null || forkSecureLocalViewerMessage != null || (forkSecureLocalViewerMessages != null && !forkSecureLocalViewerMessages.isEmpty())) {
             releasePlayer(false);
-            FileLoader.getInstance(currentAccount).cancelLoadFile(currentMessageObject.getDocument());
+            if (currentMessageObject != null) {
+                FileLoader.getInstance(currentAccount).cancelLoadFile(currentMessageObject.getDocument());
+            }
         } else if (currentPageBlock != null) {
             final TLObject media = pageBlocksAdapter.getMedia(currentIndex);
             if (media instanceof TLRPC.Document) {
@@ -24180,13 +24291,48 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
     }
 
+    public static String getVideoPositionKey(MessageObject msg) {
+        return getVideoPositionKey(msg, null);
+    }
+
+    public static String getVideoPositionKey(MessageObject msg, Uri uri) {
+        if (msg != null && (msg.isForkSecureCarrier() || !TextUtils.isEmpty(msg.forkSecureMediaPath))) {
+            if (!TextUtils.isEmpty(msg.forkSecureMediaPath)) {
+                return "fork_sec_file_" + new File(msg.forkSecureMediaPath).getName();
+            }
+            if (uri != null && uri.getPath() != null) {
+                return "fork_sec_file_" + new File(uri.getPath()).getName();
+            }
+            if (msg.messageOwner != null && !TextUtils.isEmpty(msg.messageOwner.message)) {
+                return "fork_sec_msg_" + Utilities.MD5(msg.messageOwner.message);
+            }
+            return "fork_sec_id_" + msg.getDialogId() + "_" + msg.getId();
+        }
+        if (uri != null && uri.getPath() != null) {
+            String path = uri.getPath();
+            if (path.contains("fork_secure_") || path.contains("fork_sec_")) {
+                return "fork_sec_file_" + new File(path).getName();
+            }
+        }
+        if (msg == null) {
+            return uri != null && uri.getPath() != null ? new File(uri.getPath()).getName() : null;
+        }
+        return msg.isEmbedVideo()
+                ? (msg.messageOwner != null && msg.messageOwner.media != null && msg.messageOwner.media.webpage != null ? msg.messageOwner.media.webpage.url : null)
+                : msg.getFileNameFast();
+    }
+
     public static float getSavedProgressFast(MessageObject msg) {
+        if (msg == null) {
+            return 0;
+        }
         final int duration = (int) msg.getDuration();
-        final String name = msg.isEmbedVideo() ? msg.messageOwner.media.webpage.url : msg.getFileNameFast();
+        final String name = getVideoPositionKey(msg);
         if (!TextUtils.isEmpty(name)) {
-            if (duration >= 10) {
+            boolean isForkSecure = msg.isForkSecureCarrier() || !TextUtils.isEmpty(msg.forkSecureMediaPath);
+            if (duration >= 10 || isForkSecure) {
                 final SavedVideoPosition videoPosition = savedVideoPositions.get(name);
-                if (msg != null && msg.forceSeekTo < 0 && videoPosition != null) {
+                if (msg.forceSeekTo < 0 && videoPosition != null) {
                     float pos = videoPosition.position;
                     if (pos > 0 && pos < 0.999f) {
                         return pos;
@@ -24198,19 +24344,23 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     public static float getSavedProgress(MessageObject msg) {
+        if (msg == null) {
+            return 0;
+        }
         final int duration = (int) msg.getDuration();
-        final String name = msg.isEmbedVideo() ? msg.messageOwner.media.webpage.url : msg.getFileNameFast();
+        final String name = getVideoPositionKey(msg);
         if (!TextUtils.isEmpty(name)) {
-            if (duration >= 10) {
+            boolean isForkSecure = msg.isForkSecureCarrier() || !TextUtils.isEmpty(msg.forkSecureMediaPath);
+            if (duration >= 10 || isForkSecure) {
                 SavedVideoPosition videoPosition = savedVideoPositions.get(name);
-                if (msg != null && msg.forceSeekTo < 0 && videoPosition != null) {
+                if (msg.forceSeekTo < 0 && videoPosition != null) {
                     float pos = videoPosition.position;
                     if (pos > 0 && pos < 0.999f) {
                         return pos;
                     }
                 }
             }
-            if (duration >= 2 * 60) {
+            if (duration >= 10 || isForkSecure) {
                 if (msg.forceSeekTo < 0) {
                     SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("media_saved_pos", Activity.MODE_PRIVATE);
                     float pos = preferences.getFloat(name, -1);

@@ -29,6 +29,7 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Looper;
 import android.text.Layout;
 import android.text.Spannable;
 import android.text.SpannableString;
@@ -508,6 +509,10 @@ public class MessageObject {
                 && (attachPathExists || mediaExists || new File(forkSecureMediaPath).isFile());
     }
 
+    private static boolean isMainThread() {
+        return Looper.myLooper() == Looper.getMainLooper();
+    }
+
     /**
      * Applies metadata previously authenticated by Fork-Secure to a media-list copy of the
      * original opaque Telegram message.
@@ -557,38 +562,48 @@ public class MessageObject {
             displayCaption = entry.caption;
         }
         forkSecureAlbumId = TextUtils.isEmpty(albumId) ? null : albumId;
-        int durationSeconds = 0;
-        String title = "";
-        String performer = "";
-        byte[] waveform = null;
+        ForkSecureMediaUiState existingState;
+        synchronized (forkSecureMediaUiCache) {
+            existingState = forkSecureMediaUiCache.get(messageOwner.message);
+        }
+        int durationSeconds = existingState != null ? existingState.durationSeconds : 0;
+        String title = existingState != null && existingState.title != null ? existingState.title : "";
+        String performer = existingState != null && existingState.performer != null ? existingState.performer : "";
+        byte[] waveform = existingState != null ? existingState.waveform : null;
         if (plaintext.isFile()) {
             if (entry.kind == SecureMediaIndex.KIND_VOICE) {
-                try {
-                    waveform = MediaController.getWaveform(plaintext.getAbsolutePath());
-                } catch (Throwable ignore) {
-                }
-                try {
-                    android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
-                    retriever.setDataSource(plaintext.getAbsolutePath());
-                    String duration = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
-                    if (!TextUtils.isEmpty(duration)) {
-                        durationSeconds = (int) Math.ceil(Long.parseLong(duration) / 1000.0d);
+                if (waveform == null && !isMainThread()) {
+                    try {
+                        waveform = MediaController.getWaveform(plaintext.getAbsolutePath());
+                    } catch (Throwable ignore) {
                     }
-                    retriever.release();
-                } catch (Throwable ignore) {
+                }
+                if (durationSeconds <= 0 && !isMainThread()) {
+                    try {
+                        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+                        retriever.setDataSource(plaintext.getAbsolutePath());
+                        String duration = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+                        if (!TextUtils.isEmpty(duration)) {
+                            durationSeconds = (int) Math.ceil(Long.parseLong(duration) / 1000.0d);
+                        }
+                        retriever.release();
+                    } catch (Throwable ignore) {
+                    }
                 }
             } else if (entry.kind == SecureMediaIndex.KIND_MUSIC) {
-                try {
-                    android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
-                    retriever.setDataSource(plaintext.getAbsolutePath());
-                    String duration = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
-                    if (!TextUtils.isEmpty(duration)) {
-                        durationSeconds = (int) Math.ceil(Long.parseLong(duration) / 1000.0d);
+                if ((durationSeconds <= 0 || TextUtils.isEmpty(title)) && !isMainThread()) {
+                    try {
+                        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+                        retriever.setDataSource(plaintext.getAbsolutePath());
+                        String duration = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+                        if (!TextUtils.isEmpty(duration)) {
+                            durationSeconds = (int) Math.ceil(Long.parseLong(duration) / 1000.0d);
+                        }
+                        title = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE);
+                        performer = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_ARTIST);
+                        retriever.release();
+                    } catch (Throwable ignore) {
                     }
-                    title = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE);
-                    performer = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_ARTIST);
-                    retriever.release();
-                } catch (Throwable ignore) {
                 }
             }
         }
@@ -612,11 +627,14 @@ public class MessageObject {
         }
         applyForkSecureMediaUiState(state);
         forkSecureVerified = true;
+        boolean textOrCaptionChanged = !TextUtils.equals(caption, displayCaption) || !TextUtils.isEmpty(messageText);
         caption = TextUtils.isEmpty(displayCaption) ? null : displayCaption;
         messageText = "";
         messageTextShort = null;
         messageTextForReply = null;
-        resetLayout();
+        if (textOrCaptionChanged) {
+            resetLayout();
+        }
         if (mediaKind == FORK_SECURE_MEDIA_KIND_PHOTO) {
             type = TYPE_PHOTO;
             TLRPC.TL_photoSize localPhoto = new TLRPC.TL_photoSize();
@@ -653,11 +671,15 @@ public class MessageObject {
             video.w = entry.width > 0 ? entry.width : 1;
             video.h = entry.height > 0 ? entry.height : 1;
             video.supports_streaming = true;
-            if (plaintext.isFile()) {
+            if (plaintext.isFile() && (video.w <= 1 || video.h <= 1) && !isMainThread()) {
                 SendMessagesHelper.fillVideoAttribute(plaintext.getAbsolutePath(), video, null);
                 if (video.w > 0 && video.h > 0) {
                     forkSecureMediaWidth = video.w;
                     forkSecureMediaHeight = video.h;
+                }
+                if (video.duration > 0) {
+                    forkSecureMediaDurationSeconds = (int) Math.round(video.duration);
+                    attributeDuration = video.duration;
                 }
             }
             boolean isAnimation = video.nosound
@@ -720,7 +742,7 @@ public class MessageObject {
             video.h = side;
             video.round_message = true;
             video.supports_streaming = false;
-            if (plaintext.isFile()) {
+            if (plaintext.isFile() && (video.w <= 1 || video.h <= 1) && !isMainThread()) {
                 SendMessagesHelper.fillVideoAttribute(plaintext.getAbsolutePath(), video, null);
                 if (video.w > 0 && video.h > 0) {
                     side = Math.min(video.w, video.h);
@@ -728,6 +750,10 @@ public class MessageObject {
                     video.h = side;
                     forkSecureMediaWidth = side;
                     forkSecureMediaHeight = side;
+                }
+                if (video.duration > 0) {
+                    forkSecureMediaDurationSeconds = (int) Math.round(video.duration);
+                    attributeDuration = video.duration;
                 }
                 video.round_message = true;
             }
@@ -837,11 +863,15 @@ public class MessageObject {
             video.w = entry.width > 0 ? entry.width : 1;
             video.h = entry.height > 0 ? entry.height : 1;
             video.supports_streaming = true;
-            if (plaintext.isFile()) {
+            if (plaintext.isFile() && (video.w <= 1 || video.h <= 1)) {
                 SendMessagesHelper.fillVideoAttribute(plaintext.getAbsolutePath(), video, null);
                 if (video.w > 0 && video.h > 0) {
                     forkSecureMediaWidth = video.w;
                     forkSecureMediaHeight = video.h;
+                }
+                if (video.duration > 0) {
+                    forkSecureMediaDurationSeconds = (int) Math.round(video.duration);
+                    attributeDuration = video.duration;
                 }
             }
             document.attributes.add(video);
@@ -1208,7 +1238,7 @@ public class MessageObject {
                 video.h = height;
                 video.duration = duration;
                 video.supports_streaming = true;
-                if (hasFile && (video.w <= 1 || video.h <= 1 || video.duration <= 0)) {
+                if (hasFile && (video.w <= 1 || video.h <= 1)) {
                     SendMessagesHelper.fillVideoAttribute(state.path, video, null);
                     if (video.w > 0 && video.h > 0) {
                         forkSecureMediaWidth = video.w;
@@ -2045,6 +2075,58 @@ public class MessageObject {
         return null;
     }
 
+    public void copyForkSecureStateFrom(MessageObject old) {
+        if (old == null || !old.isForkSecureCarrier()) {
+            return;
+        }
+        forkSecureVerified = old.forkSecureVerified;
+        forkSecureService = old.forkSecureService;
+        forkSecureServiceText = old.forkSecureServiceText;
+        forkSecureReplyText = old.forkSecureReplyText;
+        forkSecureMediaPath = old.forkSecureMediaPath;
+        forkSecureCipherPath = old.forkSecureCipherPath;
+        forkSecureMediaWidth = old.forkSecureMediaWidth;
+        forkSecureMediaHeight = old.forkSecureMediaHeight;
+        forkSecureMediaKind = old.forkSecureMediaKind;
+        forkSecureMediaName = old.forkSecureMediaName;
+        forkSecureMediaMime = old.forkSecureMediaMime;
+        forkSecureMediaCaption = old.forkSecureMediaCaption;
+        forkSecureMediaPresentation = old.forkSecureMediaPresentation;
+        forkSecureMediaDurationSeconds = old.forkSecureMediaDurationSeconds;
+        forkSecureMediaTitle = old.forkSecureMediaTitle;
+        forkSecureMediaPerformer = old.forkSecureMediaPerformer;
+        forkSecureMediaWaveform = old.forkSecureMediaWaveform;
+        forkSecureAlbumId = old.forkSecureAlbumId;
+        forkSecureNativeGroupId = old.forkSecureNativeGroupId;
+        forkSecureMediaPending = old.forkSecureMediaPending;
+        forkSecureMediaIndexChecked = old.forkSecureMediaIndexChecked;
+        forkSecureTextEditTransport = old.forkSecureTextEditTransport;
+        forkSecureAttachmentEditTransport = old.forkSecureAttachmentEditTransport;
+        if (old.forkSecureVerified) {
+            caption = old.caption;
+            messageText = old.messageText;
+            messageTextShort = old.messageTextShort;
+            messageTextForReply = old.messageTextForReply;
+            type = old.type;
+            contentType = old.contentType;
+            if (old.photoThumbs != null) {
+                photoThumbs = new ArrayList<>(old.photoThumbs);
+                photoThumbsObject = old.photoThumbsObject;
+            }
+            if (old.photoThumbs2 != null) {
+                photoThumbs2 = new ArrayList<>(old.photoThumbs2);
+                photoThumbsObject2 = old.photoThumbsObject2;
+            }
+            if (messageOwner != null && old.messageOwner != null) {
+                if (old.messageOwner.media instanceof TLRPC.TL_messageMediaContact
+                        || old.messageOwner.media instanceof TLRPC.TL_messageMediaGeo) {
+                    messageOwner.media = old.messageOwner.media;
+                }
+            }
+            resetLayout();
+        }
+    }
+
     public void copyStableParams(MessageObject old) {
         stableId = old.stableId;
         messageOwner.premiumEffectWasPlayed = old.messageOwner.premiumEffectWasPlayed;
@@ -2070,6 +2152,9 @@ public class MessageObject {
             for (TextLayoutBlock block : textLayoutBlocks) {
                 block.spoilers.clear();
             }
+        }
+        if (old.isForkSecureCarrier()) {
+            copyForkSecureStateFrom(old);
         }
     }
 
@@ -9007,6 +9092,16 @@ public class MessageObject {
             captionSummarized = false;
             captionTranslated = false;
         }
+        if (isForkSecureCarrier() && TextUtils.equals(text, messageOwner.message)) {
+            if (!TextUtils.isEmpty(forkSecureMediaCaption)
+                    && !forkSecureMediaCaption.startsWith("TGS1:")
+                    && !forkSecureMediaCaption.startsWith("FSC1:")
+                    && !forkSecureMediaCaption.startsWith("ForkSecure")) {
+                text = forkSecureMediaCaption;
+            } else {
+                text = null;
+            }
+        }
         if (!isMediaEmpty() && !(getMedia(messageOwner) instanceof TLRPC.TL_messageMediaGame) && !TextUtils.isEmpty(text)) {
             caption = Emoji.replaceEmoji(text, Theme.chat_msgTextPaint.getFontMetricsInt(), false);
             caption = replaceAnimatedEmoji(caption, entities, Theme.chat_msgTextPaint.getFontMetricsInt(), false);
@@ -12778,6 +12873,9 @@ public class MessageObject {
     public double getDuration() {
         if (attributeDuration > 0) {
             return attributeDuration;
+        }
+        if (forkSecureMediaDurationSeconds > 0) {
+            return attributeDuration = forkSecureMediaDurationSeconds;
         }
         TLRPC.Document document = getDocument();
         if (document == null && type == TYPE_STORY) {

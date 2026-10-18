@@ -6785,6 +6785,22 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     public MultiLayoutTypingAnimator botDraftTypingAnimator;
 
     private void setMessageContent(MessageObject messageObject, MessageObject.GroupedMessages groupedMessages, boolean bottomNear, boolean topNear, boolean firstInChat, boolean lastInChatList) {
+        if (messageObject != null && messageObject.isForkSecureCarrier() && !messageObject.forkSecureMediaIndexChecked) {
+            messageObject.forkSecureMediaIndexChecked = true;
+            if ((messageObject.getDocument() != null || messageObject.isPhoto()) && TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+                try {
+                    SecureMediaIndex.Entry entry = new SecureMediaIndex(
+                            ApplicationLoader.applicationContext,
+                            currentAccount,
+                            messageObject.getDialogId())
+                            .find(messageObject.getId(), messageObject.messageOwner != null ? messageObject.messageOwner.message : null);
+                    if (entry != null) {
+                        messageObject.applyForkSecureMediaIndex(entry);
+                    }
+                } catch (Throwable ignore) {
+                }
+            }
+        }
         if (messageObject.checkLayout() || currentPosition != null && lastHeight != AndroidUtilities.displaySize.y) {
             currentMessageObject = null;
         }
@@ -10580,22 +10596,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         }
                     } else if (messageObject.type == MessageObject.TYPE_GIF || messageObject.type == MessageObject.TYPE_ROUND_VIDEO || messageObject.isGif() || messageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
                         String fileName = FileLoader.getAttachFileName(messageObject.getDocument());
-                        if (messageObject.isForkSecureCarrier() && TextUtils.isEmpty(messageObject.forkSecureMediaPath) && !messageObject.forkSecureMediaIndexChecked) {
-                            messageObject.forkSecureMediaIndexChecked = true;
-                            try {
-                                SecureMediaIndex.Entry entry = new SecureMediaIndex(
-                                        ApplicationLoader.applicationContext,
-                                        currentAccount,
-                                        messageObject.getDialogId())
-                                        .find(messageObject.getId(), messageObject.messageOwner != null ? messageObject.messageOwner.message : null);
-                                if (entry != null) {
-                                    messageObject.applyForkSecureMediaIndex(entry);
-                                }
-                            } catch (Throwable ignore) {
-                            }
-                        }
                         int localFile = 0;
-                        if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath) && new File(messageObject.forkSecureMediaPath).exists()) {
+                        if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath) && (messageObject.mediaExists || messageObject.attachPathExists || new File(messageObject.forkSecureMediaPath).exists())) {
                             DownloadController.getInstance(currentAccount).removeLoadingFileObserver(this);
                             localFile = 3;
                         } else if (messageObject.attachPathExists && !messageObject.isForkSecureCarrier()) {
@@ -13118,7 +13120,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     currentPhotoObjectThumbStripped = currentMessageObject.strippedThumb;
                 }
                 currentPhotoFilter = "86_86_b";
-                if (messageObject.isForkSecureCarrier() && !TextUtils.isEmpty(messageObject.forkSecureMediaPath) && new File(messageObject.forkSecureMediaPath).isFile()) {
+                if (messageObject.isForkSecureCarrier() && !TextUtils.isEmpty(messageObject.forkSecureMediaPath) && (messageObject.mediaExists || messageObject.attachPathExists || new File(messageObject.forkSecureMediaPath).isFile())) {
                     boolean isVideoFile = messageObject.forkSecureMediaMime != null && messageObject.forkSecureMediaMime.startsWith("video/");
                     ImageLocation loc = isVideoFile
                             ? ImageLocation.getForVideoPath(messageObject.forkSecureMediaPath)

@@ -3040,6 +3040,7 @@ public class ChatActivity extends BaseFragment implements
                     o.replyMessageObject = object.replyMessageObject;
                     o.mediaExists = object.mediaExists;
                     o.attachPathExists = object.attachPathExists;
+                    o.copyForkSecureStateFrom(object);
                     messageObjects.add(o);
                 }
             }
@@ -11784,8 +11785,14 @@ public class ChatActivity extends BaseFragment implements
             } else if (object2 != null) {
                 object.mediaExists = object2.mediaExists;
                 object.attachPathExists = object2.attachPathExists;
+                if (object2.isForkSecureCarrier() && object2.forkSecureVerified) {
+                    object = object2;
+                }
             }
             if (object != null) {
+                if (object.isForkSecureCarrier()) {
+                    applyCachedSecureTextOverlay(object);
+                }
                 fragment.pinnedMessageObjects.put(id, object);
                 fragment.updatePinnedTopicStarterMessage();
             }
@@ -21792,6 +21799,12 @@ public class ChatActivity extends BaseFragment implements
             indexPreparedSecureMedia(message);
             applyPreparedSecureAttachmentPresentation(message);
             updateSecureStickerRow(message);
+            if (pinnedMessageObjects.containsKey(message.getId())) {
+                pinnedMessageObjects.put(message.getId(), message);
+            }
+            if (message.getId() == currentPinnedMessageId) {
+                updatePinnedMessageView(false);
+            }
             return;
         }
         final String prepareKey = message.getId() + ":" + carrier;
@@ -21969,6 +21982,14 @@ public class ChatActivity extends BaseFragment implements
                         readyDestination,
                         readyCiphertext);
                 updateSecureStickerRow(current);
+                if (current != null) {
+                    if (pinnedMessageObjects.containsKey(current.getId())) {
+                        pinnedMessageObjects.put(current.getId(), current);
+                    }
+                    if (current.getId() == currentPinnedMessageId) {
+                        updatePinnedMessageView(false);
+                    }
+                }
             });
         });
     }
@@ -22164,6 +22185,14 @@ public class ChatActivity extends BaseFragment implements
                 applyPreparedSecureSticker(
                         current, readyManifest, readyDestination, readyCiphertext);
                 updateSecureStickerRow(current);
+                if (current != null) {
+                    if (pinnedMessageObjects.containsKey(current.getId())) {
+                        pinnedMessageObjects.put(current.getId(), current);
+                    }
+                    if (current.getId() == currentPinnedMessageId) {
+                        updatePinnedMessageView(false);
+                    }
+                }
             });
         });
     }
@@ -23085,7 +23114,10 @@ public class ChatActivity extends BaseFragment implements
         if (message == null || !message.forkSecureVerified) {
             return null;
         }
-        if (!TextUtils.isEmpty(message.caption)) {
+        if (!TextUtils.isEmpty(message.caption)
+                && !message.caption.toString().startsWith("TGS1:")
+                && !message.caption.toString().startsWith("FSC1:")
+                && !message.caption.toString().startsWith("ForkSecure")) {
             return message.caption;
         }
         if (!TextUtils.isEmpty(message.forkSecureMediaCaption)
@@ -23094,7 +23126,7 @@ public class ChatActivity extends BaseFragment implements
                 && !message.forkSecureMediaCaption.startsWith("ForkSecure")) {
             return message.forkSecureMediaCaption;
         }
-        if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
+        if (message.isPhoto() || message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
             return getString(R.string.AttachPhoto);
         }
         if (message.isVoice() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
@@ -23116,6 +23148,12 @@ public class ChatActivity extends BaseFragment implements
         }
         if (message.isVideo() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO) {
             return getString(R.string.AttachVideo);
+        }
+        if (message.type == MessageObject.TYPE_CONTACT) {
+            return !TextUtils.isEmpty(message.messageText) ? message.messageText : getString(R.string.AttachContact);
+        }
+        if (message.type == MessageObject.TYPE_GEO) {
+            return getString(R.string.AttachLocation);
         }
         if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_STICKER) {
             return getString(R.string.AttachSticker);
@@ -26091,6 +26129,27 @@ public class ChatActivity extends BaseFragment implements
                         applyCachedSecureTextOverlay(secureMessage);
                     }
                 }
+                if (pinnedMessageObjects != null && !pinnedMessageObjects.isEmpty()) {
+                    for (MessageObject secureMessage : pinnedMessageObjects.values()) {
+                        TLRPC.Document secureDocument =
+                                secureMessage == null ? null : secureMessage.getDocument();
+                        if (secureDocument != null
+                                && TextUtils.isEmpty(secureMessage.forkSecureMediaPath)
+                                && secureMessage.isForkSecureCarrier()
+                                && TextUtils.equals(
+                                        loadedFileName,
+                                        FileLoader.getAttachFileName(secureDocument))) {
+                            if (args.length > 1 && args[1] instanceof File) {
+                                secureMessage.forkSecureCipherPath =
+                                        ((File) args[1]).getAbsolutePath();
+                            }
+                            applyCachedSecureTextOverlay(secureMessage);
+                            if (secureMessage.getId() == currentPinnedMessageId) {
+                                updatePinnedMessageView(false);
+                            }
+                        }
+                    }
+                }
             }
         } else if (id == NotificationCenter.fileNewChunkAvailable) {
             MessageObject messageObject = (MessageObject) args[0];
@@ -26755,6 +26814,9 @@ public class ChatActivity extends BaseFragment implements
                             if (object != null && (!isTopic || getTopicId() == MessageObject.getTopicId(currentAccount, object.messageOwner, ChatObject.isForum(currentChat)))) {
                                 pinnedMessageIds.add(mid);
                                 pinnedMessageObjects.put(mid, object);
+                                if (object.isForkSecureCarrier()) {
+                                    applyCachedSecureTextOverlay(object);
+                                }
                                 if (replaceObjects == null) {
                                     totalPinnedMessagesCount++;
                                 }
@@ -26815,8 +26877,18 @@ public class ChatActivity extends BaseFragment implements
                     if (pin) {
                         for (int a = 0, N = arrayList.size(); a < N; a++) {
                             MessageObject message = arrayList.get(a);
-                            if (pinnedMessageObjects.containsKey(message.getId())) {
+                            MessageObject oldPinned = pinnedMessageObjects.get(message.getId());
+                            if (oldPinned != null) {
+                                if (message.isForkSecureCarrier()) {
+                                    message.copyForkSecureStateFrom(oldPinned);
+                                }
                                 pinnedMessageObjects.put(message.getId(), message);
+                            }
+                            if (message.isForkSecureCarrier()) {
+                                applyCachedSecureTextOverlay(message);
+                            }
+                            if (message.getId() == currentPinnedMessageId) {
+                                updatePinnedMessageView(false);
                             }
                             loadingPinnedMessages.remove(message.getId());
                         }
@@ -29941,7 +30013,7 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void replaceMessageObjects(ArrayList<MessageObject> messageObjects, int loadIndex, boolean remove, boolean ignoreDateCheckBeforeRemove) {
-        if (loadIndex == 0) {
+        if (loadIndex == 0 || chatMode == MODE_PINNED) {
             applySecureTextOverlay(messageObjects);
         }
         LongSparseArray<MessageObject.GroupedMessages> newGroups = null;
@@ -29950,6 +30022,9 @@ public class ChatActivity extends BaseFragment implements
 
             MessageObject pinnedOld = pinnedMessageObjects.get(messageObject.getId());
             if (pinnedOld != null) {
+                if (messageObject.isForkSecureCarrier()) {
+                    messageObject.copyForkSecureStateFrom(pinnedOld);
+                }
                 pinnedMessageObjects.put(messageObject.getId(), messageObject);
             }
             MessageObject old = messagesDict[loadIndex].get(messageObject.getId());
@@ -29968,6 +30043,9 @@ public class ChatActivity extends BaseFragment implements
                 }
             }
             if (pinnedMessageObjects.containsKey(messageObject.getId())) {
+                if (messageObject.isForkSecureCarrier() && pinnedOld != null) {
+                    messageObject.copyForkSecureStateFrom(pinnedOld);
+                }
                 pinnedMessageObjects.put(messageObject.getId(), messageObject);
                 if (messageObject.getId() == currentPinnedMessageId) {
                     updatePinnedMessageView(true);
@@ -31664,8 +31742,11 @@ public class ChatActivity extends BaseFragment implements
             }
         } else if (currentPinnedMessageId != 0 && !pinnedMessageIds.isEmpty()) {
             pinnedMessageObject = pinnedMessageObjects.get(currentPinnedMessageId);
+            MessageObject dictMessage = messagesDict[0].get(currentPinnedMessageId);
             if (pinnedMessageObject == null) {
-                pinnedMessageObject = messagesDict[0].get(currentPinnedMessageId);
+                pinnedMessageObject = dictMessage;
+            } else if (dictMessage != null && dictMessage.isForkSecureCarrier() && dictMessage.forkSecureVerified) {
+                pinnedMessageObject.copyForkSecureStateFrom(dictMessage);
             }
             pinned_msg_id = currentPinnedMessageId;
         } else {
@@ -31985,7 +32066,10 @@ public class ChatActivity extends BaseFragment implements
                     }
                 } else if (pinnedMessageObject.messageOwner.media instanceof TLRPC.TL_messageMediaGame) {
                     pinnedText = Emoji.replaceEmoji(pinnedMessageObject.messageOwner.media.game.title, messageTextView.getPaint().getFontMetricsInt(), false);
-                } else if (!TextUtils.isEmpty(pinnedMessageObject.caption)) {
+                } else if (!TextUtils.isEmpty(pinnedMessageObject.caption)
+                        && !pinnedMessageObject.caption.toString().startsWith("TGS1:")
+                        && !pinnedMessageObject.caption.toString().startsWith("FSC1:")
+                        && !pinnedMessageObject.caption.toString().startsWith("ForkSecure")) {
                     String mess = pinnedMessageObject.caption.toString();
                     if (mess.length() > 150) {
                         mess = mess.substring(0, 150);
@@ -31998,16 +32082,23 @@ public class ChatActivity extends BaseFragment implements
                     }
                 } else if (pinnedMessageObject.isForkSecureCarrier() && (pinnedText = getForkSecureReplyLabel(pinnedMessageObject)) != null) {
                     FileLog.d("ForkPinned: resolved secure label for pinned message: " + pinnedText);
+                } else if (pinnedMessageObject.isForkSecureCarrier() && !pinnedMessageObject.forkSecureVerified) {
+                    pinnedText = getString(R.string.ForkSecureReplyPreview);
                 } else if (pinnedMessageObject.messageText != null) {
                     String mess = pinnedMessageObject.messageText.toString();
-                    if (mess.length() > 150) {
-                        mess = mess.substring(0, 150);
-                    }
-                    mess = mess.replace('\n', ' ');
-                    pinnedText = mess;
-                    pinnedText = Emoji.replaceEmoji(pinnedText, messageTextView.getPaint().getFontMetricsInt(), false);
-                    if (pinnedMessageObject != null && pinnedMessageObject.messageOwner != null) {
-                        pinnedText = pinnedMessageObject.replaceAnimatedEmoji(pinnedText, messageTextView.getPaint().getFontMetricsInt());
+                    if (pinnedMessageObject.isForkSecureCarrier()
+                            && (mess.startsWith("TGS1:") || mess.startsWith("FSC1:") || mess.startsWith("ForkSecure"))) {
+                        pinnedText = getString(R.string.ForkSecureReplyPreview);
+                    } else {
+                        if (mess.length() > 150) {
+                            mess = mess.substring(0, 150);
+                        }
+                        mess = mess.replace('\n', ' ');
+                        pinnedText = mess;
+                        pinnedText = Emoji.replaceEmoji(pinnedText, messageTextView.getPaint().getFontMetricsInt(), false);
+                        if (pinnedMessageObject != null && pinnedMessageObject.messageOwner != null) {
+                            pinnedText = pinnedMessageObject.replaceAnimatedEmoji(pinnedText, messageTextView.getPaint().getFontMetricsInt());
+                        }
                     }
                 }
                 if (pinnedText != null) {
@@ -45226,6 +45317,13 @@ public class ChatActivity extends BaseFragment implements
                                 applyForkSecureViewerCaption(
                                         source, caption, captionAbove[0]);
                             }
+
+                            @Override
+                            public void onClose() {
+                                if (chatListView != null) {
+                                    chatListView.invalidateViews();
+                                }
+                            }
                         };
                         PhotoViewer.getInstance().setParentActivity(
                                 ChatActivity.this, themeDelegate);
@@ -45296,6 +45394,13 @@ public class ChatActivity extends BaseFragment implements
                         applyForkSecureViewerCaption(
                                 localPhoto, caption, captionAbove[0]);
                     }
+
+                    @Override
+                    public void onClose() {
+                        if (chatListView != null) {
+                            chatListView.invalidateViews();
+                        }
+                    }
                 };
                 PhotoViewer.getInstance().setParentActivity(
                         ChatActivity.this, themeDelegate);
@@ -45362,6 +45467,13 @@ public class ChatActivity extends BaseFragment implements
                             applyForkSecureViewerCaption(
                                     source, caption, albumCaptionAbove[0]);
                         }
+
+                        @Override
+                        public void onClose() {
+                            if (chatListView != null) {
+                                chatListView.invalidateViews();
+                            }
+                        }
                     };
                     PhotoViewer.getInstance().setParentActivity(
                             ChatActivity.this, themeDelegate);
@@ -45410,6 +45522,13 @@ public class ChatActivity extends BaseFragment implements
                 @Override
                 public void onApplyCaption(CharSequence caption) {
                     applyForkSecureViewerCaption(source, caption, captionAbove[0]);
+                }
+
+                @Override
+                public void onClose() {
+                    if (chatListView != null) {
+                        chatListView.invalidateViews();
+                    }
                 }
             };
             try {

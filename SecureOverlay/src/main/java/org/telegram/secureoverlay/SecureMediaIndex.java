@@ -13,6 +13,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -41,6 +42,17 @@ public final class SecureMediaIndex {
     private static final int MAX_MIME_BYTES = 255;
     private static final int MAX_CAPTION_BYTES = 16 * 1024;
 
+    private static final int MEMORY_CACHE_LIMIT = 512;
+    private static final LinkedHashMap<String, SecureMediaIndex.Entry> memoryCache =
+            new LinkedHashMap<String, SecureMediaIndex.Entry>(MEMORY_CACHE_LIMIT, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, SecureMediaIndex.Entry> eldest) {
+                    return size() > MEMORY_CACHE_LIMIT;
+                }
+            };
+    private static final Entry NEGATIVE_ENTRY = new Entry(
+            -1, 0, new byte[DIGEST_BYTES], KIND_FILE, "", "", "", "", 0, 0);
+
     private final String scopedPrefix;
     private final KeystoreEncryptedBlobStore blobs;
 
@@ -53,12 +65,22 @@ public final class SecureMediaIndex {
         blobs = new KeystoreEncryptedBlobStore(context.getApplicationContext());
     }
 
+    public static void clearMemoryCache() {
+        synchronized (memoryCache) {
+            memoryCache.clear();
+        }
+    }
+
     public void put(Entry entry) {
         if (entry == null) {
             throw new IllegalArgumentException("secure media index entry is required");
         }
+        String key = key(entry.carrierDigest);
         try {
-            blobs.put(key(entry.carrierDigest), encode(entry));
+            blobs.put(key, encode(entry));
+            synchronized (memoryCache) {
+                memoryCache.put(key, entry);
+            }
         } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
             throw new SecureMediaIndexException("cannot persist secure media index", e);
         }
@@ -75,13 +97,48 @@ public final class SecureMediaIndex {
         if (digest == null || digest.length != DIGEST_BYTES) {
             return null;
         }
+        String key = key(digest);
+        synchronized (memoryCache) {
+            Entry cached = memoryCache.get(key);
+            if (cached != null) {
+                if (cached == NEGATIVE_ENTRY) {
+                    return null;
+                }
+                if (messageId > 0 && cached.messageId != messageId) {
+                    Entry updated = new Entry(
+                            messageId,
+                            cached.date,
+                            cached.carrierDigest,
+                            cached.kind,
+                            cached.plaintextPath,
+                            cached.fileName,
+                            cached.mimeType,
+                            cached.caption,
+                            cached.width,
+                            cached.height);
+                    memoryCache.put(key, updated);
+                    try {
+                        blobs.put(key, encode(updated));
+                    } catch (Exception ignore) {
+                    }
+                    return updated;
+                }
+                return cached;
+            }
+        }
         try {
-            byte[] encoded = blobs.get(key(digest));
+            byte[] encoded = blobs.get(key);
             if (encoded == null) {
+                synchronized (memoryCache) {
+                    memoryCache.put(key, NEGATIVE_ENTRY);
+                }
                 return null;
             }
             Entry entry = decode(encoded);
             if (!MessageDigest.isEqual(digest, entry.carrierDigest)) {
+                synchronized (memoryCache) {
+                    memoryCache.put(key, NEGATIVE_ENTRY);
+                }
                 return null;
             }
             if (messageId > 0 && entry.messageId != messageId) {
@@ -97,9 +154,12 @@ public final class SecureMediaIndex {
                         entry.width,
                         entry.height);
                 try {
-                    blobs.put(key(digest), encode(entry));
+                    blobs.put(key, encode(entry));
                 } catch (Exception ignore) {
                 }
+            }
+            synchronized (memoryCache) {
+                memoryCache.put(key, entry);
             }
             return entry;
         } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
@@ -112,8 +172,11 @@ public final class SecureMediaIndex {
         try {
             Map<String, byte[]> records = blobs.snapshotPrefixes(scopedPrefix);
             ArrayList<Entry> result = new ArrayList<>();
-            for (byte[] encoded : records.values()) {
-                Entry entry = decode(encoded);
+            for (Map.Entry<String, byte[]> item : records.entrySet()) {
+                Entry entry = decode(item.getValue());
+                synchronized (memoryCache) {
+                    memoryCache.put(item.getKey(), entry);
+                }
                 if (entry.kind == kind) {
                     result.add(entry);
                 }
@@ -133,6 +196,25 @@ public final class SecureMediaIndex {
         return list(kind).size();
     }
 
+    public int[] countByKind() {
+        int[] counts = new int[KIND_GIF + 1];
+        try {
+            Map<String, byte[]> records = blobs.snapshotPrefixes(scopedPrefix);
+            for (Map.Entry<String, byte[]> item : records.entrySet()) {
+                Entry entry = decode(item.getValue());
+                synchronized (memoryCache) {
+                    memoryCache.put(item.getKey(), entry);
+                }
+                if (entry.kind >= KIND_PHOTO && entry.kind <= KIND_GIF) {
+                    counts[entry.kind]++;
+                }
+            }
+        } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
+            throw new SecureMediaIndexException("cannot count secure media index", e);
+        }
+        return counts;
+    }
+
     public boolean forget(String carrier) {
         return forgetByDigest(digest(carrier));
     }
@@ -142,6 +224,9 @@ public final class SecureMediaIndex {
             return false;
         }
         String key = key(digest);
+        synchronized (memoryCache) {
+            memoryCache.remove(key);
+        }
         try {
             byte[] encoded = blobs.get(key);
             if (encoded == null) {
@@ -162,6 +247,9 @@ public final class SecureMediaIndex {
     }
 
     public void forgetPeer() {
+        synchronized (memoryCache) {
+            memoryCache.keySet().removeIf(k -> k.startsWith(scopedPrefix));
+        }
         try {
             Map<String, byte[]> records = blobs.snapshotPrefixes(scopedPrefix);
             for (byte[] encoded : records.values()) {

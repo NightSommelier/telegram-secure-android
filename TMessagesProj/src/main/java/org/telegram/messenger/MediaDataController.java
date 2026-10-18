@@ -4470,13 +4470,14 @@ public class MediaDataController extends BaseController {
                     ApplicationLoader.applicationContext,
                     currentAccount,
                     dialogId);
-            int securePhotos = index.count(SecureMediaIndex.KIND_PHOTO);
-            int secureVideos = index.count(SecureMediaIndex.KIND_VIDEO);
-            int secureGifs = index.count(SecureMediaIndex.KIND_GIF);
-            int secureAudio = index.count(SecureMediaIndex.KIND_VOICE);
-            int secureMusic = index.count(SecureMediaIndex.KIND_MUSIC);
-            int secureRound = index.count(SecureMediaIndex.KIND_ROUND_VIDEO);
-            int secureFiles = index.count(SecureMediaIndex.KIND_FILE);
+            int[] secureCounts = index.countByKind();
+            int securePhotos = secureCounts[SecureMediaIndex.KIND_PHOTO];
+            int secureVideos = secureCounts[SecureMediaIndex.KIND_VIDEO];
+            int secureGifs = secureCounts[SecureMediaIndex.KIND_GIF];
+            int secureAudio = secureCounts[SecureMediaIndex.KIND_VOICE];
+            int secureMusic = secureCounts[SecureMediaIndex.KIND_MUSIC];
+            int secureRound = secureCounts[SecureMediaIndex.KIND_ROUND_VIDEO];
+            int secureFiles = secureCounts[SecureMediaIndex.KIND_FILE];
 
             boolean shouldSync;
             synchronized (syncedForkSecureMediaDialogs) {
