@@ -878,6 +878,15 @@ public class MessageObject {
             isRoundVideoCached = 1;
             mediaExists = plaintext.isFile();
             attachPathExists = plaintext.isFile();
+            if (plaintext.isFile()) {
+                forkSecureMediaPath = plaintext.getAbsolutePath();
+                if (getDocument() != null) {
+                    getDocument().localPath = plaintext.getAbsolutePath();
+                }
+                if (messageOwner != null) {
+                    messageOwner.attachPath = plaintext.getAbsolutePath();
+                }
+            }
         } else if (entry.kind == SecureMediaIndex.KIND_VOICE && getDocument() != null) {
             TLRPC.Document document = getDocument();
             document.mime_type = TextUtils.isEmpty(entry.mimeType)
@@ -908,6 +917,13 @@ public class MessageObject {
             mediaExists = plaintext.isFile();
             attachPathExists = plaintext.isFile();
             if (plaintext.isFile()) {
+                forkSecureMediaPath = plaintext.getAbsolutePath();
+                if (getDocument() != null) {
+                    getDocument().localPath = plaintext.getAbsolutePath();
+                }
+                if (messageOwner != null) {
+                    messageOwner.attachPath = plaintext.getAbsolutePath();
+                }
                 MediaController.getInstance().generateWaveform(this);
             }
         } else if (entry.kind == SecureMediaIndex.KIND_MUSIC && getDocument() != null) {
@@ -939,6 +955,15 @@ public class MessageObject {
             type = TYPE_MUSIC;
             mediaExists = plaintext.isFile();
             attachPathExists = plaintext.isFile();
+            if (plaintext.isFile()) {
+                forkSecureMediaPath = plaintext.getAbsolutePath();
+                if (getDocument() != null) {
+                    getDocument().localPath = plaintext.getAbsolutePath();
+                }
+                if (messageOwner != null) {
+                    messageOwner.attachPath = plaintext.getAbsolutePath();
+                }
+            }
         } else if (entry.kind == SecureMediaIndex.KIND_GIF && getDocument() != null) {
             TLRPC.Document document = getDocument();
             document.mime_type = TextUtils.isEmpty(entry.mimeType)
@@ -1163,6 +1188,13 @@ public class MessageObject {
         }
         if (!TextUtils.isEmpty(state.path)) {
             attachPathExists = true;
+            mediaExists = true;
+            if (messageOwner != null) {
+                messageOwner.attachPath = state.path;
+            }
+            if (getDocument() != null) {
+                getDocument().localPath = state.path;
+            }
             if (state.kind == FORK_SECURE_MEDIA_KIND_STICKER
                     || state.kind == FORK_SECURE_MEDIA_KIND_PHOTO
                     || state.kind == FORK_SECURE_MEDIA_KIND_FILE) {
@@ -1301,6 +1333,26 @@ public class MessageObject {
             }
         } else if (state.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
             type = TYPE_MUSIC;
+            if (getDocument() != null) {
+                TLRPC.Document document = getDocument();
+                document.mime_type = TextUtils.isEmpty(state.mime) ? "audio/mp3" : state.mime;
+                TLRPC.TL_documentAttributeAudio audio = null;
+                for (int a = 0; a < document.attributes.size(); a++) {
+                    if (document.attributes.get(a) instanceof TLRPC.TL_documentAttributeAudio) {
+                        audio = (TLRPC.TL_documentAttributeAudio) document.attributes.get(a);
+                        break;
+                    }
+                }
+                if (audio == null) {
+                    audio = new TLRPC.TL_documentAttributeAudio();
+                    document.attributes.add(audio);
+                }
+                audio.voice = false;
+                audio.duration = Math.max(0, state.durationSeconds);
+                audio.title = !TextUtils.isEmpty(state.title) ? state.title : (!TextUtils.isEmpty(state.name) ? state.name : "");
+                audio.performer = !TextUtils.isEmpty(state.performer) ? state.performer : "";
+                audio.flags |= 1 | 2;
+            }
         } else if (state.kind == FORK_SECURE_MEDIA_KIND_PHOTO) {
             type = TYPE_PHOTO;
             File pFile = !TextUtils.isEmpty(state.path) ? new File(state.path) : null;

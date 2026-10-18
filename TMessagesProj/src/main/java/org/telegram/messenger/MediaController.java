@@ -82,10 +82,13 @@ import androidx.media3.extractor.jpeg.MotionPhotoDescription;
 import androidx.media3.extractor.jpeg.XmpMotionPhotoDescriptionParser;
 
 import org.telegram.ui.AspectRatioFrameLayout;
+import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.secureoverlay.SecureMediaCrypto;
 import org.telegram.secureoverlay.SecureMediaIndex;
+import org.telegram.secureoverlay.SecureSavedMessageCrypto;
+import org.telegram.secureoverlay.SecureSavedMessagesKeyStore;
 import com.google.android.gms.cast.MediaMetadata;
 import com.google.android.gms.common.images.WebImage;
 
@@ -1841,9 +1844,11 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                         playMessage(playingMessageObject);
                     } else if (audioInfo == null) {
                         try {
-                            File cacheFile = playingMessageObject.isForkSecureCarrier() && !TextUtils.isEmpty(playingMessageObject.forkSecureMediaPath)
-                                    ? new File(playingMessageObject.forkSecureMediaPath)
-                                    : FileLoader.getInstance(UserConfig.selectedAccount).getPathToMessage(playingMessageObject.messageOwner);
+                            File cacheFile = playingMessageObject.isForkSecureCarrier()
+                                    ? ensureForkSecureMediaDecrypted(playingMessageObject)
+                                    : (!TextUtils.isEmpty(playingMessageObject.forkSecureMediaPath)
+                                            ? new File(playingMessageObject.forkSecureMediaPath)
+                                            : FileLoader.getInstance(UserConfig.selectedAccount).getPathToMessage(playingMessageObject.messageOwner));
                             audioInfo = AudioInfo.getAudioInfo(cacheFile);
                         } catch (Exception e) {
                             FileLog.e(e);
@@ -3087,8 +3092,13 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         File file = null;
         if (nextAudio.isForkSecureCarrier()) {
             file = ensureForkSecureMediaDecrypted(nextAudio);
+        } else if (!TextUtils.isEmpty(nextAudio.forkSecureMediaPath)) {
+            file = new File(nextAudio.forkSecureMediaPath);
+            if (!file.exists()) {
+                file = null;
+            }
         }
-        if (!nextAudio.isForkSecureCarrier() && file == null && nextAudio.messageOwner.attachPath != null && nextAudio.messageOwner.attachPath.length() > 0) {
+        if (file == null && nextAudio.messageOwner != null && nextAudio.messageOwner.attachPath != null && nextAudio.messageOwner.attachPath.length() > 0) {
             file = new File(nextAudio.messageOwner.attachPath);
             if (!file.exists()) {
                 file = null;
@@ -3132,8 +3142,13 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         File file = null;
         if (nextAudio.isForkSecureCarrier()) {
             file = ensureForkSecureMediaDecrypted(nextAudio);
+        } else if (!TextUtils.isEmpty(nextAudio.forkSecureMediaPath)) {
+            file = new File(nextAudio.forkSecureMediaPath);
+            if (!file.exists()) {
+                file = null;
+            }
         }
-        if (!nextAudio.isForkSecureCarrier() && file == null && !TextUtils.isEmpty(nextAudio.messageOwner.attachPath)) {
+        if (file == null && nextAudio.messageOwner != null && !TextUtils.isEmpty(nextAudio.messageOwner.attachPath)) {
             file = new File(nextAudio.messageOwner.attachPath);
             if (!file.exists()) {
                 file = null;
@@ -3652,13 +3667,30 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
             File decrypted = new File(messageObject.forkSecureMediaPath);
             if (decrypted.isFile()) {
+                if (messageObject.getDocument() != null && TextUtils.isEmpty(messageObject.getDocument().localPath)) {
+                    messageObject.getDocument().localPath = decrypted.getAbsolutePath();
+                }
+                if (messageObject.messageOwner != null && TextUtils.isEmpty(messageObject.messageOwner.attachPath)) {
+                    messageObject.messageOwner.attachPath = decrypted.getAbsolutePath();
+                }
+                messageObject.attachPathExists = true;
+                messageObject.mediaExists = true;
                 return decrypted;
             }
         }
         if (messageObject.messageOwner == null || TextUtils.isEmpty(messageObject.messageOwner.message)) {
             return null;
         }
-        File cipherCandidate = FileLoader.getInstance(messageObject.currentAccount).getPathToMessage(messageObject.messageOwner);
+        File cipherCandidate = null;
+        if (!TextUtils.isEmpty(messageObject.forkSecureCipherPath)) {
+            File candidate = new File(messageObject.forkSecureCipherPath);
+            if (candidate.isFile()) {
+                cipherCandidate = candidate;
+            }
+        }
+        if (cipherCandidate == null) {
+            cipherCandidate = FileLoader.getInstance(messageObject.currentAccount).getPathToMessage(messageObject.messageOwner);
+        }
         if (cipherCandidate == null || !cipherCandidate.exists()) {
             cipherCandidate = FileLoader.getInstance(messageObject.currentAccount).getPathToAttach(messageObject.getDocument(), true);
         }
@@ -3666,17 +3698,50 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             cipherCandidate = FileLoader.getInstance(messageObject.currentAccount).getPathToAttach(messageObject.getDocument());
         }
         if (cipherCandidate == null || !cipherCandidate.isFile()) {
+            if (messageObject.getDocument() != null) {
+                String attachName = FileLoader.getAttachFileName(messageObject.getDocument());
+                File docDir = FileLoader.getInstance(messageObject.currentAccount).getDirectory(FileLoader.MEDIA_DIR_DOCUMENT);
+                File candidate = new File(docDir, attachName);
+                if (candidate.isFile()) {
+                    cipherCandidate = candidate;
+                } else {
+                    File cacheDir = FileLoader.getInstance(messageObject.currentAccount).getDirectory(FileLoader.MEDIA_DIR_CACHE);
+                    candidate = new File(cacheDir, attachName);
+                    if (candidate.isFile()) {
+                        cipherCandidate = candidate;
+                    }
+                }
+            }
+        }
+        if (cipherCandidate == null || !cipherCandidate.isFile()) {
             return null;
         }
         try {
-            SecureChatEngine engine = new SecureChatEngine(
-                    ApplicationLoader.applicationContext,
-                    messageObject.currentAccount,
-                    messageObject.getDialogId());
             String carrier = messageObject.messageOwner.message;
-            SecureContentCodec.Attachment manifest = messageObject.isOutOwner()
-                    ? engine.getOutgoingAttachment(carrier)
-                    : engine.decryptAttachmentManifest(carrier, messageObject.getFromChatId());
+            SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
+            if (decoded == null) {
+                return null;
+            }
+            SecureContentCodec.Attachment manifest = null;
+            if (decoded.type == SecureCarrierCodec.TYPE_SAVED_MESSAGE) {
+                SecureSavedMessagesKeyStore.KeyMaterial key = new SecureSavedMessagesKeyStore(
+                        ApplicationLoader.applicationContext).getOrCreate(messageObject.currentAccount);
+                if (key != null) {
+                    byte[] plaintext = SecureSavedMessageCrypto.decryptRecord(decoded.payload, key);
+                    SecureContentCodec.Decoded content = SecureContentCodec.decode(plaintext);
+                    if (content != null) {
+                        manifest = content.attachment;
+                    }
+                }
+            } else {
+                SecureChatEngine engine = new SecureChatEngine(
+                        ApplicationLoader.applicationContext,
+                        messageObject.currentAccount,
+                        messageObject.getDialogId());
+                manifest = messageObject.isOutOwner()
+                        ? engine.getOutgoingAttachment(carrier)
+                        : engine.decryptAttachmentManifest(carrier, messageObject.getFromChatId());
+            }
             if (manifest == null) {
                 return null;
             }
@@ -3695,6 +3760,17 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             }
             if (destination.isFile() && destination.length() == manifest.plaintextSize) {
                 messageObject.forkSecureMediaPath = destination.getAbsolutePath();
+                if (messageObject.getDocument() != null) {
+                    messageObject.getDocument().localPath = destination.getAbsolutePath();
+                }
+                if (messageObject.messageOwner != null) {
+                    messageObject.messageOwner.attachPath = destination.getAbsolutePath();
+                }
+                messageObject.attachPathExists = true;
+                messageObject.mediaExists = true;
+                if (manifest.waveform != null && manifest.waveform.length > 0) {
+                    messageObject.forkSecureMediaWaveform = manifest.waveform;
+                }
                 try {
                     SecureMediaIndex secureMediaIndex = new SecureMediaIndex(
                             ApplicationLoader.applicationContext,
@@ -4320,11 +4396,22 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
         if (playingMessageObject.isRoundVideo() || playingMessageObject.isVideo() || playingMessageObject.isMusic()) {
             File file = null;
-            if (playingMessageObject.attachPathExists && playingMessageObject.messageOwner != null) {
+            if (playingMessageObject.isForkSecureCarrier()) {
+                file = ensureForkSecureMediaDecrypted(playingMessageObject);
+            } else if (!TextUtils.isEmpty(playingMessageObject.forkSecureMediaPath)) {
+                file = new File(playingMessageObject.forkSecureMediaPath);
+                if (!file.exists()) {
+                    file = null;
+                }
+            }
+            if (file == null && playingMessageObject.attachPathExists && playingMessageObject.messageOwner != null && !TextUtils.isEmpty(playingMessageObject.messageOwner.attachPath)) {
                 file = new File(playingMessageObject.messageOwner.attachPath);
+                if (!file.exists()) {
+                    file = null;
+                }
             }
             if (file == null || !file.exists()) {
-                file = FileLoader.getInstance(playingMessageObject.currentAccount).getPathToMessage(playingMessageObject.messageOwner);;
+                file = FileLoader.getInstance(playingMessageObject.currentAccount).getPathToMessage(playingMessageObject.messageOwner);
             }
             if (file != null && file.exists()) {
                 final String mime = playingMessageObject.getMimeType();

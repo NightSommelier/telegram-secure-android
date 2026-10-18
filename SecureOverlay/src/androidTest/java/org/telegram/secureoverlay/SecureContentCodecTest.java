@@ -667,6 +667,102 @@ public final class SecureContentCodecTest {
         }
     }
 
+    @Test
+    public void voiceAttachmentWithWaveformRoundTrips() {
+        byte[] waveform = new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+        SecureContentCodec.Attachment voiceAttachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                1000,
+                1000 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "audio.ogg",
+                "audio/ogg",
+                "",
+                0,
+                0,
+                false,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE,
+                15,
+                0,
+                "",
+                "",
+                waveform);
+
+        byte[] encoded = SecureContentCodec.encodeAttachment(voiceAttachment);
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(encoded);
+
+        assertEquals(SecureContentCodec.TYPE_FILE, decoded.type);
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE, decoded.attachment.presentation);
+        assertEquals(15, decoded.attachment.durationSeconds);
+        assertArrayEquals(waveform, decoded.attachment.waveform);
+    }
+
+    @Test
+    public void roundVideoAttachmentRoundTrips() {
+        SecureContentCodec.Attachment roundAttachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                2000,
+                2000 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "round.mp4",
+                "video/mp4",
+                "",
+                360,
+                360,
+                false,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO,
+                12,
+                0,
+                "",
+                "",
+                null);
+
+        byte[] encoded = SecureContentCodec.encodeAttachment(roundAttachment);
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(encoded);
+
+        assertEquals(SecureContentCodec.TYPE_FILE, decoded.type);
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO, decoded.attachment.presentation);
+        assertEquals(12, decoded.attachment.durationSeconds);
+        assertEquals(360, decoded.attachment.width);
+        assertEquals(360, decoded.attachment.height);
+    }
+
+    @Test
+    public void audioMusicAttachmentWithMetadataRoundTrips() {
+        SecureContentCodec.Attachment audioAttachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                5000,
+                5000 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "track.mp3",
+                "audio/mpeg",
+                "Caption",
+                0,
+                0,
+                false,
+                SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO,
+                240,
+                0,
+                "Song Title",
+                "Artist Name",
+                null);
+
+        byte[] encoded = SecureContentCodec.encodeAttachment(audioAttachment);
+        SecureContentCodec.Decoded decoded = SecureContentCodec.decode(encoded);
+
+        assertEquals(SecureContentCodec.TYPE_FILE, decoded.type);
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO, decoded.attachment.presentation);
+        assertEquals(240, decoded.attachment.durationSeconds);
+        assertEquals("Song Title", decoded.attachment.title);
+        assertEquals("Artist Name", decoded.attachment.performer);
+    }
+
     private static void assertNotNull(Object value) {
         assertTrue(value != null);
     }

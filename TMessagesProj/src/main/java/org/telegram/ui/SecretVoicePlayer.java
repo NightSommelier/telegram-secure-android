@@ -26,6 +26,7 @@ import android.graphics.SurfaceTexture;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.Layout;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.TextureView;
@@ -546,18 +547,27 @@ public class SecretVoicePlayer extends Dialog {
             player = null;
         }
         if (cell != null && cell.getMessageObject() != null) {
-            File file = FileLoader.getInstance(cell.getMessageObject().currentAccount).getPathToAttach(cell.getMessageObject().getDocument());
-            if (file != null && !file.exists()) {
-                file = new File(file.getPath() + ".enc");
+            MessageObject messageObject = cell.getMessageObject();
+            File file = null;
+            if (messageObject.isForkSecureCarrier()) {
+                file = MediaController.ensureForkSecureMediaDecrypted(messageObject);
+            } else if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+                file = new File(messageObject.forkSecureMediaPath);
             }
             if (file == null || !file.exists()) {
-                file = FileLoader.getInstance(cell.getMessageObject().currentAccount).getPathToMessage(cell.getMessageObject().messageOwner);
+                file = FileLoader.getInstance(messageObject.currentAccount).getPathToAttach(messageObject.getDocument());
                 if (file != null && !file.exists()) {
                     file = new File(file.getPath() + ".enc");
                 }
-            }
-            if ((file == null || !file.exists()) && (cell.getMessageObject().messageOwner.attachPath != null)) {
-                file = new File(cell.getMessageObject().messageOwner.attachPath);
+                if (file == null || !file.exists()) {
+                    file = FileLoader.getInstance(messageObject.currentAccount).getPathToMessage(messageObject.messageOwner);
+                    if (file != null && !file.exists()) {
+                        file = new File(file.getPath() + ".enc");
+                    }
+                }
+                if ((file == null || !file.exists()) && (messageObject.messageOwner != null && messageObject.messageOwner.attachPath != null)) {
+                    file = new File(messageObject.messageOwner.attachPath);
+                }
             }
             if (file == null || !file.exists()) {
                 return;
