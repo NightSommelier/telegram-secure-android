@@ -3093,7 +3093,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                                 CharSequence text = formatForkSecureDialogPreview(bgPreview);
                                 AndroidUtilities.runOnUIThread(() -> {
                                     forkSecurePreviewCache.put(cacheKey, text);
-                                    NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+                                    NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_MESSAGE_TEXT);
                                 });
                             }
                         } catch (Throwable e) {

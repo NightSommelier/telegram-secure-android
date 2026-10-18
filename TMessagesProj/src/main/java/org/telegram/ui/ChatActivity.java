@@ -6826,6 +6826,7 @@ public class ChatActivity extends BaseFragment implements
             }
         });
         chatListView.setLayoutManager(chatLayoutManager);
+        chatListView.setItemViewCacheSize(12);
         chatListView.addItemDecoration(new RecyclerView.ItemDecoration() {
             @Override
             public void getItemOffsets(Rect outRect, View view, RecyclerView parent, RecyclerView.State state) {

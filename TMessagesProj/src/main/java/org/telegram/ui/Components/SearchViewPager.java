@@ -305,6 +305,7 @@ public class SearchViewPager extends ViewPagerFixed implements FilteredSearchVie
             }
         };
         searchListView.setItemAnimator(itemAnimator);
+        searchListView.setItemViewCacheSize(12);
         searchListView.setPivotY(0);
         searchListView.setClipToPadding(false);
         searchListView.setAdapter(dialogsSearchAdapter);
