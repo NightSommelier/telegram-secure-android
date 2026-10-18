@@ -19,6 +19,7 @@ public final class SecureChatState {
     private static final String PENDING_KIND_PREFIX = "pending-kind.";
     private static final String LAST_PAIRING_MESSAGE_PREFIX = "last-pairing-message.";
     private static final String LAST_READY_MESSAGE_PREFIX = "last-ready-message.";
+    private static final String GROUP_KEY_NEEDS_DISTRIBUTION_PREFIX = "group-key-needs-dist.";
     private static final String IDENTITY_EPOCH = "identity-epoch";
     private final SharedPreferences preferences;
 
@@ -134,6 +135,24 @@ public final class SecureChatState {
                 && !preferences.edit().putInt(stateKey, messageId).commit()) {
             throw new IllegalStateException(
                     "failed to persist session-ready acknowledgement");
+        }
+    }
+
+    public boolean isGroupKeyNeedsDistribution(int account, long peerGroupId) {
+        return peerGroupId < 0 && preferences.getBoolean(key(GROUP_KEY_NEEDS_DISTRIBUTION_PREFIX, account, peerGroupId), false);
+    }
+
+    public void setGroupKeyNeedsDistribution(int account, long peerGroupId, boolean needed) {
+        if (peerGroupId >= 0) {
+            throw new IllegalArgumentException("peer dialog id must be negative for groups");
+        }
+        String stateKey = key(GROUP_KEY_NEEDS_DISTRIBUTION_PREFIX, account, peerGroupId);
+        if (needed) {
+            if (!preferences.edit().putBoolean(stateKey, true).commit()) {
+                throw new IllegalStateException("failed to persist group key distribution state");
+            }
+        } else {
+            preferences.edit().remove(stateKey).commit();
         }
     }
 

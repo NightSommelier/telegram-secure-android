@@ -560,6 +560,113 @@ public final class SecureContentCodecTest {
         assertMalformed(java.util.Arrays.copyOf(encoded, encoded.length - 1));
     }
 
+    @Test
+    public void attachmentV3RoundTripsWithTtlSeconds() {
+        SecureContentCodec.Attachment viewOnceAttachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                256,
+                256 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "secret_photo.jpg",
+                "image/jpeg",
+                "View once caption",
+                1080,
+                1920,
+                0x7FFFFFFF,
+                true);
+
+        byte[] encodedViewOnce = SecureContentCodec.encodeAttachment(viewOnceAttachment);
+        assertTrue(SecureContentCodec.isVersioned(encodedViewOnce));
+        SecureContentCodec.Decoded decodedViewOnce = SecureContentCodec.decode(encodedViewOnce);
+        assertEquals(SecureContentCodec.TYPE_PHOTO, decodedViewOnce.type);
+        assertEquals(0x7FFFFFFF, decodedViewOnce.attachment.ttlSeconds);
+        assertEquals("secret_photo.jpg", decodedViewOnce.attachment.fileName);
+
+        // Verify presentation type and ttlSeconds
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_FILE, decodedViewOnce.attachment.presentation);
+        assertTrue(new String(encodedViewOnce, StandardCharsets.ISO_8859_1).contains("FSM3"));
+
+        // Timer media (30 seconds)
+        SecureContentCodec.Attachment timerAttachment = new SecureContentCodec.Attachment(
+                new byte[16],
+                new byte[32],
+                new byte[12],
+                new byte[32],
+                256,
+                256 + SecureMediaCrypto.GCM_TAG_BYTES,
+                "timer_video.mp4",
+                "video/mp4",
+                "Self-destruct timer",
+                1920,
+                1080,
+                30,
+                false);
+
+        byte[] encodedTimer = SecureContentCodec.encodeAttachment(timerAttachment);
+        SecureContentCodec.Decoded decodedTimer = SecureContentCodec.decode(encodedTimer);
+        assertEquals(SecureContentCodec.TYPE_FILE, decodedTimer.type);
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO, decodedTimer.attachment.presentation);
+        assertEquals(30, decodedTimer.attachment.ttlSeconds);
+        assertEquals("timer_video.mp4", decodedTimer.attachment.fileName);
+        assertTrue(new String(encodedTimer, StandardCharsets.ISO_8859_1).contains("FSM3"));
+    }
+
+    @Test
+    public void attachmentPresentationBackwardsCompatibilityV1AndV2() {
+        // V1 presentation (13 bytes: FSM1(4) + kind(1) + duration(4) + titleSize(2) + performerSize(2))
+        ByteBuffer v1 = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN);
+        v1.put((byte) 'F').put((byte) 'S').put((byte) 'M').put((byte) '1');
+        v1.put((byte) SecureContentCodec.ATTACHMENT_PRESENTATION_FILE);
+        v1.putInt(0);
+        v1.putShort((short) 0);
+        v1.putShort((short) 0);
+        v1.flip();
+        SecureContentCodec.AttachmentPresentation p1 =
+                SecureContentCodec.decodeAttachmentPresentation(v1, "image/jpeg", 800, 600, true);
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_FILE, p1.kind);
+        assertEquals(0, p1.ttlSeconds);
+
+        // V2 presentation (15 bytes: FSM2(4) + kind(1) + duration(4) + titleSize(2) + performerSize(2) + waveformSize(2))
+        ByteBuffer v2 = ByteBuffer.allocate(15).order(ByteOrder.BIG_ENDIAN);
+        v2.put((byte) 'F').put((byte) 'S').put((byte) 'M').put((byte) '2');
+        v2.put((byte) SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO);
+        v2.putInt(45);
+        v2.putShort((short) 0);
+        v2.putShort((short) 0);
+        v2.putShort((short) 0);
+        v2.flip();
+        SecureContentCodec.AttachmentPresentation p2 =
+                SecureContentCodec.decodeAttachmentPresentation(v2, "video/mp4", 1280, 720, false);
+        assertEquals(SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO, p2.kind);
+        assertEquals(45, p2.durationSeconds);
+        assertEquals(0, p2.ttlSeconds);
+    }
+
+    @Test
+    public void attachmentWithNegativeTtlFailsClosed() {
+        try {
+            new SecureContentCodec.Attachment(
+                    new byte[16],
+                    new byte[32],
+                    new byte[12],
+                    new byte[32],
+                    100,
+                    100 + SecureMediaCrypto.GCM_TAG_BYTES,
+                    "invalid.jpg",
+                    "image/jpeg",
+                    "",
+                    100,
+                    100,
+                    -5,
+                    true);
+            fail("expected negative ttl to fail closed");
+        } catch (IllegalArgumentException expected) {
+            // Fails closed as required
+        }
+    }
+
     private static void assertNotNull(Object value) {
         assertTrue(value != null);
     }

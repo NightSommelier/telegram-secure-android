@@ -394,6 +394,36 @@ public class MessageObject {
             String title,
             String performer,
             byte[] waveform) {
+        markForkSecureMediaReady(
+                path,
+                kind,
+                width,
+                height,
+                name,
+                mime,
+                caption,
+                presentation,
+                durationSeconds,
+                0,
+                title,
+                performer,
+                waveform);
+    }
+
+    public void markForkSecureMediaReady(
+            String path,
+            int kind,
+            int width,
+            int height,
+            String name,
+            String mime,
+            String caption,
+            int presentation,
+            int durationSeconds,
+            int ttlSeconds,
+            String title,
+            String performer,
+            byte[] waveform) {
         if (!isForkSecureCarrier() || TextUtils.isEmpty(path)) {
             return;
         }
@@ -408,6 +438,7 @@ public class MessageObject {
                         caption,
                         presentation,
                         durationSeconds,
+                        ttlSeconds,
                         title,
                         performer,
                         waveform,
@@ -444,6 +475,40 @@ public class MessageObject {
                 caption,
                 presentation,
                 durationSeconds,
+                0,
+                title,
+                performer,
+                waveform,
+                null);
+    }
+
+    public static void cacheOutgoingForkSecureMedia(
+            String carrier,
+            String path,
+            int kind,
+            int width,
+            int height,
+            String name,
+            String mime,
+            String caption,
+            int presentation,
+            int durationSeconds,
+            int ttlSeconds,
+            String title,
+            String performer,
+            byte[] waveform) {
+        cacheOutgoingForkSecureMedia(
+                carrier,
+                path,
+                kind,
+                width,
+                height,
+                name,
+                mime,
+                caption,
+                presentation,
+                durationSeconds,
+                ttlSeconds,
                 title,
                 performer,
                 waveform,
@@ -465,6 +530,40 @@ public class MessageObject {
             String performer,
             byte[] waveform,
             String albumId) {
+        cacheOutgoingForkSecureMedia(
+                carrier,
+                path,
+                kind,
+                width,
+                height,
+                name,
+                mime,
+                caption,
+                presentation,
+                durationSeconds,
+                0,
+                title,
+                performer,
+                waveform,
+                albumId);
+    }
+
+    public static void cacheOutgoingForkSecureMedia(
+            String carrier,
+            String path,
+            int kind,
+            int width,
+            int height,
+            String name,
+            String mime,
+            String caption,
+            int presentation,
+            int durationSeconds,
+            int ttlSeconds,
+            String title,
+            String performer,
+            byte[] waveform,
+            String albumId) {
         if (TextUtils.isEmpty(carrier) || TextUtils.isEmpty(path)) {
             return;
         }
@@ -478,6 +577,7 @@ public class MessageObject {
                 caption,
                 presentation,
                 durationSeconds,
+                ttlSeconds,
                 title,
                 performer,
                 waveform,
@@ -1012,6 +1112,7 @@ public class MessageObject {
                 || forkSecureMediaPending != state.pending
                 || forkSecureMediaPresentation != state.presentation
                 || forkSecureMediaDurationSeconds != state.durationSeconds
+                || forkSecureMediaTtlSeconds != state.ttlSeconds
                 || !TextUtils.equals(forkSecureAlbumId, state.albumId)) {
             return false;
         }
@@ -1036,6 +1137,13 @@ public class MessageObject {
         forkSecureMediaCaption = state.caption;
         forkSecureMediaPresentation = state.presentation;
         forkSecureMediaDurationSeconds = state.durationSeconds;
+        forkSecureMediaTtlSeconds = state.ttlSeconds;
+        if (state.ttlSeconds != 0 && messageOwner != null) {
+            messageOwner.ttl = state.ttlSeconds;
+            if (messageOwner.media != null) {
+                messageOwner.media.ttl_seconds = state.ttlSeconds;
+            }
+        }
         forkSecureMediaTitle = state.title;
         forkSecureMediaPerformer = state.performer;
         forkSecureMediaWaveform = state.waveform != null ? state.waveform.clone() : null;
@@ -1375,6 +1483,7 @@ public class MessageObject {
         final String caption;
         final int presentation;
         final int durationSeconds;
+        final int ttlSeconds;
         final String title;
         final String performer;
         final byte[] waveform;
@@ -1484,6 +1593,40 @@ public class MessageObject {
                 byte[] waveform,
                 String albumId,
                 boolean pending) {
+            this(
+                    path,
+                    kind,
+                    width,
+                    height,
+                    name,
+                    mime,
+                    caption,
+                    presentation,
+                    durationSeconds,
+                    0,
+                    title,
+                    performer,
+                    waveform,
+                    albumId,
+                    pending);
+        }
+
+        ForkSecureMediaUiState(
+                String path,
+                int kind,
+                int width,
+                int height,
+                String name,
+                String mime,
+                String caption,
+                int presentation,
+                int durationSeconds,
+                int ttlSeconds,
+                String title,
+                String performer,
+                byte[] waveform,
+                String albumId,
+                boolean pending) {
             this.path = path;
             this.kind = kind;
             this.width = width;
@@ -1493,6 +1636,7 @@ public class MessageObject {
             this.caption = caption;
             this.presentation = presentation;
             this.durationSeconds = durationSeconds;
+            this.ttlSeconds = ttlSeconds;
             this.title = title;
             this.performer = performer;
             this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
@@ -1511,6 +1655,7 @@ public class MessageObject {
             this.fileSize = size;
         }
     }
+    public int forkSecureMediaTtlSeconds;
     public CharSequence youtubeDescription;
     public MessageObject replyMessageObject;
     public int type = 1000;
@@ -11466,6 +11611,9 @@ public class MessageObject {
         if (isRepostPreview) {
             return false;
         }
+        if (forkSecureMediaTtlSeconds != 0) {
+            return true;
+        }
         if (hasExtendedMediaPreview()) {
             return true;
         } else if (messageOwner instanceof TLRPC.TL_message_secret) {
@@ -11482,6 +11630,9 @@ public class MessageObject {
     }
 
     public boolean isSecretMedia() {
+        if (forkSecureMediaTtlSeconds != 0) {
+            return true;
+        }
         if (messageOwner instanceof TLRPC.TL_message_secret) {
             return (((getMedia(messageOwner) instanceof TLRPC.TL_messageMediaPhoto) || isGif()) && messageOwner.ttl > 0 && messageOwner.ttl <= 60 || isVoice() || isRoundVideo() || isVideo());
         } else if (messageOwner instanceof TLRPC.TL_message) {
@@ -12663,11 +12814,11 @@ public class MessageObject {
     }
 
     public boolean isVoiceOnce() {
-        return isVoice() && messageOwner != null && messageOwner.media != null && messageOwner.media.ttl_seconds == 0x7FFFFFFF;
+        return isVoice() && ((messageOwner != null && messageOwner.media != null && messageOwner.media.ttl_seconds == 0x7FFFFFFF) || forkSecureMediaTtlSeconds == 0x7FFFFFFF);
     }
 
     public boolean isRoundOnce() {
-        return isRoundVideo() && messageOwner != null && messageOwner.media != null && messageOwner.media.ttl_seconds == 0x7FFFFFFF;
+        return isRoundVideo() && ((messageOwner != null && messageOwner.media != null && messageOwner.media.ttl_seconds == 0x7FFFFFFF) || forkSecureMediaTtlSeconds == 0x7FFFFFFF);
     }
 
     public boolean isVideo() {

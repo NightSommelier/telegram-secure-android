@@ -7935,6 +7935,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                     if (DialogObject.isChatDialog(dialog_id)) {
                         secureChat.enableGroup();
                         text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
+                        secureChat.clearGroupKeyNeedsDistribution();
                         notify = false;
                         notifySecureModeChanged();
                     } else {
@@ -7944,10 +7945,12 @@ public class ChatActivityEnterView extends FrameLayout implements
                     }
                 } else if ("/secure-group-key".equals(entered) && DialogObject.isChatDialog(dialog_id)) {
                     text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
+                    secureChat.clearGroupKeyNeedsDistribution();
                     notify = false;
                 } else if ("/secure-group-rotate".equals(entered) && DialogObject.isChatDialog(dialog_id)) {
                     secureChat.rotateGroupSenderKey();
                     text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
+                    secureChat.clearGroupKeyNeedsDistribution();
                     notify = false;
                 } else if ("/secure-off".equals(entered)) {
                     secureChat.disable();
@@ -7957,6 +7960,19 @@ public class ChatActivityEnterView extends FrameLayout implements
                     // The carrier expands the input; keep it safely below Telegram's text limit.
                     if (entered.length() > 2800) {
                         return false;
+                    }
+                    if (DialogObject.isChatDialog(dialog_id) && secureChat.isGroupKeyNeedsDistribution()) {
+                        String distCarrier = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
+                        SendMessagesHelper.SendMessageParams distParams = SendMessagesHelper.SendMessageParams.of(
+                                distCarrier, dialog_id, null, null, null, false, null, null, null, false, 0, 0, null, false);
+                        distParams.webPage = null;
+                        distParams.mediaWebPage = null;
+                        distParams.searchLinks = false;
+                        distParams.replyQuote = null;
+                        distParams.replyToStoryItem = null;
+                        distParams.entities = null;
+                        accountInstance.getSendMessagesHelper().sendMessage(distParams);
+                        secureChat.clearGroupKeyNeedsDistribution();
                     }
                     text = secureChat.encryptText(entered);
                 }

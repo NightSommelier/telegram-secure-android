@@ -29,10 +29,14 @@ public final class SecureContentCodec {
             new byte[] {'F', 'S', 'M', '1'};
     private static final byte[] ATTACHMENT_PRESENTATION_MAGIC_V2 =
             new byte[] {'F', 'S', 'M', '2'};
+    private static final byte[] ATTACHMENT_PRESENTATION_MAGIC_V3 =
+            new byte[] {'F', 'S', 'M', '3'};
     private static final int ATTACHMENT_PRESENTATION_HEADER_BYTES =
             ATTACHMENT_PRESENTATION_MAGIC.length + 1 + 4 + 2 + 2;
     private static final int ATTACHMENT_PRESENTATION_V2_HEADER_BYTES =
             ATTACHMENT_PRESENTATION_MAGIC_V2.length + 1 + 4 + 2 + 2 + 2;
+    private static final int ATTACHMENT_PRESENTATION_V3_HEADER_BYTES =
+            ATTACHMENT_PRESENTATION_MAGIC_V3.length + 1 + 4 + 4 + 2 + 2 + 2;
     private static final int MAX_ATTACHMENT_PRESENTATION_TEXT_BYTES = 128;
     private static final int MAX_ATTACHMENT_DURATION_SECONDS = 12 * 60 * 60;
     public static final int MAX_WAVEFORM_BYTES = 512;
@@ -113,6 +117,7 @@ public final class SecureContentCodec {
                 attachment.photo,
                 attachment.presentation,
                 attachment.durationSeconds,
+                attachment.ttlSeconds,
                 attachment.title,
                 attachment.performer,
                 attachment.waveform);
@@ -217,6 +222,7 @@ public final class SecureContentCodec {
         validateAttachmentPresentation(
                 attachment.presentation,
                 attachment.durationSeconds,
+                attachment.ttlSeconds,
                 title,
                 performer,
                 waveform,
@@ -224,9 +230,14 @@ public final class SecureContentCodec {
                 attachment.width,
                 attachment.height,
                 attachment.photo);
-        int presentationHeaderBytes = waveform != null
-                ? ATTACHMENT_PRESENTATION_V2_HEADER_BYTES
-                : ATTACHMENT_PRESENTATION_HEADER_BYTES;
+        int presentationHeaderBytes;
+        if (attachment.ttlSeconds != 0) {
+            presentationHeaderBytes = ATTACHMENT_PRESENTATION_V3_HEADER_BYTES;
+        } else if (waveform != null) {
+            presentationHeaderBytes = ATTACHMENT_PRESENTATION_V2_HEADER_BYTES;
+        } else {
+            presentationHeaderBytes = ATTACHMENT_PRESENTATION_HEADER_BYTES;
+        }
         int waveformBytes = waveform != null ? waveform.length : 0;
         ByteBuffer payload = ByteBuffer.allocate(
                         16 + 32 + 12 + 32 + 4 + 4 + 2 + 2 + 2 + 2 + 4
@@ -248,7 +259,20 @@ public final class SecureContentCodec {
         payload.put(fileName);
         payload.put(mimeType);
         payload.put(caption);
-        if (waveform != null) {
+        if (attachment.ttlSeconds != 0) {
+            payload.put(ATTACHMENT_PRESENTATION_MAGIC_V3);
+            payload.put((byte) attachment.presentation);
+            payload.putInt(attachment.durationSeconds);
+            payload.putInt(attachment.ttlSeconds);
+            payload.putShort((short) title.length);
+            payload.putShort((short) performer.length);
+            payload.putShort((short) (waveform != null ? waveform.length : 0));
+            payload.put(title);
+            payload.put(performer);
+            if (waveform != null) {
+                payload.put(waveform);
+            }
+        } else if (waveform != null) {
             payload.put(ATTACHMENT_PRESENTATION_MAGIC_V2);
             payload.put((byte) attachment.presentation);
             payload.putInt(attachment.durationSeconds);
@@ -590,7 +614,7 @@ public final class SecureContentCodec {
         AttachmentPresentation presentation = input.hasRemaining()
                 ? decodeAttachmentPresentation(input, decodedMimeType, width, height, photo)
                 : new AttachmentPresentation(
-                        defaultAttachmentPresentation(decodedMimeType, photo), 0, "", "");
+                        defaultAttachmentPresentation(decodedMimeType, photo), 0, 0, "", "", null);
         validateAttachmentFields(
                 mediaId,
                 key,
@@ -607,6 +631,7 @@ public final class SecureContentCodec {
         validateAttachmentPresentation(
                 presentation.kind,
                 presentation.durationSeconds,
+                presentation.ttlSeconds,
                 presentation.title.getBytes(StandardCharsets.UTF_8),
                 presentation.performer.getBytes(StandardCharsets.UTF_8),
                 presentation.waveform,
@@ -629,12 +654,13 @@ public final class SecureContentCodec {
                 photo,
                 presentation.kind,
                 presentation.durationSeconds,
+                presentation.ttlSeconds,
                 presentation.title,
                 presentation.performer,
                 presentation.waveform);
     }
 
-    private static AttachmentPresentation decodeAttachmentPresentation(
+    static AttachmentPresentation decodeAttachmentPresentation(
             ByteBuffer input, String mimeType, int width, int height, boolean photo) {
         if (input.remaining() < ATTACHMENT_PRESENTATION_HEADER_BYTES) {
             throw new IllegalArgumentException("truncated secure attachment presentation");
@@ -643,17 +669,21 @@ public final class SecureContentCodec {
         input.get(magic);
         boolean isV1 = Arrays.equals(ATTACHMENT_PRESENTATION_MAGIC, magic);
         boolean isV2 = Arrays.equals(ATTACHMENT_PRESENTATION_MAGIC_V2, magic);
-        if (!isV1 && !isV2) {
+        boolean isV3 = Arrays.equals(ATTACHMENT_PRESENTATION_MAGIC_V3, magic);
+        if (!isV1 && !isV2 && !isV3) {
             throw new IllegalArgumentException("invalid secure attachment presentation");
         }
-        if (isV2 && input.remaining() < 1 + 4 + 2 + 2 + 2) {
+        if (isV3 && input.remaining() < 1 + 4 + 4 + 2 + 2 + 2) {
+            throw new IllegalArgumentException("truncated secure attachment presentation v3");
+        } else if (isV2 && input.remaining() < 1 + 4 + 2 + 2 + 2) {
             throw new IllegalArgumentException("truncated secure attachment presentation v2");
         }
         int kind = input.get() & 0xff;
         int durationSeconds = input.getInt();
+        int ttlSeconds = isV3 ? input.getInt() : 0;
         int titleSize = input.getShort() & 0xffff;
         int performerSize = input.getShort() & 0xffff;
-        int waveformSize = isV2 ? (input.getShort() & 0xffff) : 0;
+        int waveformSize = (isV2 || isV3) ? (input.getShort() & 0xffff) : 0;
         if (waveformSize > MAX_WAVEFORM_BYTES) {
             throw new IllegalArgumentException(
                     "invalid secure attachment presentation waveform length");
@@ -672,6 +702,7 @@ public final class SecureContentCodec {
         validateAttachmentPresentation(
                 kind,
                 durationSeconds,
+                ttlSeconds,
                 title,
                 performer,
                 waveform,
@@ -682,6 +713,7 @@ public final class SecureContentCodec {
         return new AttachmentPresentation(
                 kind,
                 durationSeconds,
+                ttlSeconds,
                 strictUtf8AllowEmpty(title),
                 strictUtf8AllowEmpty(performer),
                 waveform);
@@ -706,6 +738,7 @@ public final class SecureContentCodec {
     private static void validateAttachmentPresentation(
             int kind,
             int durationSeconds,
+            int ttlSeconds,
             byte[] title,
             byte[] performer,
             byte[] waveform,
@@ -723,6 +756,7 @@ public final class SecureContentCodec {
         }
         if (durationSeconds < 0
                 || durationSeconds > MAX_ATTACHMENT_DURATION_SECONDS
+                || ttlSeconds < 0
                 || title == null
                 || title.length > MAX_ATTACHMENT_PRESENTATION_TEXT_BYTES
                 || performer == null
@@ -771,9 +805,10 @@ public final class SecureContentCodec {
         }
     }
 
-    private static final class AttachmentPresentation {
+    static final class AttachmentPresentation {
         final int kind;
         final int durationSeconds;
+        final int ttlSeconds;
         final String title;
         final String performer;
         final byte[] waveform;
@@ -783,7 +818,7 @@ public final class SecureContentCodec {
                 int durationSeconds,
                 String title,
                 String performer) {
-            this(kind, durationSeconds, title, performer, null);
+            this(kind, durationSeconds, 0, title, performer, null);
         }
 
         AttachmentPresentation(
@@ -792,8 +827,19 @@ public final class SecureContentCodec {
                 String title,
                 String performer,
                 byte[] waveform) {
+            this(kind, durationSeconds, 0, title, performer, waveform);
+        }
+
+        AttachmentPresentation(
+                int kind,
+                int durationSeconds,
+                int ttlSeconds,
+                String title,
+                String performer,
+                byte[] waveform) {
             this.kind = kind;
             this.durationSeconds = durationSeconds;
+            this.ttlSeconds = ttlSeconds;
             this.title = title;
             this.performer = performer;
             this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
@@ -1060,6 +1106,7 @@ public final class SecureContentCodec {
         public final boolean photo;
         public final int presentation;
         public final int durationSeconds;
+        public final int ttlSeconds;
         public final String title;
         public final String performer;
         public final byte[] waveform;
@@ -1092,6 +1139,41 @@ public final class SecureContentCodec {
                     photo,
                     defaultAttachmentPresentation(mimeType, photo),
                     0,
+                    "",
+                    "",
+                    null);
+        }
+
+        public Attachment(
+                byte[] mediaId,
+                byte[] key,
+                byte[] nonce,
+                byte[] ciphertextSha256,
+                int plaintextSize,
+                int ciphertextSize,
+                String fileName,
+                String mimeType,
+                String caption,
+                int width,
+                int height,
+                int ttlSeconds,
+                boolean photo) {
+            this(
+                    mediaId,
+                    key,
+                    nonce,
+                    ciphertextSha256,
+                    plaintextSize,
+                    ciphertextSize,
+                    fileName,
+                    mimeType,
+                    caption,
+                    width,
+                    height,
+                    photo,
+                    defaultAttachmentPresentation(mimeType, photo),
+                    0,
+                    ttlSeconds,
                     "",
                     "",
                     null);
@@ -1152,6 +1234,49 @@ public final class SecureContentCodec {
                 String title,
                 String performer,
                 byte[] waveform) {
+            this(
+                    mediaId,
+                    key,
+                    nonce,
+                    ciphertextSha256,
+                    plaintextSize,
+                    ciphertextSize,
+                    fileName,
+                    mimeType,
+                    caption,
+                    width,
+                    height,
+                    photo,
+                    presentation,
+                    durationSeconds,
+                    0,
+                    title,
+                    performer,
+                    waveform);
+        }
+
+        public Attachment(
+                byte[] mediaId,
+                byte[] key,
+                byte[] nonce,
+                byte[] ciphertextSha256,
+                int plaintextSize,
+                int ciphertextSize,
+                String fileName,
+                String mimeType,
+                String caption,
+                int width,
+                int height,
+                boolean photo,
+                int presentation,
+                int durationSeconds,
+                int ttlSeconds,
+                String title,
+                String performer,
+                byte[] waveform) {
+            if (ttlSeconds < 0) {
+                throw new IllegalArgumentException("ttlSeconds cannot be negative");
+            }
             this.mediaId = StaticSticker.copy(mediaId);
             this.key = StaticSticker.copy(key);
             this.nonce = StaticSticker.copy(nonce);
@@ -1166,6 +1291,7 @@ public final class SecureContentCodec {
             this.photo = photo;
             this.presentation = presentation;
             this.durationSeconds = durationSeconds;
+            this.ttlSeconds = ttlSeconds;
             this.title = title == null ? "" : title;
             this.performer = performer == null ? "" : performer;
             this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();

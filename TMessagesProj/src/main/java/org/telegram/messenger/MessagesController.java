@@ -12159,6 +12159,7 @@ public class MessagesController extends BaseController implements NotificationCe
                             message.reply_markup = new TLRPC.TL_replyKeyboardHide();
                             message.flags |= 64;
                         }
+                        checkForkSecureParticipantDeleted(message.dialog_id, message.action.user_id);
                     }
 
                     if (message.action instanceof TLRPC.TL_messageActionChatMigrateTo || message.action instanceof TLRPC.TL_messageActionChannelCreate) {
@@ -15995,13 +15996,17 @@ public class MessagesController extends BaseController implements NotificationCe
                 AndroidUtilities.runOnUIThread(() -> loadFullChat(chatId, 0, true), 1000);
             }
             if (!self) {
-                try {
-                    SecureChatEngine secureChat = new SecureChatEngine(
-                            ApplicationLoader.applicationContext, currentAccount, -chatId);
-                    if (secureChat.isPaired()) {
-                        secureChat.rotateGroupSenderKey();
+                long deletedUserId = 0;
+                if (peer != null) {
+                    if (peer.user_id != 0) {
+                        deletedUserId = peer.user_id;
+                    } else if (peer.chat_id != 0) {
+                        deletedUserId = -peer.chat_id;
+                    } else if (peer.channel_id != 0) {
+                        deletedUserId = -peer.channel_id;
                     }
-                } catch (Exception ignore) {}
+                }
+                checkForkSecureParticipantDeleted(-chatId, deletedUserId);
             }
             if (whenDone != null) {
                 AndroidUtilities.runOnUIThread(whenDone);
@@ -16090,15 +16095,25 @@ public class MessagesController extends BaseController implements NotificationCe
                 AndroidUtilities.runOnUIThread(() -> loadFullChat(chatId, 0, true), 1000);
             }
             if (!UserObject.isUserSelf(user)) {
-                try {
-                    SecureChatEngine secureChat = new SecureChatEngine(
-                            ApplicationLoader.applicationContext, currentAccount, -chatId);
-                    if (secureChat.isPaired()) {
-                        secureChat.rotateGroupSenderKey();
-                    }
-                } catch (Exception ignore) {}
+                checkForkSecureParticipantDeleted(-chatId, user != null ? user.id : 0);
             }
         }, ConnectionsManager.RequestFlagInvokeAfter);
+    }
+
+    private void checkForkSecureParticipantDeleted(long dialogId, long deletedUserId) {
+        if (dialogId >= 0 || deletedUserId == getUserConfig().getClientUserId()) {
+            return;
+        }
+        try {
+            org.telegram.secureoverlay.SecureChatEngine secureChat =
+                    new org.telegram.secureoverlay.SecureChatEngine(
+                            ApplicationLoader.applicationContext, currentAccount, dialogId);
+            if (secureChat.isPaired()) {
+                secureChat.rotateGroupSenderKey();
+                FileLog.d("ForkSecure: rotated group sender key for " + dialogId + " after user " + deletedUserId + " deleted");
+            }
+        } catch (Throwable ignore) {
+        }
     }
 
     public void changeChatTitle(long chatId, String title) {
@@ -17124,6 +17139,7 @@ public class MessagesController extends BaseController implements NotificationCe
                                                 message.reply_markup = new TLRPC.TL_replyKeyboardHide();
                                                 message.flags |= 64;
                                             }
+                                            checkForkSecureParticipantDeleted(message.dialog_id, message.action.user_id);
                                         }
                                         if (message.action instanceof TLRPC.TL_messageActionChatMigrateTo || message.action instanceof TLRPC.TL_messageActionChannelCreate) {
                                             message.unread = false;
@@ -18691,6 +18707,7 @@ public class MessagesController extends BaseController implements NotificationCe
                     } else if (message.from_id instanceof TLRPC.TL_peerUser && message.from_id.user_id == clientUserId && message.action.user_id == clientUserId) {
                         continue;
                     }
+                    checkForkSecureParticipantDeleted(message.dialog_id, message.action.user_id);
                 }
 
                 ImageLoader.saveMessageThumbs(message);
@@ -19282,6 +19299,7 @@ public class MessagesController extends BaseController implements NotificationCe
             } else if (baseUpdate instanceof TL_update.TL_updateChatParticipantDelete) {
                 TL_update.TL_updateChatParticipantDelete update = (TL_update.TL_updateChatParticipantDelete) baseUpdate;
                 getMessagesStorage().updateChatInfo(update.chat_id, update.user_id, 1, 0, update.version);
+                checkForkSecureParticipantDeleted(-update.chat_id, update.user_id);
             } else if (baseUpdate instanceof TL_update.TL_updateDcOptions || baseUpdate instanceof TL_update.TL_updateConfig) {
                 getConnectionsManager().updateDcSettings();
             } else if (baseUpdate instanceof TL_update.TL_updateEncryption) {

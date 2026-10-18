@@ -189,4 +189,28 @@ public final class LibsignalGroupSmokeTest {
         // Group mode should now be automatically paired
         assertTrue(engine.isPaired());
     }
+
+    @Test
+    public void senderKeyRotationSetsNeedsDistributionFlag() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        long testGroupId = -888777666L;
+        SecureChatEngine engine = new SecureChatEngine(context, 0, testGroupId);
+        try {
+            engine.clearGroupKeyNeedsDistribution();
+            org.junit.Assert.assertFalse(engine.isGroupKeyNeedsDistribution());
+
+            // Rotating sender key must mark distribution as needed
+            engine.rotateGroupSenderKey();
+            assertTrue(engine.isGroupKeyNeedsDistribution());
+
+            // Creating distribution carrier or clearing flag resets it
+            String carrier = engine.createGroupSenderKeyDistributionCarrier(testGroupId);
+            assertNotNull(carrier);
+            assertTrue(SecureCarrierCodec.isMarked(carrier));
+            engine.clearGroupKeyNeedsDistribution();
+            org.junit.Assert.assertFalse(engine.isGroupKeyNeedsDistribution());
+        } finally {
+            engine.disable();
+        }
+    }
 }
