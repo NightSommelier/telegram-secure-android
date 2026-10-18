@@ -16135,7 +16135,8 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private Runnable sendSecretMediaDelete(MessageObject messageObject) {
-        if (messageObject == null || messageObject.isOut() || !messageObject.isSecretMedia() || messageObject.messageOwner.ttl != 0x7FFFFFFF) {
+        if (messageObject == null || messageObject.isOut() || !messageObject.isSecretMedia()
+                || (messageObject.forkSecureMediaTtlSeconds != 0x7FFFFFFF && (messageObject.messageOwner == null || messageObject.messageOwner.ttl != 0x7FFFFFFF))) {
             return null;
         }
         final long taskId = getMessagesController().createDeleteShowOnceTask(dialog_id, messageObject.getId());
@@ -16145,7 +16146,28 @@ public class ChatActivity extends BaseFragment implements
             msgs.add(messageObject);
             updateMessages(msgs, true);
         }
-        return () -> getMessagesController().doDeleteShowOnceTask(taskId, dialog_id, messageObject.getId());
+        return () -> {
+            if (messageObject.isForkSecureCarrier()) {
+                if (!TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+                    try {
+                        new File(messageObject.forkSecureMediaPath).delete();
+                    } catch (Throwable ignore) {
+                    }
+                }
+                if (messageObject.messageOwner != null && !TextUtils.isEmpty(messageObject.messageOwner.message)) {
+                    MessageObject.evictForkSecureMediaUiCache(messageObject.messageOwner.message);
+                    try {
+                        new org.telegram.secureoverlay.SecureMediaIndex(
+                                ApplicationLoader.applicationContext,
+                                currentAccount,
+                                dialog_id)
+                                .forget(messageObject.messageOwner.message);
+                    } catch (Throwable ignore) {
+                    }
+                }
+            }
+            getMessagesController().doDeleteShowOnceTask(taskId, dialog_id, messageObject.getId());
+        };
     }
 
     private void clearChatData(boolean full) {
@@ -22300,6 +22322,7 @@ public class ChatActivity extends BaseFragment implements
                 manifest.caption,
                 manifest.presentation,
                 manifest.durationSeconds,
+                manifest.ttlSeconds,
                 manifest.title,
                 manifest.performer,
                 manifest.waveform);
@@ -22318,6 +22341,11 @@ public class ChatActivity extends BaseFragment implements
                                 == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
                         || message.forkSecureMediaKind
                                 == MessageObject.FORK_SECURE_MEDIA_KIND_FILE)) {
+            return;
+        }
+        if (message.forkSecureMediaTtlSeconds != 0
+                || (message.messageOwner != null && (message.messageOwner.ttl != 0
+                || (message.messageOwner.media != null && message.messageOwner.media.ttl_seconds != 0)))) {
             return;
         }
         String indexKey = message.getId() + ":" + message.forkSecureMediaPath;

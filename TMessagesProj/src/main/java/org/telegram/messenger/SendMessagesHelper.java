@@ -2662,7 +2662,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             MessageSuggestionParams suggestionParams,
             int ttl,
             VideoEditedInfo videoEditedInfo) {
-        if (TextUtils.isEmpty(path) || ttl != 0 || (videoEditedInfo != null && videoEditedInfo.notReadyYet)) {
+        if (TextUtils.isEmpty(path) || (videoEditedInfo != null && videoEditedInfo.notReadyYet)) {
             return false;
         }
         boolean savedMessages = isForkSecureSavedMessagesDialog(getAccountInstance(), dialogId)
@@ -2697,7 +2697,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             mimeType = "application/octet-stream";
         }
         ForkSecureAttachmentPresentation presentation =
-                presentationForForkSecureDocument(document, path, videoEditedInfo);
+                presentationForForkSecureDocument(document, path, videoEditedInfo, ttl);
         ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
         sources.add(new ForkSecureAttachmentSource(
                 path,
@@ -2707,6 +2707,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 false,
                 presentation.kind,
                 presentation.durationSeconds,
+                presentation.ttlSeconds,
                 presentation.title,
                 presentation.performer,
                 presentation.waveform));
@@ -2739,6 +2740,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
 
     private static ForkSecureAttachmentPresentation presentationForForkSecureDocument(
             TLRPC.Document document, String path, VideoEditedInfo videoEditedInfo) {
+        return presentationForForkSecureDocument(document, path, videoEditedInfo, 0);
+    }
+
+    private static ForkSecureAttachmentPresentation presentationForForkSecureDocument(
+            TLRPC.Document document, String path, VideoEditedInfo videoEditedInfo, int ttl) {
         String mimeType = document != null && !TextUtils.isEmpty(document.mime_type)
                 ? document.mime_type
                 : getForkSecureMimeTypeForPath(path);
@@ -2841,6 +2847,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         return new ForkSecureAttachmentPresentation(
                 kind,
                 durationSeconds,
+                ttl,
                 trimForkSecurePresentationText(title),
                 trimForkSecurePresentationText(performer),
                 waveform);
@@ -3028,10 +3035,6 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             }
             ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
             for (SendingMediaInfo info : media) {
-                if (info != null && info.ttl != 0) {
-                    showForkSecureError(R.string.ForkSecureEphemeralPhotoUnsupported);
-                    return true;
-                }
                 if (info == null || info.isLivePhoto || info.videoEditedInfo != null
                         || info.searchImage != null || info.inlineResult != null) {
                     showForkSecureError(R.string.ForkSecureAttachmentUnsupported);
@@ -3055,7 +3058,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         ? SecureContentCodec.ATTACHMENT_PRESENTATION_FILE
                         : (isGif ? SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION : -1);
                 sources.add(new ForkSecureAttachmentSource(sourcePath, info.uri, info.caption,
-                        isGif ? "image/gif" : null, securePhoto, presentation, 0, null, null, null));
+                        isGif ? "image/gif" : null, securePhoto, presentation, 0, info != null ? info.ttl : 0, null, null, null));
             }
             prepareForkSecureAttachments(accountInstance, null, sources, dialogId, replyToMsg,
                     replyToTopMsg, storyItem, quote, notify, scheduleDate, scheduleRepeatPeriod,
@@ -3089,10 +3092,6 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         ArrayList<ForkSecureAttachmentSource> sources = new ArrayList<>();
         for (int i = 0; i < media.size(); i++) {
             SendingMediaInfo info = media.get(i);
-            if (info != null && info.ttl != 0) {
-                showForkSecureError(R.string.ForkSecureEphemeralPhotoUnsupported);
-                return true;
-            }
             if (info == null
                     || info.isLivePhoto
                     || info.videoEditedInfo != null
@@ -3127,6 +3126,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     securePhoto,
                     presentation,
                     0,
+                    info.ttl,
                     null,
                     null,
                     null));
@@ -3418,10 +3418,25 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             long monoForumPeerId,
         MessageSuggestionParams suggestionParams) {
         Utilities.globalQueue.postRunnable(() -> {
+            if (secureChat != null && DialogObject.isChatDialog(dialogId) && secureChat.isGroupKeyNeedsDistribution()) {
+                try {
+                    String distCarrier = secureChat.createGroupSenderKeyDistributionCarrier(dialogId);
+                    if (distCarrier != null) {
+                        AndroidUtilities.runOnUIThread(() -> {
+                            accountInstance.getSendMessagesHelper().sendMessage(
+                                    SendMessagesHelper.SendMessageParams.of(distCarrier, dialogId));
+                        });
+                        secureChat.clearGroupKeyNeedsDistribution();
+                    }
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
+            }
             ArrayList<String> encryptedPaths = new ArrayList<>();
             ArrayList<String> opaqueOriginalPaths = new ArrayList<>();
             ArrayList<String> carriers = new ArrayList<>();
             ArrayList<String> albumIds = new ArrayList<>();
+            ArrayList<Integer> ttls = new ArrayList<>();
             String currentAlbumId = null;
             for (int i = 0; i < sources.size(); i++) {
                 ForkSecureResolvedSource resolved = null;
@@ -3520,6 +3535,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                     resolved.photo,
                                     presentation.kind,
                                     presentation.durationSeconds,
+                                    presentation.ttlSeconds,
                                     presentation.title,
                                     presentation.performer,
                                     presentation.waveform);
@@ -3559,6 +3575,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             + Long.toUnsignedString(Utilities.random.nextLong()));
                     carriers.add(carrier);
                     albumIds.add(itemAlbumId);
+                    ttls.add(presentation.ttlSeconds);
                     File localPlaintextFile = resolved.file;
                     if (resolved.temporary) {
                         File persistentDir = new File(
@@ -3588,51 +3605,54 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             SecureContentCodec.displayCaption(resolved.caption),
                             presentation.kind,
                             presentation.durationSeconds,
+                            presentation.ttlSeconds,
                             presentation.title,
                             presentation.performer,
                             presentation.waveform,
                             itemAlbumId);
-                    try {
-                        int indexKind;
-                        if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_FILE) {
-                            indexKind = SecureMediaIndex.KIND_FILE;
-                        } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
-                                || "image/gif".equalsIgnoreCase(mimeType)) {
-                            indexKind = SecureMediaIndex.KIND_GIF;
-                        } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
-                            indexKind = SecureMediaIndex.KIND_ROUND_VIDEO;
-                        } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
-                            indexKind = SecureMediaIndex.KIND_VOICE;
-                        } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
-                            indexKind = SecureMediaIndex.KIND_MUSIC;
-                        } else if (resolved.photo) {
-                            indexKind = SecureMediaIndex.KIND_PHOTO;
-                        } else if (mimeType != null && mimeType.toLowerCase(Locale.ROOT).startsWith("video/")) {
-                            indexKind = SecureMediaIndex.KIND_VIDEO;
-                        } else {
-                            indexKind = SecureMediaIndex.KIND_FILE;
+                    if (presentation.ttlSeconds == 0) {
+                        try {
+                            int indexKind;
+                            if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_FILE) {
+                                indexKind = SecureMediaIndex.KIND_FILE;
+                            } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                                    || "image/gif".equalsIgnoreCase(mimeType)) {
+                                indexKind = SecureMediaIndex.KIND_GIF;
+                            } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+                                indexKind = SecureMediaIndex.KIND_ROUND_VIDEO;
+                            } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+                                indexKind = SecureMediaIndex.KIND_VOICE;
+                            } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
+                                indexKind = SecureMediaIndex.KIND_MUSIC;
+                            } else if (resolved.photo) {
+                                indexKind = SecureMediaIndex.KIND_PHOTO;
+                            } else if (mimeType != null && mimeType.toLowerCase(Locale.ROOT).startsWith("video/")) {
+                                indexKind = SecureMediaIndex.KIND_VIDEO;
+                            } else {
+                                indexKind = SecureMediaIndex.KIND_FILE;
+                            }
+                            FileLog.d("ForkPresentation: outgoing index entry dialog=" + dialogId + " file=" + resolved.fileName + " mime=" + mimeType + " indexKind=" + indexKind + " presentation=" + presentation.kind);
+                            SecureMediaIndex secureMediaIndex = new SecureMediaIndex(
+                                    ApplicationLoader.applicationContext,
+                                    accountInstance.getCurrentAccount(),
+                                    dialogId);
+                            secureMediaIndex.put(new SecureMediaIndex.Entry(
+                                    -1,
+                                    (int) (System.currentTimeMillis() / 1000),
+                                    carrier,
+                                    indexKind,
+                                    localPlaintextFile.getAbsolutePath(),
+                                    resolved.fileName,
+                                    mimeType,
+                                    SecureContentCodec.encodeCaption(
+                                            SecureContentCodec.displayCaption(resolved.caption),
+                                            invertMedia,
+                                            itemAlbumId),
+                                    width,
+                                    height));
+                        } catch (Throwable e) {
+                            FileLog.e(e);
                         }
-                        FileLog.d("ForkPresentation: outgoing index entry dialog=" + dialogId + " file=" + resolved.fileName + " mime=" + mimeType + " indexKind=" + indexKind + " presentation=" + presentation.kind);
-                        SecureMediaIndex secureMediaIndex = new SecureMediaIndex(
-                                ApplicationLoader.applicationContext,
-                                accountInstance.getCurrentAccount(),
-                                dialogId);
-                        secureMediaIndex.put(new SecureMediaIndex.Entry(
-                                -1,
-                                (int) (System.currentTimeMillis() / 1000),
-                                carrier,
-                                indexKind,
-                                localPlaintextFile.getAbsolutePath(),
-                                resolved.fileName,
-                                mimeType,
-                                SecureContentCodec.encodeCaption(
-                                        SecureContentCodec.displayCaption(resolved.caption),
-                                        invertMedia,
-                                        itemAlbumId),
-                                width,
-                                height));
-                    } catch (Throwable e) {
-                        FileLog.e(e);
                     }
                 } catch (RuntimeException error) {
                     FileLog.e(error);
@@ -3648,7 +3668,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             }
             if (!encryptedPaths.isEmpty()) {
                 AndroidUtilities.runOnUIThread(() -> prepareForkSecureDocumentBatch(
-                        accountInstance, encryptedPaths, opaqueOriginalPaths, carriers, albumIds,
+                        accountInstance, encryptedPaths, opaqueOriginalPaths, carriers, albumIds, ttls,
                         dialogId, replyToMsg, replyToTopMsg, storyItem, quote, notify,
                         scheduleDate, scheduleRepeatPeriod, quickReplyShortcut,
                         quickReplyShortcutId, effectId, invertMedia, payStars, monoForumPeerId,
@@ -3661,7 +3681,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     private static void prepareForkSecureDocumentBatch(
             AccountInstance accountInstance, ArrayList<String> encryptedPaths,
             ArrayList<String> opaqueOriginalPaths, ArrayList<String> carriers,
-            ArrayList<String> albumIds, long dialogId,
+            ArrayList<String> albumIds, ArrayList<Integer> ttls, long dialogId,
             MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem,
             ChatActivity.ReplyQuote quote, boolean notify, int scheduleDate,
             int scheduleRepeatPeriod, String quickReplyShortcut, int quickReplyShortcutId,
@@ -3685,6 +3705,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     if (groupId[0] == 0) groupId[0] = 1;
                     mediaCount = 0;
                 }
+                int ttl = ttls != null && i < ttls.size() ? ttls.get(i) : 0;
                 mediaCount++;
                 error = prepareSendingDocumentInternal(
                         accountInstance, encryptedPaths.get(i), opaqueOriginalPaths.get(i), null,
@@ -3693,7 +3714,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         mediaCount == 10 || i == encryptedPaths.size() - 1, carriers.get(i),
                         notify, scheduleDate, scheduleRepeatPeriod, docType, true,
                         buildSendMessageChatArguments(quickReplyShortcut, quickReplyShortcutId), i == 0 ? effectId : 0,
-                        invertMedia, payStars, monoForumPeerId, suggestionParams, null, -1);
+                        invertMedia, payStars, monoForumPeerId, suggestionParams, null, -1, ttl);
             }
             if (groupId[0] != 0) {
                 finishGroup(accountInstance, groupId[0], scheduleDate);
@@ -3818,6 +3839,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 source.photo,
                 source.presentation,
                 source.durationSeconds,
+                source.ttlSeconds,
                 source.title,
                 source.performer,
                 source.waveform);
@@ -4019,6 +4041,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         return new ForkSecureAttachmentPresentation(
                 kind,
                 durationSeconds,
+                source.ttlSeconds,
                 trimForkSecurePresentationText(title),
                 trimForkSecurePresentationText(performer),
                 waveform);
@@ -4042,13 +4065,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     private static final class ForkSecureAttachmentPresentation {
         final int kind;
         final int durationSeconds;
+        final int ttlSeconds;
         final String title;
         final String performer;
         final byte[] waveform;
 
         ForkSecureAttachmentPresentation(
                 int kind, int durationSeconds, String title, String performer) {
-            this(kind, durationSeconds, title, performer, null);
+            this(kind, durationSeconds, 0, title, performer, null);
         }
 
         ForkSecureAttachmentPresentation(
@@ -4057,8 +4081,19 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 String title,
                 String performer,
                 byte[] waveform) {
+            this(kind, durationSeconds, 0, title, performer, waveform);
+        }
+
+        ForkSecureAttachmentPresentation(
+                int kind,
+                int durationSeconds,
+                int ttlSeconds,
+                String title,
+                String performer,
+                byte[] waveform) {
             this.kind = kind;
             this.durationSeconds = durationSeconds;
+            this.ttlSeconds = ttlSeconds;
             this.title = title;
             this.performer = performer;
             this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
@@ -4073,13 +4108,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final boolean photo;
         final int presentation;
         final int durationSeconds;
+        final int ttlSeconds;
         final String title;
         final String performer;
         final byte[] waveform;
 
         ForkSecureAttachmentSource(
                 String path, Uri uri, String caption, String mimeType, boolean photo) {
-            this(path, uri, caption, mimeType, photo, -1, 0, "", "", null);
+            this(path, uri, caption, mimeType, photo, -1, 0, 0, "", "", null);
         }
 
         ForkSecureAttachmentSource(
@@ -4100,6 +4136,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     photo,
                     presentation,
                     durationSeconds,
+                    0,
                     title,
                     performer,
                     null);
@@ -4116,6 +4153,32 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 String title,
                 String performer,
                 byte[] waveform) {
+            this(
+                    path,
+                    uri,
+                    caption,
+                    mimeType,
+                    photo,
+                    presentation,
+                    durationSeconds,
+                    0,
+                    title,
+                    performer,
+                    waveform);
+        }
+
+        ForkSecureAttachmentSource(
+                String path,
+                Uri uri,
+                String caption,
+                String mimeType,
+                boolean photo,
+                int presentation,
+                int durationSeconds,
+                int ttlSeconds,
+                String title,
+                String performer,
+                byte[] waveform) {
             this.path = path;
             this.uri = uri;
             this.caption = caption;
@@ -4123,6 +4186,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             this.photo = photo;
             this.presentation = presentation;
             this.durationSeconds = durationSeconds;
+            this.ttlSeconds = ttlSeconds;
             this.title = title == null ? "" : title;
             this.performer = performer == null ? "" : performer;
             this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
@@ -4138,6 +4202,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final boolean photo;
         final int presentation;
         final int durationSeconds;
+        final int ttlSeconds;
         final String title;
         final String performer;
         final byte[] waveform;
@@ -4154,6 +4219,34 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 String title,
                 String performer,
                 byte[] waveform) {
+            this(
+                    file,
+                    temporary,
+                    fileName,
+                    mimeType,
+                    caption,
+                    photo,
+                    presentation,
+                    durationSeconds,
+                    0,
+                    title,
+                    performer,
+                    waveform);
+        }
+
+        ForkSecureResolvedSource(
+                File file,
+                boolean temporary,
+                String fileName,
+                String mimeType,
+                String caption,
+                boolean photo,
+                int presentation,
+                int durationSeconds,
+                int ttlSeconds,
+                String title,
+                String performer,
+                byte[] waveform) {
             this.file = file;
             this.temporary = temporary;
             this.fileName = fileName;
@@ -4162,6 +4255,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             this.photo = photo;
             this.presentation = presentation;
             this.durationSeconds = durationSeconds;
+            this.ttlSeconds = ttlSeconds;
             this.title = title == null ? "" : title;
             this.performer = performer == null ? "" : performer;
             this.waveform = waveform == null || waveform.length == 0 ? null : waveform.clone();
@@ -11636,6 +11730,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     private final static int ERROR_TYPE_FILE_TOO_LARGE = 2;
 
     private static int prepareSendingDocumentInternal(AccountInstance accountInstance, String path, String originalPath, Uri uri, String mime, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, final ArrayList<TLRPC.MessageEntity> entities, final MessageObject editingMessageObject, long[] groupId, boolean isGroupFinal, CharSequence caption, boolean notify, int scheduleDate, int scheduleRepeatPeriod, Integer[] docType, boolean forceDocument, SendMessageChatArguments sendMessageChatArguments, long effectId, boolean invertMedia, long payStars, long monoForumPeerId, MessageSuggestionParams suggestionParams, PollSendParams pollSendParams, int pollIndex) {
+        return prepareSendingDocumentInternal(accountInstance, path, originalPath, uri, mime, dialogId, replyToMsg, replyToTopMsg, storyItem, quote, entities, editingMessageObject, groupId, isGroupFinal, caption, notify, scheduleDate, scheduleRepeatPeriod, docType, forceDocument, sendMessageChatArguments, effectId, invertMedia, payStars, monoForumPeerId, suggestionParams, pollSendParams, pollIndex, 0);
+    }
+
+    private static int prepareSendingDocumentInternal(AccountInstance accountInstance, String path, String originalPath, Uri uri, String mime, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, final ArrayList<TLRPC.MessageEntity> entities, final MessageObject editingMessageObject, long[] groupId, boolean isGroupFinal, CharSequence caption, boolean notify, int scheduleDate, int scheduleRepeatPeriod, Integer[] docType, boolean forceDocument, SendMessageChatArguments sendMessageChatArguments, long effectId, boolean invertMedia, long payStars, long monoForumPeerId, MessageSuggestionParams suggestionParams, PollSendParams pollSendParams, int pollIndex, int ttl) {
         final long forcedPollGroupId = pollSendParams != null ? pollSendParams.groupId : 0;
 
         if ((path == null || path.length() == 0) && uri == null) {
@@ -11942,7 +12040,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             if (editingMessageObject != null) {
                 accountInstance.getSendMessagesHelper().editMessage(editingMessageObject, null, null, documentFinal, pathFinal, null, params, false, false, parentFinal);
             } else {
-                SendMessageParams sendMessageParams = SendMessagesHelper.SendMessageParams.of(documentFinal, null, pathFinal, dialogId, replyToMsg, replyToTopMsg, captionFinal, entities, null, params, notify, scheduleDate, scheduleRepeatPeriod, 0, parentFinal, null, false);
+                SendMessageParams sendMessageParams = SendMessagesHelper.SendMessageParams.of(documentFinal, null, pathFinal, dialogId, replyToMsg, replyToTopMsg, captionFinal, entities, null, params, notify, scheduleDate, scheduleRepeatPeriod, ttl, parentFinal, null, false);
                 sendMessageParams.replyToStoryItem = storyItem;
                 sendMessageParams.replyQuote = quote;
                 sendMessageParams.sendMessageChatArguments = sendMessageChatArguments;

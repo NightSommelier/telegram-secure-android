@@ -336,6 +336,38 @@ public final class SecureMediaCrypto {
             String title,
             String performer,
             byte[] waveform) {
+        return encryptAttachmentFile(
+                source,
+                destination,
+                fileName,
+                mimeType,
+                caption,
+                width,
+                height,
+                photo,
+                presentation,
+                durationSeconds,
+                0,
+                title,
+                performer,
+                waveform);
+    }
+
+    public static SecureContentCodec.Attachment encryptAttachmentFile(
+            File source,
+            File destination,
+            String fileName,
+            String mimeType,
+            String caption,
+            int width,
+            int height,
+            boolean photo,
+            int presentation,
+            int durationSeconds,
+            int ttlSeconds,
+            String title,
+            String performer,
+            byte[] waveform) {
         source = requireSafeFile(source, "source");
         destination = requireSafeFile(destination, "destination");
         if (!source.isFile()) {
@@ -363,6 +395,7 @@ public final class SecureMediaCrypto {
                 photo,
                 presentation,
                 durationSeconds,
+                ttlSeconds,
                 title,
                 performer,
                 waveform));
@@ -427,6 +460,7 @@ public final class SecureMediaCrypto {
                 photo,
                 presentation,
                 durationSeconds,
+                ttlSeconds,
                 title,
                 performer,
                 waveform);

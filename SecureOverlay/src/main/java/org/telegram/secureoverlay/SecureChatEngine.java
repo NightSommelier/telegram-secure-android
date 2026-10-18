@@ -243,6 +243,24 @@ public final class SecureChatEngine {
         java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
                 ("telegram-group-" + peerUserId).getBytes(StandardCharsets.UTF_8));
         store.deleteSenderKey(localAddress, distributionId);
+        state.setGroupKeyNeedsDistribution(account, peerUserId, true);
+    }
+
+    public boolean isGroupKeyNeedsDistribution() {
+        return peerUserId < 0 && state.isGroupKeyNeedsDistribution(account, peerUserId);
+    }
+
+    public void setGroupKeyNeedsDistribution(boolean needed) {
+        if (peerUserId >= 0) {
+            throw new IllegalArgumentException("peer dialog id must be negative for groups");
+        }
+        state.setGroupKeyNeedsDistribution(account, peerUserId, needed);
+    }
+
+    public void clearGroupKeyNeedsDistribution() {
+        if (peerUserId < 0) {
+            state.setGroupKeyNeedsDistribution(account, peerUserId, false);
+        }
     }
 
     /**
@@ -1030,11 +1048,17 @@ public final class SecureChatEngine {
                                 && content.control.action == SecureContentCodec.CONTROL_ACTION_DELETE) {
                             SecureLocalMessageCache cache =
                                     new SecureLocalMessageCache(context, account, peerUserId);
+                            SecureMediaIndex mediaIndex =
+                                    new SecureMediaIndex(context, account, peerUserId);
                             for (byte[] digest : content.control.carrierDigests) {
                                 try {
                                     cache.forgetByDigest(digest);
                                 } catch (Exception error) {
                                     // Ignore individual digest cleanup failure and proceed with others
+                                }
+                                try {
+                                    mediaIndex.forgetByDigest(digest);
+                                } catch (Exception error) {
                                 }
                             }
                         }

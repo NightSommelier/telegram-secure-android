@@ -4767,6 +4767,9 @@ public class MessagesStorage extends BaseController {
                         TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
                         message.readAttachPath(data, getUserConfig().clientUserId);
                         data.reuse();
+                        if (message != null && !TextUtils.isEmpty(message.message) && SecureCarrierCodec.isMarked(message.message)) {
+                            forgetForkSecureLocalMessage(currentAccount, dialogId, message.message, message.attachPath);
+                        }
                         if (message.media != null) {
                             if (!addFilesToDelete(message, filesToDelete, idsToDelete, namesToDelete, true)) {
                                 continue;
@@ -14555,6 +14558,14 @@ public class MessagesStorage extends BaseController {
         } catch (Exception error) {
             // Telegram's database delete must still complete. A failed local-cache commit is
             // surfaced in logs and must never restore or resend the deleted carrier.
+            FileLog.e(error);
+        }
+        try {
+            new SecureMediaIndex(
+                    ApplicationLoader.applicationContext,
+                    currentAccount,
+                    dialogId).forget(carrier);
+        } catch (Exception error) {
             FileLog.e(error);
         }
         if (attachPath != null && !attachPath.isEmpty()) {
