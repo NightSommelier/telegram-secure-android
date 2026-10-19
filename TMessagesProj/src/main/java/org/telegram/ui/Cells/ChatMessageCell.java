@@ -9731,7 +9731,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     boolean secureVideoSticker = !TextUtils.isEmpty(messageObject.forkSecureMediaPath)
                             && messageObject.forkSecureMediaPath.endsWith(".webm");
                     boolean isWebpSticker =
-                            messageObject.type == MessageObject.TYPE_STICKER || secureWebpSticker;
+                            (messageObject.type == MessageObject.TYPE_STICKER && !messageObject.isVideoSticker()) || secureWebpSticker;
                     TLRPC.Document stickerDocument = messageObject.getDocument();
                     if (messageObject.forkSecureMediaWidth > 0
                             && messageObject.forkSecureMediaHeight > 0) {
@@ -9880,7 +9880,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                             photoImage.setImage(videoLocation, ImageLoader.AUTOPLAY_FILTER,
                                     ImageLocation.getForObject(currentPhotoObjectThumb, photoParentObject), "b1",
                                     messageObject.pathThumb,
-                                    messageObject.getDocument().size, isWebpSticker ? "webp" : null, parentObject, 1);
+                                    messageObject.getDocument().size, messageObject.isVideoSticker() ? null : (isWebpSticker ? "webp" : null), parentObject, 1);
                             if (secureVideoSticker) {
                                 // A secure sticker follows the visible-cell lifecycle. Keep it
                                 // looping while visible; ImageReceiver stops it when recycled.

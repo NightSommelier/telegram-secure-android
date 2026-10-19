@@ -12488,12 +12488,12 @@ public class ChatActivityEnterView extends FrameLayout implements
                     }
                     AlertsCreator.ensurePaidMessageConfirmation(currentAccount, dialog_id, 1, stars -> {
                         Runnable runnable = () -> {
-                            if (stickersExpanded) {
-                                if (searchingType != 0) {
-                                    emojiView.hideSearchKeyboard();
-                                }
-                                setStickersExpanded(false, true, false);
+                            if (searchingType != 0) {
+                                setSearchingTypeInternal(0, true);
+                                emojiView.closeSearch(true);
+                                emojiView.hideSearchKeyboard();
                             }
+                            setStickersExpanded(false, true, false);
                             TL_stories.StoryItem storyItem = delegate != null ? delegate.getReplyToStory() : null;
                             if (gif instanceof TLRPC.Document) {
                                 TLRPC.Document document = (TLRPC.Document) gif;
@@ -12567,11 +12567,6 @@ public class ChatActivityEnterView extends FrameLayout implements
                                     SendMessagesHelper.prepareSendingBotContextResult(parentFragment, accountInstance, result, params, dialog_id, replyingMessageObject, getThreadMessage(), null, replyingQuote, notify, scheduleDate, 0, parentFragment != null ? parentFragment.getMessageChatSendParams() : null, stars, getSendMonoForumPeerId());
                                 } else {
                                     SendMessagesHelper.getInstance(currentAccount).sendSticker(result.document, query, dialog_id, replyingMessageObject, getThreadMessage(), storyItem, replyingQuote, null, notify, scheduleDate, scheduleRepeatPeriod, false, parent, parentFragment != null ? parentFragment.getMessageChatSendParams() : null, stars, getSendMonoForumPeerId(), getSendMessageSuggestionParams());
-                                }
-                                if (searchingType != 0) {
-                                    setSearchingTypeInternal(0, true);
-                                    emojiView.closeSearch(true);
-                                    emojiView.hideSearchKeyboard();
                                 }
                             }
                             if (delegate != null) {

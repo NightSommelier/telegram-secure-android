@@ -2641,6 +2641,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final boolean savedMessages = peer == getAccountInstance().getUserConfig().getClientUserId()
                 && SecureSavedMessagesSettings.isSecureByDefault(
                         ApplicationLoader.applicationContext, currentAccount);
+        if (!savedMessages && !SecureChatEngine.hasLocalState(ApplicationLoader.applicationContext, currentAccount, peer)) {
+            return false;
+        }
         final SecureChatEngine secureChat;
         try {
             secureChat = savedMessages ? null : new SecureChatEngine(
@@ -2746,6 +2749,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (peer == UserConfig.getInstance(currentAccount).getClientUserId()) {
             return SecureSavedMessagesSettings.isSecureByDefault(
                     ApplicationLoader.applicationContext, currentAccount);
+        }
+        if (!SecureChatEngine.hasLocalState(ApplicationLoader.applicationContext, currentAccount, peer)) {
+            return false;
         }
         try {
             SecureChatEngine.Mode mode = new SecureChatEngine(

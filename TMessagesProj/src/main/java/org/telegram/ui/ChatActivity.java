@@ -22717,12 +22717,7 @@ public class ChatActivity extends BaseFragment implements
         }
         message.attachPathExists = true;
         message.mediaExists = true;
-        if (!TextUtils.isEmpty(message.forkSecureMediaPath)) {
-            document.localPath = message.forkSecureMediaPath;
-            if (message.messageOwner != null) {
-                message.messageOwner.attachPath = message.forkSecureMediaPath;
-            }
-        }
+
         // applyNewText() regenerates the upstream layout and calls MessageObject.setType(), which
         // classifies the opaque Telegram transport as a generic Document. Run it before applying
         // the authenticated process-local presentation so the true type remains authoritative.
