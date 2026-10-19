@@ -2396,7 +2396,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 secureHeight,
                                 secureEmoji,
                                 secureStickerFormat);
-                SecureMediaCache.touchAndPrune(encryptedFile, 32, 32L * 1024L * 1024L);
+                SecureMediaCache.touchAndPrune(encryptedFile, 2048, 256L * 1024L * 1024L);
                 if (AndroidUtilities.isInternalUri(Uri.fromFile(encryptedFile))) {
                     encryptedFile.delete();
                     throw new IllegalStateException("encrypted media staging path is not sendable");
@@ -3545,7 +3545,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 "secure attachment metadata is too large");
                     }
                     SecureMediaCache.touchAndPrune(
-                            encryptedFile, 32, 768L * 1024L * 1024L);
+                            encryptedFile, 4096, 4096L * 1024L * 1024L);
                     if (AndroidUtilities.isInternalUri(Uri.fromFile(encryptedFile))) {
                         encryptedFile.delete();
                         throw new IllegalStateException(

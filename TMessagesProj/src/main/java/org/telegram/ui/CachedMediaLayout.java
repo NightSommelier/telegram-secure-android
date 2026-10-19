@@ -3,6 +3,7 @@ package org.telegram.ui;
 import static org.telegram.ui.CacheControlActivity.TYPE_DOCUMENTS;
 import static org.telegram.ui.CacheControlActivity.TYPE_MUSIC;
 import static org.telegram.ui.CacheControlActivity.TYPE_VIDEOS;
+import static org.telegram.ui.CacheControlActivity.ENCRYPTED_CHATS_DIALOG_ID;
 import static org.telegram.ui.CacheControlActivity.UNKNOWN_CHATS_DIALOG_ID;
 
 import android.content.Context;
@@ -11,6 +12,7 @@ import android.graphics.drawable.ColorDrawable;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -327,12 +329,18 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
             }
             placeProvider.setRecyclerListView(recyclerListView);
 
-            if (fileIsMedia(fileInfo.file)) {
-                ArrayList<Object> photoEntries = new ArrayList<>();
-                photoEntries.add(new MediaController.PhotoEntry(0, 0, 0, fileInfo.file.getPath(), 0, fileInfo.type == TYPE_VIDEOS, 0, 0, 0));
-                PhotoViewer.getInstance().openPhotoForSelect(photoEntries, 0, PhotoViewer.SELECT_TYPE_NO_SELECT, false, placeProvider, null);
-            } else {
-                AndroidUtilities.openForView(fileInfo.file, fileInfo.file.getName(), null, parentFragment.getParentActivity(), null, false);
+            File targetFile = (fileInfo != null && !TextUtils.isEmpty(fileInfo.forkSecurePlaintextPath) && new File(fileInfo.forkSecurePlaintextPath).exists())
+                    ? new File(fileInfo.forkSecurePlaintextPath) : (fileInfo != null ? fileInfo.file : null);
+            String displayName = (fileInfo != null && !TextUtils.isEmpty(fileInfo.customFileName))
+                    ? fileInfo.customFileName : (targetFile != null ? targetFile.getName() : "");
+            if (targetFile != null) {
+                if (fileIsMedia(targetFile)) {
+                    ArrayList<Object> photoEntries = new ArrayList<>();
+                    photoEntries.add(new MediaController.PhotoEntry(0, 0, 0, targetFile.getPath(), 0, fileInfo != null && fileInfo.type == TYPE_VIDEOS, 0, 0, 0));
+                    PhotoViewer.getInstance().openPhotoForSelect(photoEntries, 0, PhotoViewer.SELECT_TYPE_NO_SELECT, false, placeProvider, null);
+                } else {
+                    AndroidUtilities.openForView(targetFile, displayName, null, parentFragment.getParentActivity(), null, false);
+                }
             }
         }
         if (cacheCell.type == TYPE_MUSIC) {
@@ -558,7 +566,11 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
                     TLObject object = parentFragment.getMessagesController().getUserOrChat(dialogFileEntities.dialogId);
                     String title;
                     boolean animated = userCell.dialogFileEntities != null && userCell.dialogFileEntities.dialogId == dialogFileEntities.dialogId;
-                    if (dialogFileEntities.dialogId == UNKNOWN_CHATS_DIALOG_ID) {
+                    if (dialogFileEntities.dialogId == ENCRYPTED_CHATS_DIALOG_ID) {
+                        title = LocaleController.getString(R.string.CacheEncryptedChats);
+                        userCell.getImageView().getAvatarDrawable().setAvatarType(AvatarDrawable.AVATAR_TYPE_ENCRYPTED_CHATS);
+                        userCell.getImageView().setForUserOrChat(null, userCell.getImageView().getAvatarDrawable());
+                    } else if (dialogFileEntities.dialogId == UNKNOWN_CHATS_DIALOG_ID) {
                         title = LocaleController.getString(R.string.CacheOtherChats);
                         userCell.getImageView().getAvatarDrawable().setAvatarType(AvatarDrawable.AVATAR_TYPE_OTHER_CHATS);
                         userCell.getImageView().setForUserOrChat(null, userCell.getImageView().getAvatarDrawable());
@@ -671,7 +683,10 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
             super.update();
             photoEntries.clear();
             for (int i = 0; i < itemInners.size(); i++) {
-                photoEntries.add(new MediaController.PhotoEntry(0, 0, 0, itemInners.get(i).file.file.getPath(), 0, itemInners.get(i).file.type == TYPE_VIDEOS, 0, 0, 0));
+                CacheModel.FileInfo fi = itemInners.get(i).file;
+                String path = (fi != null && !TextUtils.isEmpty(fi.forkSecurePlaintextPath) && new File(fi.forkSecurePlaintextPath).exists())
+                        ? fi.forkSecurePlaintextPath : (fi != null && fi.file != null ? fi.file.getPath() : "");
+                photoEntries.add(new MediaController.PhotoEntry(0, 0, 0, path, 0, fi != null && fi.type == TYPE_VIDEOS, 0, 0, 0));
             }
         }
 
@@ -705,22 +720,25 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
             CacheModel.FileInfo file = itemInners.get(position).file;
             boolean animated = file == cell.getTag();
             cell.setTag(file);
+            cell.setForkSecure(file != null && file.isForkSecure);
             int size = (int) Math.max(100, AndroidUtilities.getRealScreenSize().x / AndroidUtilities.density);
+            String previewPath = (file != null && !TextUtils.isEmpty(file.forkSecurePlaintextPath))
+                    ? file.forkSecurePlaintextPath : (file != null && file.file != null ? file.file.getAbsolutePath() : "");
             if (isStories) {
-                boolean isVideo = file.file.getAbsolutePath().endsWith(".mp4");
+                boolean isVideo = previewPath.endsWith(".mp4");
                 if (isVideo) {
-                    cell.imageReceiver.setImage(ImageLocation.getForPath(file.file.getAbsolutePath()), size + "_" + size + "_pframe", thumb, null, null, 0);
+                    cell.imageReceiver.setImage(ImageLocation.getForPath(previewPath), size + "_" + size + "_pframe", thumb, null, null, 0);
                 } else {
-                    cell.imageReceiver.setImage(ImageLocation.getForPath(file.file.getAbsolutePath()), size + "_" + size, thumb, null, null, 0);
+                    cell.imageReceiver.setImage(ImageLocation.getForPath(previewPath), size + "_" + size, thumb, null, null, 0);
                 }
-                cell.storyId = Objects.hash(file.file.getAbsolutePath());
+                cell.storyId = Objects.hash(previewPath);
                 cell.isStory = true;
                 cell.setVideoText(AndroidUtilities.formatFileSize(file.size), true);
-            } else if (file.type == TYPE_VIDEOS) {
-                cell.imageReceiver.setImage(ImageLocation.getForPath("vthumb://" + 0 + ":" + file.file.getAbsolutePath()), size + "_" + size, thumb, null, null, 0);
+            } else if (file != null && file.type == TYPE_VIDEOS) {
+                cell.imageReceiver.setImage(ImageLocation.getForPath("vthumb://" + 0 + ":" + previewPath), size + "_" + size, thumb, null, null, 0);
                 cell.setVideoText(AndroidUtilities.formatFileSize(file.size), true);
-            } else {
-                cell.imageReceiver.setImage(ImageLocation.getForPath("thumb://" + 0 + ":" + file.file.getAbsolutePath()), size + "_" + size, thumb, null, null, 0);
+            } else if (file != null) {
+                cell.imageReceiver.setImage(ImageLocation.getForPath("thumb://" + 0 + ":" + previewPath), size + "_" + size, thumb, null, null, 0);
                 cell.setVideoText(AndroidUtilities.formatFileSize(file.size), false);
             }
             cell.setChecked(cacheModel.isSelected(file), animated);
@@ -780,9 +798,15 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
             holder.itemView.setTag(file);
             long date = file.file.lastModified();
 
-            cell.setTextAndValueAndTypeAndThumb(file.messageType == MessageObject.TYPE_ROUND_VIDEO ? LocaleController.getString(R.string.AttachRound) : file.file.getName(), LocaleController.formatDateAudio(date / 1000, true), Utilities.getExtension(file.file.getName()), null, 0, divider);
+            cell.setForkSecure(file != null && file.isForkSecure);
+            String displayName = (file != null && !TextUtils.isEmpty(file.customFileName))
+                    ? file.customFileName
+                    : (file != null && file.messageType == MessageObject.TYPE_ROUND_VIDEO ? LocaleController.getString(R.string.AttachRound) : (file != null && file.file != null ? file.file.getName() : ""));
+            String ext = Utilities.getExtension(displayName);
+            cell.setTextAndValueAndTypeAndThumb(displayName, LocaleController.formatDateAudio(date / 1000, true), ext, null, 0, divider);
             if (!animated) {
-                cell.setPhoto(file.file.getPath());
+                String thumbPath = (file != null && !TextUtils.isEmpty(file.forkSecurePlaintextPath)) ? file.forkSecurePlaintextPath : (file != null && file.file != null ? file.file.getPath() : null);
+                cell.setPhoto(thumbPath);
             }
             cell.getImageView().setRoundRadius(file.messageType == MessageObject.TYPE_ROUND_VIDEO ?  AndroidUtilities.dp(20) : AndroidUtilities.dp(4));
             cacheCell.drawDivider = divider;
@@ -862,14 +886,17 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
             message.peer_id.user_id = message.from_id.user_id = UserConfig.getInstance(parentFragment.getCurrentAccount()).getClientUserId();
             message.date = (int) (System.currentTimeMillis() / 1000);
             message.message = "";
-            message.attachPath = fileInfo.file.getPath();
+            String audioPath = (!TextUtils.isEmpty(fileInfo.forkSecurePlaintextPath) && new File(fileInfo.forkSecurePlaintextPath).exists())
+                    ? fileInfo.forkSecurePlaintextPath
+                    : (fileInfo.file != null ? fileInfo.file.getPath() : "");
+            message.attachPath = audioPath;
             message.media = new TLRPC.TL_messageMediaDocument();
             message.media.flags |= 3;
             message.media.document = new TLRPC.TL_document();
             message.flags |= TLRPC.MESSAGE_FLAG_HAS_MEDIA | TLRPC.MESSAGE_FLAG_HAS_FROM_ID;
             message.dialog_id = fileInfo.dialogId;
 
-            String ext = FileLoader.getFileExtension(fileInfo.file);
+            String ext = FileLoader.getFileExtension(new File(audioPath));
 
             message.media.document.id = 0;
             message.media.document.access_hash = 0;
@@ -890,7 +917,7 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
                     String author = "";
                     try {
                         mediaMetadataRetriever = new MediaMetadataRetriever();
-                        Uri uri = Uri.fromFile(fileInfo.file);
+                        Uri uri = Uri.fromFile(new File(audioPath));
                         mediaMetadataRetriever.setDataSource(getContext(), uri);
 
                         title = mediaMetadataRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
@@ -905,6 +932,9 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
                         } catch (Throwable e) {
 
                         }
+                    }
+                    if (TextUtils.isEmpty(title) && !TextUtils.isEmpty(fileInfo.customFileName)) {
+                        title = fileInfo.customFileName;
                     }
                     String finalTitle = title;
                     String finalAuthor = author;
@@ -927,6 +957,9 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
 
             fileInfo.messageObject = new MessageObject(parentFragment.getCurrentAccount(), message, false, false);
             fileInfo.messageObject.mediaExists = true;
+        }
+        if (fileInfo.isForkSecure && fileInfo.messageObject != null) {
+            fileInfo.messageObject.forkSecureVerified = true;
         }
     }
 
@@ -1009,8 +1042,14 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
             CacheModel.FileInfo file = itemInners.get(position).file;
             boolean animated = file == cell.getTag();
             cell.setTag(file);
-            cell.setTextAndValueAndTypeAndThumb(file.file.getName(), AndroidUtilities.formatFileSize(file.size), Utilities.getExtension(file.file.getName()), null, 0, true);
-            cell.setPhoto(file.file.getPath());
+            cell.setForkSecure(file != null && file.isForkSecure);
+            String displayName = (file != null && !TextUtils.isEmpty(file.customFileName))
+                    ? file.customFileName
+                    : LocaleController.getString(R.string.AttachAudio);
+            String ext = Utilities.getExtension(displayName);
+            cell.setTextAndValueAndTypeAndThumb(displayName, AndroidUtilities.formatFileSize(file.size), ext, null, 0, true);
+            String thumbPath = (file != null && !TextUtils.isEmpty(file.forkSecurePlaintextPath)) ? file.forkSecurePlaintextPath : (file != null && file.file != null ? file.file.getPath() : null);
+            cell.setPhoto(thumbPath);
             cell.setChecked(cacheModel.isSelected(file), animated);
         }
     }

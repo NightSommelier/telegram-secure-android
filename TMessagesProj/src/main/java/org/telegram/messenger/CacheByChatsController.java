@@ -25,11 +25,12 @@ public class CacheByChatsController {
     public static final int KEEP_MEDIA_TYPE_GROUP = 1;
     public static final int KEEP_MEDIA_TYPE_CHANNEL = 2;
     public static final int KEEP_MEDIA_TYPE_STORIES = 3;
+    public static final int KEEP_MEDIA_TYPE_ENCRYPTED = 4;
 
     private final int currentAccount;
 
     private boolean gotKeepMediaByTypes = false;
-    private final int[] keepMediaByTypes = { -1, -1, -1, -1 };
+    private final int[] keepMediaByTypes = { -1, -1, -1, -1, -1 };
 
     public CacheByChatsController(int currentAccount) {
         this.currentAccount = currentAccount;
@@ -44,6 +45,8 @@ public class CacheByChatsController {
             return KEEP_MEDIA_ONE_WEEK;
         } else if (type == KEEP_MEDIA_TYPE_STORIES) {
             return KEEP_MEDIA_TWO_DAY;
+        } else if (type == KEEP_MEDIA_TYPE_ENCRYPTED) {
+            return KEEP_MEDIA_FOREVER;
         }
         return SharedConfig.keepMedia;
     }
@@ -122,7 +125,7 @@ public class CacheByChatsController {
     public int getKeepMedia(int type) {
         if (!gotKeepMediaByTypes) {
             gotKeepMediaByTypes = true;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 5; i++) {
                 keepMediaByTypes[i] = SharedConfig.getPreferences().getInt("keep_media_type_" + i, getDefault(i));
             }
         }
@@ -135,7 +138,7 @@ public class CacheByChatsController {
     public void setKeepMedia(int type, int keepMedia) {
         if (!gotKeepMediaByTypes) {
             gotKeepMediaByTypes = true;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 5; i++) {
                 keepMediaByTypes[i] = SharedConfig.getPreferences().getInt("keep_media_type_" + i, getDefault(i));
             }
         }
@@ -176,11 +179,20 @@ public class CacheByChatsController {
                 }
             }
         }
+        for (int k = 0; k < keepMediaFiles.size(); k++) {
+            KeepMediaFile file = keepMediaFiles.get(k);
+            if (file != null && file.file != null) {
+                String path = file.file.getAbsolutePath();
+                if (path.contains("fork-secure-") || file.file.getName().startsWith("fork_secure_")) {
+                    file.dialogType = KEEP_MEDIA_TYPE_ENCRYPTED;
+                }
+            }
+        }
     }
 
     public LongSparseArray<KeepMediaException> getKeepMediaExceptionsByDialogs() {
         LongSparseArray<KeepMediaException> sparseArray = new LongSparseArray<>();
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 5; i++) {
             ArrayList<KeepMediaException> exceptions = getKeepMediaExceptions(i);
             if (exceptions != null) {
                 for (int k = 0; k < exceptions.size(); k++) {

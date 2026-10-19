@@ -57,6 +57,7 @@ import org.telegram.SQLite.SQLiteException;
 import org.telegram.SQLite.SQLitePreparedStatement;
 import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureChatEngine;
+import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.messenger.support.LongSparseIntArray;
 import org.telegram.messenger.support.LongSparseLongArray;
@@ -9599,6 +9600,59 @@ public class MessagesController extends BaseController implements NotificationCe
                 }
             } catch (Exception e) {
                 FileLog.e(e);
+            }
+        });
+    }
+
+    public void purgeForkSecureMessagesByDigests(final long dialogId, final List<byte[]> digests) {
+        if (digests == null || digests.isEmpty()) {
+            return;
+        }
+        final Context context = ApplicationLoader.applicationContext;
+        try {
+            SecureMediaIndex mediaIndex = new SecureMediaIndex(context, currentAccount, dialogId);
+            for (byte[] digest : digests) {
+                mediaIndex.forgetByDigest(digest);
+            }
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
+
+        getMessagesStorage().getStorageQueue().postRunnable(() -> {
+            ArrayList<Integer> targetMids = new ArrayList<>();
+            try {
+                SQLiteCursor cursor = getMessagesStorage().getDatabase().queryFinalized(
+                        String.format(java.util.Locale.US, "SELECT mid, data FROM messages_v2 WHERE uid = %d ORDER BY mid DESC LIMIT 500", dialogId));
+                try {
+                    java.security.MessageDigest localMd = java.security.MessageDigest.getInstance("SHA-256");
+                    while (cursor.next()) {
+                        int mid = cursor.intValue(0);
+                        NativeByteBuffer data = cursor.byteBufferValue(1);
+                        if (data != null) {
+                            TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                            if (message != null && SecureCarrierCodec.isMarked(message.message)) {
+                                byte[] msgDigest = localMd.digest(message.message.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                                for (byte[] target : digests) {
+                                    if (java.security.MessageDigest.isEqual(target, msgDigest)) {
+                                        targetMids.add(mid);
+                                        break;
+                                    }
+                                }
+                            }
+                            data.reuse();
+                        }
+                    }
+                } finally {
+                    cursor.dispose();
+                }
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+
+            if (!targetMids.isEmpty()) {
+                AndroidUtilities.runOnUIThread(() -> {
+                    deleteMessages(targetMids, null, null, dialogId, 0, true, 0, false);
+                });
             }
         });
     }

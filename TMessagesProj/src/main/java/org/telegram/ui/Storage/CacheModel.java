@@ -373,6 +373,9 @@ public class CacheModel {
         public long dialogId;
         public long size;
         public int type;
+        public boolean isForkSecure;
+        public String customFileName;
+        public String forkSecurePlaintextPath;
 
         public FileMetadata metadata;
         public MessageObject messageObject;

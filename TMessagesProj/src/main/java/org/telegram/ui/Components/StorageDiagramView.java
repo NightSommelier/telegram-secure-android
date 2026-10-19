@@ -79,7 +79,11 @@ public class StorageDiagramView extends View implements NotificationCenter.Notif
         avatarImageReceiver = new ImageReceiver();
         avatarImageReceiver.setParentView(this);
 
-        if (dialogId == CacheControlActivity.UNKNOWN_CHATS_DIALOG_ID) {
+        if (dialogId == CacheControlActivity.ENCRYPTED_CHATS_DIALOG_ID) {
+            dialogText = LocaleController.getString(R.string.CacheEncryptedChats);
+            avatarDrawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_ENCRYPTED_CHATS);
+            avatarImageReceiver.setForUserOrChat(null, avatarDrawable);
+        } else if (dialogId == CacheControlActivity.UNKNOWN_CHATS_DIALOG_ID) {
             dialogText = LocaleController.getString(R.string.CacheOtherChats);
             avatarDrawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_OTHER_CHATS);
             avatarImageReceiver.setForUserOrChat(null, avatarDrawable);
@@ -408,7 +412,7 @@ public class StorageDiagramView extends View implements NotificationCenter.Notif
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         boolean hitAvatar = (
-            avatarImageReceiver != null && dialogId != null && dialogId != CacheControlActivity.UNKNOWN_CHATS_DIALOG_ID &&
+            avatarImageReceiver != null && dialogId != null && dialogId != CacheControlActivity.UNKNOWN_CHATS_DIALOG_ID && dialogId != CacheControlActivity.ENCRYPTED_CHATS_DIALOG_ID &&
             event.getX() > avatarImageReceiver.getImageX() && event.getX() <= avatarImageReceiver.getImageX2() &&
             event.getY() > avatarImageReceiver.getImageY() && event.getY() <= avatarImageReceiver.getImageY2()
         );

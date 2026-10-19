@@ -132,7 +132,7 @@ import java.util.regex.Pattern;
 import me.vkryl.core.BitwiseUtils;
 
 public class MessageObject {
-    private static final int FORK_SECURE_MEDIA_UI_CACHE_LIMIT = 256;
+    private static final int FORK_SECURE_MEDIA_UI_CACHE_LIMIT = 2048;
     private static final HashMap<String, ForkSecureMediaUiState>
             forkSecureMediaUiCache = new HashMap<>();
     private static final int MESSAGE_ID_RESERVED_BITS_MASK = 0x70000000;
@@ -597,6 +597,12 @@ public class MessageObject {
         }
     }
 
+    public static void clearForkSecureMediaUiCache() {
+        synchronized (forkSecureMediaUiCache) {
+            forkSecureMediaUiCache.clear();
+        }
+    }
+
     /**
      * Restores a process-local media result that was already authenticated for this exact carrier.
      *
@@ -749,6 +755,15 @@ public class MessageObject {
             photoThumbsObject = getDocument();
             mediaExists = plaintext.isFile();
             attachPathExists = plaintext.isFile();
+            if (plaintext.isFile()) {
+                forkSecureMediaPath = plaintext.getAbsolutePath();
+                if (getDocument() != null) {
+                    getDocument().localPath = plaintext.getAbsolutePath();
+                }
+                if (messageOwner != null) {
+                    messageOwner.attachPath = plaintext.getAbsolutePath();
+                }
+            }
         } else if (entry.kind == SecureMediaIndex.KIND_VIDEO && getDocument() != null) {
             TLRPC.Document document = getDocument();
             document.mime_type = TextUtils.isEmpty(entry.mimeType)
@@ -815,6 +830,15 @@ public class MessageObject {
             }
             mediaExists = plaintext.isFile();
             attachPathExists = plaintext.isFile();
+            if (plaintext.isFile()) {
+                forkSecureMediaPath = plaintext.getAbsolutePath();
+                if (getDocument() != null) {
+                    getDocument().localPath = plaintext.getAbsolutePath();
+                }
+                if (messageOwner != null) {
+                    messageOwner.attachPath = plaintext.getAbsolutePath();
+                }
+            }
         } else if (entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO && getDocument() != null) {
             TLRPC.Document document = getDocument();
             document.mime_type = TextUtils.isEmpty(entry.mimeType)
@@ -1113,6 +1137,25 @@ public class MessageObject {
             state = forkSecureMediaUiCache.get(messageOwner.message);
         }
         if (state == null) {
+            if (messageOwner != null && !TextUtils.isEmpty(messageOwner.message) && ApplicationLoader.applicationContext != null) {
+                try {
+                    org.telegram.secureoverlay.SecureMediaIndex secureMediaIndex =
+                            new org.telegram.secureoverlay.SecureMediaIndex(
+                                    ApplicationLoader.applicationContext,
+                                    currentAccount,
+                                    getDialogId());
+                    org.telegram.secureoverlay.SecureMediaIndex.Entry entry =
+                            secureMediaIndex.find(getId(), messageOwner.message);
+                    if (entry != null && !TextUtils.isEmpty(entry.plaintextPath)) {
+                        File f = new File(entry.plaintextPath);
+                        if (f.isFile()) {
+                            applyForkSecureMediaIndex(entry);
+                            return;
+                        }
+                    }
+                } catch (Throwable ignore) {
+                }
+            }
             return;
         }
         if (!TextUtils.isEmpty(state.path) && !TextUtils.equals(forkSecureMediaPath, state.path) && state.fileSize <= 0 && !new File(state.path).isFile()) {
@@ -1371,6 +1414,12 @@ public class MessageObject {
             if (hasFile) {
                 mediaExists = true;
                 attachPathExists = true;
+                if (getDocument() != null) {
+                    getDocument().localPath = state.path;
+                }
+                if (messageOwner != null) {
+                    messageOwner.attachPath = state.path;
+                }
             }
         } else if (state.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
                 || (!TextUtils.isEmpty(state.mime) && state.mime.startsWith("video/"))) {
@@ -1425,6 +1474,12 @@ public class MessageObject {
             if (hasFile) {
                 mediaExists = true;
                 attachPathExists = true;
+                if (getDocument() != null) {
+                    getDocument().localPath = state.path;
+                }
+                if (messageOwner != null) {
+                    messageOwner.attachPath = state.path;
+                }
             }
         } else if (state.kind == FORK_SECURE_MEDIA_KIND_FILE) {
             type = TYPE_FILE;

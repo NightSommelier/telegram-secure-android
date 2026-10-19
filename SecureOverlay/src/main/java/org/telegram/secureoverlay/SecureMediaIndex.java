@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -264,6 +265,30 @@ public final class SecureMediaIndex {
             blobs.deletePrefixes(scopedPrefix);
         } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
             throw new SecureMediaIndexException("cannot clear secure media index", e);
+        }
+    }
+
+    public static List<Entry> listAllForAccount(Context context, int account) {
+        if (context == null || account < 0) {
+            return Collections.emptyList();
+        }
+        String prefix = PREFIX + account + '.';
+        try {
+            KeystoreEncryptedBlobStore store = new KeystoreEncryptedBlobStore(context.getApplicationContext());
+            Map<String, byte[]> records = store.snapshotPrefixes(prefix);
+            ArrayList<Entry> result = new ArrayList<>();
+            for (byte[] encoded : records.values()) {
+                try {
+                    Entry entry = decode(encoded);
+                    if (entry != null) {
+                        result.add(entry);
+                    }
+                } catch (Exception ignore) {
+                }
+            }
+            return result;
+        } catch (Throwable e) {
+            return Collections.emptyList();
         }
     }
 

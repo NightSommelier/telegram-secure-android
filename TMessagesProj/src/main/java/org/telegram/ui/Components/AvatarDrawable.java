@@ -28,6 +28,7 @@ import android.text.TextUtils;
 import androidx.core.graphics.ColorUtils;
 
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.ChatObject;
 import org.telegram.messenger.Emoji;
 import org.telegram.messenger.FileLog;
@@ -101,6 +102,9 @@ public class AvatarDrawable extends Drawable {
     public static final int AVATAR_TYPE_PREMIUM = 25;
     public static final int AVATAR_TYPE_STARS = 26;
     public static final int AVATAR_TYPE_SUGGESTION = 27;
+    public static final int AVATAR_TYPE_ENCRYPTED_CHATS = 28;
+
+    private static Drawable encryptedChatsDrawable;
 
     /**
      * Matches {@link org.telegram.ui.Components.AvatarConstructorFragment#defaultColors}
@@ -261,6 +265,10 @@ public class AvatarDrawable extends Drawable {
             hasGradient = true;
             color = getThemedColor(Theme.key_avatar_backgroundSaved);
             color2 = getThemedColor(Theme.key_avatar_background2Saved);
+        } else if (avatarType == AVATAR_TYPE_ENCRYPTED_CHATS) {
+            hasGradient = true;
+            color = getThemedColor(Theme.keys_avatar_background[3]);
+            color2 = getThemedColor(Theme.keys_avatar_background2[3]);
         } else if (avatarType == AVATAR_TYPE_STORY) {
             rotate45Background = true;
             hasGradient = true;
@@ -327,7 +335,7 @@ public class AvatarDrawable extends Drawable {
             color = getThemedColor(Theme.keys_avatar_background[getColorIndex(4)]);
             color2 = getThemedColor(Theme.keys_avatar_background2[getColorIndex(4)]);
         }
-        needApplyColorAccent = avatarType != AVATAR_TYPE_ARCHIVED && avatarType != AVATAR_TYPE_SAVED && avatarType != AVATAR_TYPE_STORY && avatarType != AVATAR_TYPE_ANONYMOUS && avatarType != AVATAR_TYPE_SUGGESTION && avatarType != AVATAR_TYPE_REPLIES && avatarType != AVATAR_TYPE_OTHER_CHATS;
+        needApplyColorAccent = avatarType != AVATAR_TYPE_ARCHIVED && avatarType != AVATAR_TYPE_SAVED && avatarType != AVATAR_TYPE_STORY && avatarType != AVATAR_TYPE_ANONYMOUS && avatarType != AVATAR_TYPE_SUGGESTION && avatarType != AVATAR_TYPE_REPLIES && avatarType != AVATAR_TYPE_OTHER_CHATS && avatarType != AVATAR_TYPE_ENCRYPTED_CHATS;
     }
 
     public void setArchivedAvatarHiddenProgress(float progress) {
@@ -654,6 +662,11 @@ public class AvatarDrawable extends Drawable {
                 drawable = Theme.avatarDrawables[11];
             } else if (avatarType == AVATAR_TYPE_OTHER_CHATS) {
                 drawable = Theme.avatarDrawables[12];
+            } else if (avatarType == AVATAR_TYPE_ENCRYPTED_CHATS) {
+                if (encryptedChatsDrawable == null && ApplicationLoader.applicationContext != null) {
+                    encryptedChatsDrawable = ApplicationLoader.applicationContext.getResources().getDrawable(R.drawable.list_secret);
+                }
+                drawable = encryptedChatsDrawable;
             } else if (avatarType == AVATAR_TYPE_CLOSE_FRIENDS) {
                 drawable = Theme.avatarDrawables[13];
             } else if (avatarType == AVATAR_TYPE_GIFT) {

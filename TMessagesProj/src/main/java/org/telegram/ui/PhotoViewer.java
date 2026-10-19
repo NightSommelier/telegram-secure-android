@@ -5458,6 +5458,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                                         }
                                         cell.setPadding(LocaleController.isRTL ? dp(16) : dp(8), 0, LocaleController.isRTL ? dp(8) : dp(16), 0);
                                         frameLayout.addView(cell, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 48, Gravity.TOP | Gravity.LEFT, 0, 0, 0, 0));
+                                        if (currentUser != null && org.telegram.secureoverlay.SecureChatEngine.hasLocalState(ApplicationLoader.applicationContext, currentAccount, currentUser.id)) {
+                                            deleteForAll[0] = true;
+                                            cell.setChecked(true, false);
+                                        }
                                         cell.setOnClickListener(v -> {
                                             CheckBoxCell cell1 = (CheckBoxCell) v;
                                             deleteForAll[0] = !deleteForAll[0];
@@ -17432,6 +17436,15 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (messageObject == null || file == null || !file.isFile()) {
             return false;
         }
+        if (TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+            messageObject.forkSecureMediaPath = file.getAbsolutePath();
+        }
+        if (messageObject.getDocument() != null) {
+            messageObject.getDocument().localPath = file.getAbsolutePath();
+        }
+        if (messageObject.messageOwner != null) {
+            messageObject.messageOwner.attachPath = file.getAbsolutePath();
+        }
         Pair<Integer, Integer> orientation = AndroidUtilities.getImageOrientation(file);
         MediaController.PhotoEntry entry = new MediaController.PhotoEntry(
                 0,
@@ -17488,6 +17501,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         if (TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
             messageObject.forkSecureMediaPath = file.getAbsolutePath();
+        }
+        if (messageObject.getDocument() != null) {
+            messageObject.getDocument().localPath = file.getAbsolutePath();
+        }
+        if (messageObject.messageOwner != null) {
+            messageObject.messageOwner.attachPath = file.getAbsolutePath();
         }
         Pair<Integer, Integer> orientation = AndroidUtilities.getImageOrientation(file);
         TLRPC.TL_documentAttributeVideo videoAttribute =
@@ -17723,7 +17742,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), "fork-secure-thumbnails");
         File thumbnail = new File(directory, digest + ".jpg");
         if (thumbnail.isFile() && thumbnail.length() > 0) {
-            SecureMediaCache.touchAndPrune(thumbnail, 80, 32L * 1024L * 1024L);
+            SecureMediaCache.touchAndPrune(thumbnail, 4096, 256L * 1024L * 1024L);
             return thumbnail.getAbsolutePath();
         }
         synchronized (forkSecureViewerThumbsInFlight) {
@@ -17746,7 +17765,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                             }
                             if (thumbnail.isFile()) {
                                 SecureMediaCache.touchAndPrune(
-                                        thumbnail, 80, 32L * 1024L * 1024L);
+                                        thumbnail, 4096, 256L * 1024L * 1024L);
                                 generated = true;
                             }
                         }

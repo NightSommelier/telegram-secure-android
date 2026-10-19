@@ -63,6 +63,7 @@ import org.telegram.ui.Components.ColoredImageSpan;
 import org.telegram.ui.Components.CombinedDrawable;
 import org.telegram.ui.Components.CubicBezierInterpolator;
 import org.telegram.ui.Components.FlickerLoadingView;
+import org.telegram.ui.Components.RadialProgressView;
 import org.telegram.ui.Components.Shaker;
 import org.telegram.ui.Components.Text;
 import org.telegram.ui.Components.spoilers.SpoilerEffect;
@@ -76,6 +77,9 @@ import java.io.File;
 import java.util.HashMap;
 
 public class SharedPhotoVideoCell2 extends FrameLayout {
+
+    private RadialProgressView preloader;
+    private final Paint preloaderCirclePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public int imageReceiverColor = 0;
     public ImageReceiver imageReceiverFullSize = new ImageReceiver();
@@ -287,6 +291,7 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
             return;
         }
         currentMessageObject = messageObject;
+        isForkSecure = messageObject != null && messageObject.isForkSecureCarrier();
         isStory = currentMessageObject != null && currentMessageObject.isStory();
         isStoryUploading = currentMessageObject != null && currentMessageObject.uploadingStory != null;
         updateSpoilers2();
@@ -352,6 +357,9 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
         }
         viewsAlpha.set(drawViews ? 1f : 0f, true);
         Object parentObject = messageObject.parentStoriesList != null ? messageObject.storyItem : messageObject;
+        if (messageObject.isForkSecureCarrier() && TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+            messageObject.restoreReadyForkSecureMedia();
+        }
         if (!TextUtils.isEmpty(restrictionReason)) {
             showImageStub = true;
         } else if (messageObject.forkSecureVerified
@@ -462,7 +470,11 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
                     }
                 }
             } else {
-                showImageStub = true;
+                if (!messageObject.isForkSecureCarrier()) {
+                    showImageStub = true;
+                } else {
+                    imageReceiver.clearImage();
+                }
             }
         }
 
@@ -609,6 +621,14 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
     private final RectF bounds = new RectF();
     private final Paint forkSecureBadgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Drawable forkSecureLockDrawable;
+    private boolean isForkSecure;
+
+    public void setForkSecure(boolean forkSecure) {
+        if (this.isForkSecure != forkSecure) {
+            this.isForkSecure = forkSecure;
+            invalidate();
+        }
+    }
 
     @Override
     protected void onDraw(@NonNull Canvas canvas) {
@@ -618,7 +638,7 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
     }
 
     private void drawForkSecureBadge(Canvas canvas) {
-        if (currentMessageObject == null
+        if (!isForkSecure && (currentMessageObject == null
                 || !currentMessageObject.forkSecureVerified
                 || !(currentMessageObject.forkSecureMediaKind
                         == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
@@ -628,7 +648,7 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
                                 && currentMessageObject.forkSecureMediaMime.startsWith("video/")
                                 || currentMessageObject.isGif()
                                 || currentMessageObject.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
-                                || "image/gif".equalsIgnoreCase(currentMessageObject.forkSecureMediaMime)))) {
+                                || "image/gif".equalsIgnoreCase(currentMessageObject.forkSecureMediaMime))))) {
             return;
         }
         float centerX = dp(16);
@@ -649,6 +669,45 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
                 (int) centerX + halfWidth,
                 (int) centerY + halfHeight);
         forkSecureLockDrawable.draw(canvas);
+    }
+
+    private void drawPreloader(Canvas canvas, float cx, float cy) {
+        if (currentMessageObject == null && style != STYLE_CACHE) {
+            return;
+        }
+        if (imageReceiver.hasImageLoaded() && imageReceiver.getCurrentAlpha() >= 1.0f) {
+            return;
+        }
+        float alpha = 1.0f;
+        if (imageReceiver.hasImageLoaded()) {
+            alpha = Math.max(0f, 1.0f - imageReceiver.getCurrentAlpha());
+        }
+        if (alpha <= 0f) {
+            return;
+        }
+
+        if (preloader == null) {
+            preloader = new RadialProgressView(getContext()) {
+                @Override
+                public void invalidate() {
+                    SharedPhotoVideoCell2.this.invalidate();
+                }
+            };
+            preloader.setUseSelfAlpha(true);
+            preloader.setSize(dp(24));
+            preloader.setStrokeWidth(2.2f);
+            preloader.setProgressColor(0xffffffff);
+            preloaderCirclePaint.setColor(0x55000000);
+        }
+
+        int circleAlpha = (int) (0x55 * alpha);
+        if (circleAlpha > 0) {
+            preloaderCirclePaint.setAlpha(circleAlpha);
+            canvas.drawCircle(cx, cy, dp(18), preloaderCirclePaint);
+        }
+
+        preloader.setAlpha(alpha);
+        preloader.draw(canvas, cx, cy);
     }
 
     private void drawImpl(Canvas canvas, boolean useFullSize, float sizeProgress, float receiverAlpha, float customsAlpha) {
@@ -680,6 +739,8 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
                     padPlus += 1;
                 }
                 canvas.drawRect(leftpadding + padPlus, padding + padPlus, leftpadding + padPlus + imageWidth, padding + padPlus + imageHeight, globalGradientView.getPaint());
+            } else if (!imageReceiver.hasImageLoaded() && sharedResources != null) {
+                canvas.drawRect(leftpadding, padding, leftpadding + imageWidth, padding + imageHeight, sharedResources.backgroundPaint);
             }
             invalidate();
         }
@@ -743,6 +804,7 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
         }
         if (!PhotoViewer.isShowingImage(currentMessageObject)) {
             imageReceiver.draw(canvas);
+            drawPreloader(canvas, imageReceiver.getCenterX(), imageReceiver.getCenterY());
             if (currentMessageObject != null && currentMessageObject.hasMediaSpoilers() && !currentMessageObject.isMediaSpoilersRevealedInSharedMedia) {
                 canvas.save();
                 canvas.clipRect(leftpadding, toppadding, leftpadding + imageWidth - rightpadding, toppadding + imageHeight - bottompadding);

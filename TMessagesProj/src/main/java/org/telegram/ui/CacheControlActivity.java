@@ -69,7 +69,9 @@ import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SharedConfig;
+import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.Utilities;
+import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.ActionBarMenu;
@@ -116,7 +118,9 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
 
 public class CacheControlActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
@@ -141,8 +145,10 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
     public static final int KEEP_MEDIA_TYPE_GROUP = 1;
     public static final int KEEP_MEDIA_TYPE_CHANNEL = 2;
     public static final int KEEP_MEDIA_TYPE_STORIES = 3;
+    public static final int KEEP_MEDIA_TYPE_ENCRYPTED = 4;
 
     public static final long UNKNOWN_CHATS_DIALOG_ID = Long.MAX_VALUE;
+    public static final long ENCRYPTED_CHATS_DIALOG_ID = Long.MAX_VALUE - 1;
 
 
     private ListAdapter listAdapter;
@@ -219,6 +225,133 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
         }
     }
 
+    public static ArrayList<File> getForkSecureDirectories() {
+        ArrayList<File> dirs = new ArrayList<>();
+        Context context = ApplicationLoader.applicationContext;
+        if (context == null) {
+            return dirs;
+        }
+        File[] bases = new File[] { context.getCacheDir(), context.getExternalCacheDir() };
+        String[] subnames = new String[] {
+            "fork-secure-attachments-in",
+            "fork-secure-media-in",
+            "fork-secure-thumbnails",
+            "fork-secure-media-out",
+            "fork-secure-attachments-out",
+            "fork-secure-source"
+        };
+        for (File base : bases) {
+            if (base == null) {
+                continue;
+            }
+            for (String sub : subnames) {
+                File dir = new File(base, sub);
+                if (dir.exists() && dir.isDirectory()) {
+                    dirs.add(dir);
+                }
+            }
+        }
+        return dirs;
+    }
+
+    public static int getForkSecureFileType(File file) {
+        if (file == null) {
+            return TYPE_OTHER;
+        }
+        String path = file.getAbsolutePath();
+        String name = file.getName().toLowerCase();
+        if (path.contains("fork-secure-thumbnails")) {
+            return TYPE_PHOTOS;
+        }
+        if (name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png") || name.endsWith(".webp") || name.endsWith(".heic")) {
+            return TYPE_PHOTOS;
+        }
+        if (name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".mov") || name.endsWith(".avi") || name.endsWith(".webm")) {
+            return TYPE_VIDEOS;
+        }
+        if (name.endsWith(".mp3") || name.endsWith(".m4a")) {
+            return TYPE_MUSIC;
+        }
+        if (name.endsWith(".ogg") || name.endsWith(".oga") || name.endsWith(".wav") || name.endsWith(".opus") || name.endsWith(".aac") || name.endsWith(".flac")) {
+            return TYPE_VOICE;
+        }
+        if (name.endsWith(".tgs")) {
+            return TYPE_ANIMATED_STICKERS_CACHE;
+        }
+        if (name.endsWith(".bin") || name.startsWith("fork_secure_") || path.contains("fork-secure-")) {
+            return TYPE_OTHER;
+        }
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) {
+            return TYPE_OTHER;
+        }
+        return TYPE_DOCUMENTS;
+    }
+
+    private static void addForkSecureSizes(long[] sizes) {
+        HashMap<String, Integer> pathToKind = new HashMap<>();
+        try {
+            List<org.telegram.secureoverlay.SecureMediaIndex.Entry> entries =
+                    org.telegram.secureoverlay.SecureMediaIndex.listAllForAccount(
+                            ApplicationLoader.applicationContext, UserConfig.selectedAccount);
+            if (entries != null) {
+                for (org.telegram.secureoverlay.SecureMediaIndex.Entry e : entries) {
+                    if (!TextUtils.isEmpty(e.plaintextPath)) {
+                        pathToKind.put(e.plaintextPath, e.kind);
+                    }
+                }
+            }
+        } catch (Throwable ignore) {
+        }
+        for (File secureDir : getForkSecureDirectories()) {
+            File[] files = secureDir.listFiles();
+            if (files == null) {
+                continue;
+            }
+            for (File f : files) {
+                if (f.isFile() && !f.getName().equals(".nomedia")) {
+                    long len = f.length();
+                    Integer kind = pathToKind.get(f.getAbsolutePath());
+                    int fType;
+                    if (kind != null) {
+                        if (kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_PHOTO) {
+                            fType = TYPE_PHOTOS;
+                        } else if (kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_VIDEO || kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_ROUND_VIDEO) {
+                            fType = TYPE_VIDEOS;
+                        } else if (kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_VOICE) {
+                            fType = TYPE_VOICE;
+                        } else if (kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_MUSIC) {
+                            fType = TYPE_MUSIC;
+                        } else {
+                            fType = TYPE_DOCUMENTS;
+                        }
+                    } else {
+                        fType = getForkSecureFileType(f);
+                    }
+                    if (fType == TYPE_PHOTOS) {
+                        sizes[0] += len;
+                    } else if (fType == TYPE_VIDEOS) {
+                        sizes[1] += len;
+                    } else if (fType == TYPE_DOCUMENTS) {
+                        sizes[2] += len;
+                    } else if (fType == TYPE_MUSIC) {
+                        sizes[3] += len;
+                    } else if (fType == TYPE_VOICE) {
+                        sizes[4] += len;
+                    } else if (fType == TYPE_ANIMATED_STICKERS_CACHE) {
+                        sizes[5] += len;
+                    } else {
+                        if (sizes.length > 6) {
+                            sizes[6] += len;
+                        } else {
+                            sizes[5] += len;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private static long lastTotalSizeCalculatedTime;
     private static Long lastTotalSizeCalculated;
     private static Long lastDeviceTotalSize, lastDeviceTotalFreeSize;
@@ -253,6 +386,15 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
             if (!BuildVars.DEBUG_VERSION && logsSize < 1024 * 1024 * 256) {
                 logsSize = 0;
             }
+            long[] secureSizes = new long[7];
+            addForkSecureSizes(secureSizes);
+            photoSize += secureSizes[0];
+            videoSize += secureSizes[1];
+            documentsSize += secureSizes[2];
+            musicSize += secureSizes[3];
+            audioSize += secureSizes[4];
+            stickersCacheSize += secureSizes[5];
+            cacheTempSize += secureSizes[6];
             final long totalSize = lastTotalSizeCalculated = cacheSize + cacheTempSize + videoSize + audioSize + photoSize + documentsSize + musicSize + stickersCacheSize + storiesSize + logsSize;
             lastTotalSizeCalculatedTime = System.currentTimeMillis();
             if (!canceled) {
@@ -366,6 +508,15 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
             if (canceled) {
                 return;
             }
+            long[] secureSizes = new long[7];
+            addForkSecureSizes(secureSizes);
+            photoSize += secureSizes[0];
+            videoSize += secureSizes[1];
+            documentsSize += secureSizes[2];
+            musicSize += secureSizes[3];
+            audioSize += secureSizes[4];
+            stickersCacheSize += secureSizes[5];
+            cacheTempSize += secureSizes[6];
             totalSize = lastTotalSizeCalculated = cacheSize + cacheTempSize + videoSize + logsSize + audioSize + photoSize + documentsSize + musicSize + storiesSize + stickersCacheSize;
             lastTotalSizeCalculatedTime = System.currentTimeMillis();
 
@@ -447,18 +598,48 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
             CacheModel cacheModel = new CacheModel(false);
             LongSparseArray<DialogFileEntities> dilogsFilesEntities = new LongSparseArray<>();
 
-            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_CACHE), TYPE_OTHER, dilogsFilesEntities, cacheModel);
+            List<org.telegram.secureoverlay.SecureMediaIndex.Entry> secureEntries = null;
+            try {
+                secureEntries = org.telegram.secureoverlay.SecureMediaIndex.listAllForAccount(
+                        ApplicationLoader.applicationContext, currentAccount);
+            } catch (Throwable ignore) {
+            }
+            HashMap<String, org.telegram.secureoverlay.SecureMediaIndex.Entry> pathEntryMap = new HashMap<>();
+            SparseArray<org.telegram.secureoverlay.SecureMediaIndex.Entry> messageIdEntryMap = new SparseArray<>();
+            if (secureEntries != null) {
+                for (org.telegram.secureoverlay.SecureMediaIndex.Entry entry : secureEntries) {
+                    if (!TextUtils.isEmpty(entry.plaintextPath)) {
+                        pathEntryMap.put(entry.plaintextPath, entry);
+                    }
+                    if (entry.messageId > 0) {
+                        messageIdEntryMap.put(entry.messageId, entry);
+                    }
+                }
+            }
 
-            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_IMAGE), TYPE_PHOTOS, dilogsFilesEntities, cacheModel);
-            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_IMAGE_PUBLIC), TYPE_PHOTOS, dilogsFilesEntities, cacheModel);
+            LongSparseArray<FilePathDatabase.FileMeta> docIdToFileMeta = null;
+            try {
+                docIdToFileMeta = getFileLoader().getFileDatabase().getDocIdToFileMetaMap();
+            } catch (Throwable ignore) {
+            }
 
-            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_VIDEO), TYPE_VIDEOS, dilogsFilesEntities, cacheModel);
-            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_VIDEO_PUBLIC), TYPE_VIDEOS, dilogsFilesEntities, cacheModel);
+            HashSet<String> visitedDirs = new HashSet<>();
+            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_CACHE), TYPE_OTHER, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
 
-            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_AUDIO), TYPE_VOICE, dilogsFilesEntities, cacheModel);
-            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_STORIES), TYPE_OTHER, dilogsFilesEntities, cacheModel);
-            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_DOCUMENT), TYPE_DOCUMENTS, dilogsFilesEntities, cacheModel);
-            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_FILES), TYPE_DOCUMENTS, dilogsFilesEntities, cacheModel);
+            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_IMAGE), TYPE_PHOTOS, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
+            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_IMAGE_PUBLIC), TYPE_PHOTOS, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
+
+            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_VIDEO), TYPE_VIDEOS, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
+            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_VIDEO_PUBLIC), TYPE_VIDEOS, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
+
+            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_AUDIO), TYPE_VOICE, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
+            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_STORIES), TYPE_OTHER, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
+            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_DOCUMENT), TYPE_DOCUMENTS, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
+            fillDialogsEntitiesRecursive(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_FILES), TYPE_DOCUMENTS, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
+
+            for (File secureDir : getForkSecureDirectories()) {
+                fillDialogsEntitiesRecursive(secureDir, TYPE_OTHER, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
+            }
 
             ArrayList<DialogFileEntities> entities = new ArrayList<>();
             ArrayList<Long> unknownUsers = new ArrayList<>();
@@ -504,10 +685,23 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                     getMessagesController().putUsers(users, true);
                     getMessagesController().putChats(chats, true);
                     DialogFileEntities unknownChatsEntity = null;
+                    DialogFileEntities encryptedChatsEntity = null;
                     for (int i = 0; i < entities.size(); i++) {
                         DialogFileEntities dialogEntities = entities.get(i);
                         boolean changed = false;
-                        if (getMessagesController().getUserOrChat(dialogEntities.dialogId) == null) {
+                        if (dialogEntities.dialogId == ENCRYPTED_CHATS_DIALOG_ID) {
+                            if (encryptedChatsEntity != null) {
+                                changed = true;
+                                encryptedChatsEntity.merge(dialogEntities);
+                                entities.remove(i);
+                                i--;
+                            } else {
+                                encryptedChatsEntity = dialogEntities;
+                            }
+                            if (changed) {
+                                sort(entities);
+                            }
+                        } else if (dialogEntities.dialogId == UNKNOWN_CHATS_DIALOG_ID || getMessagesController().getUserOrChat(dialogEntities.dialogId) == null) {
                             dialogEntities.dialogId = UNKNOWN_CHATS_DIALOG_ID;
                             if (unknownChatsEntity != null) {
                                 changed = true;
@@ -562,7 +756,22 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
     }
 
     public void fillDialogsEntitiesRecursive(final File fromFolder, int type, LongSparseArray<DialogFileEntities> dilogsFilesEntities, CacheModel cacheModel) {
-        if (fromFolder == null) {
+        fillDialogsEntitiesRecursive(fromFolder, type, dilogsFilesEntities, cacheModel, null, null, null, null);
+    }
+
+    public void fillDialogsEntitiesRecursive(final File fromFolder, int type, LongSparseArray<DialogFileEntities> dilogsFilesEntities, CacheModel cacheModel, HashSet<String> visitedDirs) {
+        fillDialogsEntitiesRecursive(fromFolder, type, dilogsFilesEntities, cacheModel, visitedDirs, null, null, null);
+    }
+
+    public void fillDialogsEntitiesRecursive(final File fromFolder, int type, LongSparseArray<DialogFileEntities> dilogsFilesEntities, CacheModel cacheModel, HashSet<String> visitedDirs, HashMap<String, org.telegram.secureoverlay.SecureMediaIndex.Entry> pathEntryMap, SparseArray<org.telegram.secureoverlay.SecureMediaIndex.Entry> messageIdEntryMap) {
+        fillDialogsEntitiesRecursive(fromFolder, type, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, null);
+    }
+
+    public void fillDialogsEntitiesRecursive(final File fromFolder, int type, LongSparseArray<DialogFileEntities> dilogsFilesEntities, CacheModel cacheModel, HashSet<String> visitedDirs, HashMap<String, org.telegram.secureoverlay.SecureMediaIndex.Entry> pathEntryMap, SparseArray<org.telegram.secureoverlay.SecureMediaIndex.Entry> messageIdEntryMap, LongSparseArray<FilePathDatabase.FileMeta> docIdToFileMeta) {
+        if (fromFolder == null || !fromFolder.exists()) {
+            return;
+        }
+        if (visitedDirs != null && !visitedDirs.add(fromFolder.getAbsolutePath())) {
             return;
         }
         File[] files = fromFolder.listFiles();
@@ -574,16 +783,22 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                 return;
             }
             if (fileEntry.isDirectory()) {
-                fillDialogsEntitiesRecursive(fileEntry, type, dilogsFilesEntities, cacheModel);
+                fillDialogsEntitiesRecursive(fileEntry, type, dilogsFilesEntities, cacheModel, visitedDirs, pathEntryMap, messageIdEntryMap, docIdToFileMeta);
             } else {
                 if (fileEntry.getName().equals(".nomedia")) {
                     continue;
                 }
                 FilePathDatabase.FileMeta fileMetadata = getFileLoader().getFileDatabase().getFileDialogId(fileEntry, null);
+                long docId = FilePathDatabase.parseDocIdFromPath(fileEntry.getName());
+                if ((fileMetadata == null || fileMetadata.messageId <= 0) && docId != 0 && docIdToFileMeta != null) {
+                    fileMetadata = docIdToFileMeta.get(docId);
+                }
                 int addToType = type;
                 String fileName = fileEntry.getName().toLowerCase();
-                if (fileName.endsWith(".mp3") || fileName.endsWith(".m4a") ) {
+                if (fileName.endsWith(".mp3") || fileName.endsWith(".m4a")) {
                     addToType = TYPE_MUSIC;
+                } else if (fileName.endsWith(".ogg") || fileName.endsWith(".opus") || fileName.endsWith(".oga") || fileName.endsWith(".wav") || fileName.endsWith(".aac") || fileName.endsWith(".flac")) {
+                    addToType = TYPE_VOICE;
                 }
                 CacheModel.FileInfo fileInfo = new CacheModel.FileInfo(fileEntry);
                 fileInfo.size = fileEntry.length();
@@ -593,6 +808,73 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                     fileInfo.messageType = fileMetadata.messageType;
                     if (fileInfo.messageType == MessageObject.TYPE_STORY && fileInfo.size > 0) {
                         addToType = TYPE_STORIES;
+                    } else if (fileInfo.messageType == MessageObject.TYPE_VOICE) {
+                        addToType = TYPE_VOICE;
+                    } else if (fileInfo.messageType == MessageObject.TYPE_MUSIC) {
+                        addToType = TYPE_MUSIC;
+                    } else if (fileInfo.messageType == MessageObject.TYPE_PHOTO) {
+                        addToType = TYPE_PHOTOS;
+                    } else if (fileInfo.messageType == MessageObject.TYPE_VIDEO || fileInfo.messageType == MessageObject.TYPE_ROUND_VIDEO) {
+                        addToType = TYPE_VIDEOS;
+                    }
+                }
+                boolean isForkSecure = fileEntry.getAbsolutePath().contains("fork-secure-")
+                        || fileName.startsWith("fork_secure_")
+                        || fileName.contains("fork_secure")
+                        || fileName.endsWith(".bin");
+
+                org.telegram.secureoverlay.SecureMediaIndex.Entry secureEntry = null;
+                if (pathEntryMap != null) {
+                    secureEntry = pathEntryMap.get(fileEntry.getAbsolutePath());
+                }
+                if (secureEntry == null && messageIdEntryMap != null && fileInfo.messageId > 0) {
+                    secureEntry = messageIdEntryMap.get(fileInfo.messageId);
+                }
+                boolean isCarrierCiphertext = false;
+                if (secureEntry != null) {
+                    isForkSecure = true;
+                    fileInfo.customFileName = secureEntry.fileName;
+                    fileInfo.forkSecurePlaintextPath = secureEntry.plaintextPath;
+                    if (secureEntry.kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_PHOTO || secureEntry.kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_GIF) {
+                        addToType = TYPE_PHOTOS;
+                    } else if (secureEntry.kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_VIDEO || secureEntry.kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_ROUND_VIDEO) {
+                        addToType = TYPE_VIDEOS;
+                    } else if (secureEntry.kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_VOICE) {
+                        addToType = TYPE_VOICE;
+                    } else if (secureEntry.kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_MUSIC) {
+                        addToType = TYPE_MUSIC;
+                    } else if (secureEntry.kind == org.telegram.secureoverlay.SecureMediaIndex.KIND_FILE) {
+                        if (!TextUtils.isEmpty(secureEntry.mimeType) && secureEntry.mimeType.startsWith("video/")) {
+                            addToType = TYPE_VIDEOS;
+                        } else if (!TextUtils.isEmpty(secureEntry.mimeType) && secureEntry.mimeType.startsWith("image/")) {
+                            addToType = TYPE_PHOTOS;
+                        } else if (!TextUtils.isEmpty(secureEntry.mimeType) && secureEntry.mimeType.startsWith("audio/")) {
+                            addToType = TYPE_MUSIC;
+                        } else {
+                            addToType = TYPE_DOCUMENTS;
+                        }
+                    }
+                    if (!TextUtils.isEmpty(secureEntry.plaintextPath) && !fileEntry.getAbsolutePath().equals(secureEntry.plaintextPath)) {
+                        isCarrierCiphertext = true;
+                    }
+                }
+                fileInfo.isForkSecure = isForkSecure;
+                if (isForkSecure) {
+                    if (secureEntry == null) {
+                        addToType = getForkSecureFileType(fileEntry);
+                    }
+                    if (fileInfo.dialogId == 0) {
+                        fileInfo.dialogId = ENCRYPTED_CHATS_DIALOG_ID;
+                    }
+                }
+
+                if (addToType == TYPE_DOCUMENTS) {
+                    if (isForkSecure) {
+                        if (secureEntry == null || secureEntry.kind != org.telegram.secureoverlay.SecureMediaIndex.KIND_FILE || TextUtils.isEmpty(fileInfo.customFileName)) {
+                            addToType = TYPE_OTHER;
+                        }
+                    } else if (fileName.endsWith(".bin") || !fileName.contains(".")) {
+                        addToType = TYPE_OTHER;
                     }
                 }
                 fileInfo.type = addToType;
@@ -605,15 +887,15 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                     }
                     dilogEntites.addFile(fileInfo, addToType);
                 }
-                if (cacheModel != null && addToType != TYPE_OTHER) {
+
+                boolean skipCacheModel = false;
+                if (isCarrierCiphertext && secureEntry != null && !TextUtils.isEmpty(secureEntry.plaintextPath) && new File(secureEntry.plaintextPath).exists()) {
+                    skipCacheModel = true;
+                }
+
+                if (cacheModel != null && addToType != TYPE_OTHER && !skipCacheModel) {
                     cacheModel.add(addToType, fileInfo);
                 }
-                //TODO measure for other accounts
-//                for (int i = 0; i < UserConfig.MAX_ACCOUNT_COUNT; i++) {
-//                    if (i != currentAccount && UserConfig.getInstance(currentAccount).isClientActivated()) {
-//                        FileLoader.getInstance(currentAccount).getFileDatabase().getFileDialogId(fileEntry);
-//                    }
-//                }
             }
         }
     }
@@ -758,6 +1040,7 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
         itemInners.add(new ItemInner(VIEW_TYPE_KEEP_MEDIA_CELL, KEEP_MEDIA_TYPE_GROUP));
         itemInners.add(new ItemInner(VIEW_TYPE_KEEP_MEDIA_CELL, KEEP_MEDIA_TYPE_CHANNEL));
         itemInners.add(new ItemInner(VIEW_TYPE_KEEP_MEDIA_CELL, KEEP_MEDIA_TYPE_STORIES));
+        itemInners.add(new ItemInner(VIEW_TYPE_KEEP_MEDIA_CELL, KEEP_MEDIA_TYPE_ENCRYPTED));
         itemInners.add(ItemInner.asInfo(LocaleController.getString(R.string.KeepMediaInfoPart)));
 
         if (totalDeviceSize > 0) {
@@ -937,6 +1220,50 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
         }
     }
 
+    private void cleanForkSecureFiles(int selectedIndex) {
+        int targetType = -1;
+        if (selectedIndex == 0) {
+            targetType = TYPE_PHOTOS;
+        } else if (selectedIndex == 1) {
+            targetType = TYPE_VIDEOS;
+        } else if (selectedIndex == 2) {
+            targetType = TYPE_DOCUMENTS;
+        } else if (selectedIndex == 3) {
+            targetType = TYPE_MUSIC;
+        } else if (selectedIndex == 4) {
+            targetType = TYPE_VOICE;
+        } else if (selectedIndex == 6) {
+            targetType = TYPE_ANIMATED_STICKERS_CACHE;
+        } else if (selectedIndex == 7 || selectedIndex == 8) {
+            targetType = TYPE_OTHER;
+        }
+        if (targetType == -1) {
+            return;
+        }
+        boolean cleared = false;
+        for (File dir : getForkSecureDirectories()) {
+            File[] files = dir.listFiles();
+            if (files == null) {
+                continue;
+            }
+            for (File file : files) {
+                if (file.isDirectory() || file.getName().equals(".nomedia")) {
+                    continue;
+                }
+                int fileType = getForkSecureFileType(file);
+                if (targetType == TYPE_OTHER || fileType == targetType) {
+                    if (file.delete()) {
+                        cleared = true;
+                    }
+                }
+            }
+        }
+        if (cleared) {
+            SecureMediaIndex.clearMemoryCache();
+            MessageObject.clearForkSecureMediaUiCache();
+        }
+    }
+
     private void cleanupFoldersInternal(Utilities.Callback2<Float, Boolean> onProgress, Runnable onDone) {
         boolean imagesCleared = false;
         long clearedSize = 0;
@@ -956,6 +1283,7 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                 allItemsClear = false;
                 continue;
             }
+            cleanForkSecureFiles(a);
             int type = -1;
             int documentsMusicType = 0;
             if (a == 0) {
@@ -1081,6 +1409,14 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                 stickersCacheSize += cacheEmojiSize;
             }
         }
+        long[] secureSizes = new long[6];
+        addForkSecureSizes(secureSizes);
+        photoSize += secureSizes[0];
+        videoSize += secureSizes[1];
+        documentsSize += secureSizes[2];
+        musicSize += secureSizes[3];
+        audioSize += secureSizes[4];
+        stickersCacheSize += secureSizes[5];
         final boolean imagesClearedFinal = imagesCleared;
         totalSize = lastTotalSizeCalculated = cacheSize + cacheTempSize + logsSize + videoSize + audioSize + photoSize + documentsSize + musicSize + stickersCacheSize + storiesSize;
         lastTotalSizeCalculatedTime = System.currentTimeMillis();
@@ -1098,6 +1434,8 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
 
         if (allItemsClear) {
             FileLoader.getInstance(currentAccount).clearFilePaths();
+            SecureMediaIndex.clearMemoryCache();
+            MessageObject.clearForkSecureMediaUiCache();
         }
         FileLoader.getInstance(currentAccount).checkCurrentDownloadsFiles();
 
@@ -1426,6 +1764,9 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
         bottomSheet = new DialogCacheBottomSheet(CacheControlActivity.this, entities, entities.createCacheModel(), new DialogCacheBottomSheet.Delegate() {
             @Override
             public void onAvatarClick() {
+                if (entities.dialogId == UNKNOWN_CHATS_DIALOG_ID || entities.dialogId == ENCRYPTED_CHATS_DIALOG_ID) {
+                    return;
+                }
                 bottomSheet.dismiss();
                 Bundle args = new Bundle();
                 if (entities.dialogId > 0) {
@@ -1534,8 +1875,27 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
         getFileLoader().getFileDatabase().removeFiles(fileInfos);
         getFileLoader().cancelLoadAllFiles();
         getFileLoader().getFileLoaderQueue().postRunnable(() -> {
+            boolean clearedSecure = false;
             for (int i = 0; i < fileInfos.size(); i++) {
-                fileInfos.get(i).file.delete();
+                CacheModel.FileInfo fi = fileInfos.get(i);
+                if (fi != null && fi.forkSecurePlaintextPath != null) {
+                    try {
+                        new File(fi.forkSecurePlaintextPath).delete();
+                        clearedSecure = true;
+                    } catch (Throwable ignore) {
+                    }
+                }
+                File file = fi != null ? fi.file : null;
+                if (file != null && file.getAbsolutePath().contains("fork-secure-")) {
+                    clearedSecure = true;
+                }
+                if (file != null) {
+                    file.delete();
+                }
+            }
+            if (clearedSecure) {
+                SecureMediaIndex.clearMemoryCache();
+                MessageObject.clearForkSecureMediaUiCache();
             }
 
             AndroidUtilities.runOnUIThread(() -> {
@@ -2572,7 +2932,9 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                     } else if (itemInners.get(position).keepMediaType == KEEP_MEDIA_TYPE_CHANNEL) {
                         textCell2.setTextAndValueAndColorfulIcon(LocaleController.getString(R.string.CacheChannels), value, true, R.drawable.msg_filled_menu_channels, 0xFFF09F1B, 0xFFE18A11, true);
                     } else if (itemInners.get(position).keepMediaType == KEEP_MEDIA_TYPE_STORIES) {
-                        textCell2.setTextAndValueAndColorfulIcon(LocaleController.getString(R.string.CacheStories), value, false, R.drawable.msg_filled_stories, 0xFFF45255, 0xFFDF3955, false);
+                        textCell2.setTextAndValueAndColorfulIcon(LocaleController.getString(R.string.CacheStories), value, true, R.drawable.msg_filled_stories, 0xFFF45255, 0xFFDF3955, false);
+                    } else if (itemInners.get(position).keepMediaType == KEEP_MEDIA_TYPE_ENCRYPTED) {
+                        textCell2.setTextAndValueAndColorfulIcon(LocaleController.getString(R.string.CacheEncryptedStorage), value, false, R.drawable.msg_secret, 0xFF33C067, 0xFF1FAA59, true);
                     }
                     textCell2.setSubtitle(subtitle);
                     break;

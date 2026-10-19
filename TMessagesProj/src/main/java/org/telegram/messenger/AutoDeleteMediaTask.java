@@ -41,10 +41,10 @@ public class AutoDeleteMediaTask {
                 }
             }
 
-            int[] keepMediaByTypes = new int[4];
+            int[] keepMediaByTypes = new int[5];
             boolean allKeepMediaTypesForever = true;
             long keepMediaMinSeconds = Long.MAX_VALUE;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 5; i++) {
                 keepMediaByTypes[i] = SharedConfig.getPreferences().getInt("keep_media_type_" + i, CacheByChatsController.getDefault(i));
                 if (keepMediaByTypes[i] != CacheByChatsController.KEEP_MEDIA_FOREVER) {
                     allKeepMediaTypesForever = false;

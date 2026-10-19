@@ -43,6 +43,11 @@ public class DialogCacheBottomSheet extends BottomSheetWithRecyclerListView {
 
     @Override
     protected CharSequence getTitle() {
+        if (dialogId == CacheControlActivity.ENCRYPTED_CHATS_DIALOG_ID) {
+            return LocaleController.getString(R.string.CacheEncryptedChats);
+        } else if (dialogId == CacheControlActivity.UNKNOWN_CHATS_DIALOG_ID) {
+            return LocaleController.getString(R.string.CacheOtherChats);
+        }
         return getBaseFragment().getMessagesController().getFullName(dialogId);
     }
 

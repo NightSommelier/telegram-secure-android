@@ -712,7 +712,34 @@ public final class SecureChatEngine {
             throw new SecureChatException("secure chat is not paired", null);
         }
         byte[] content = SecureContentCodec.encodeDeleteControl(carrierDigests);
-        return encryptAndRemember(content, CONTROL_DELETE_DISPLAY);
+        String carrier = encryptAndRemember(content, CONTROL_DELETE_DISPLAY);
+        try {
+            localContent.rememberOutgoing(carrier, content);
+        } catch (Exception ignore) {
+        }
+        return carrier;
+    }
+
+    public List<byte[]> getDeleteControlDigests(String carrier) {
+        if (carrier == null || carrier.isEmpty()) {
+            return null;
+        }
+        try {
+            byte[] content = localContent.loadIncoming(carrier);
+            if (content == null) {
+                content = localContent.loadOutgoing(carrier);
+            }
+            if (content != null) {
+                SecureContentCodec.Decoded decoded = SecureContentCodec.decode(content);
+                if (decoded != null && decoded.type == SecureContentCodec.TYPE_CONTROL
+                        && decoded.control != null
+                        && decoded.control.action == SecureContentCodec.CONTROL_ACTION_DELETE) {
+                    return decoded.control.carrierDigests;
+                }
+            }
+        } catch (Exception ignore) {
+        }
+        return null;
     }
 
     public String encryptContact(SecureContentCodec.Contact contact) {

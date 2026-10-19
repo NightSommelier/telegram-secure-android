@@ -441,10 +441,87 @@ public class FilePathDatabase {
                 cursor.dispose();
             }
         }
+        if (dialogId == 0) {
+            long docId = parseDocIdFromPath(file.getName());
+            if (docId != 0) {
+                try {
+                    cursor = database.queryFinalized("SELECT dialog_id, message_id, message_type FROM paths_by_dialog_id WHERE path LIKE '%" + docId + "%' LIMIT 1");
+                    if (cursor.next()) {
+                        dialogId = cursor.longValue(0);
+                        messageId = cursor.intValue(1);
+                        messageType = cursor.intValue(2);
+                    }
+                } catch (Exception e) {
+                    FileLog.e(e);
+                } finally {
+                    if (cursor != null) {
+                        cursor.dispose();
+                    }
+                }
+            }
+        }
         metaTmp.dialogId = dialogId;
         metaTmp.messageId = messageId;
         metaTmp.messageType = messageType;
         return metaTmp;
+    }
+
+    public static long parseDocIdFromPath(String path) {
+        if (path == null) {
+            return 0;
+        }
+        int lastSlash = path.lastIndexOf('/');
+        String filename = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+        int dot = filename.indexOf('.');
+        String base = dot >= 0 ? filename.substring(0, dot) : filename;
+        int underscore = base.indexOf('_');
+        String idStr = underscore >= 0 ? base.substring(underscore + 1) : base;
+        try {
+            return Long.parseLong(idStr);
+        } catch (Throwable ignore) {
+            return 0;
+        }
+    }
+
+    public LongSparseArray<FileMeta> getDocIdToFileMetaMap() {
+        LongSparseArray<FileMeta> map = new LongSparseArray<>();
+        if (database == null) {
+            return map;
+        }
+        SQLiteCursor cursor = null;
+        try {
+            cursor = database.queryFinalized("SELECT p.document_id, pd.dialog_id, pd.message_id, pd.message_type FROM paths p INNER JOIN paths_by_dialog_id pd ON p.path = pd.path WHERE p.document_id != 0");
+            while (cursor.next()) {
+                long docId = cursor.longValue(0);
+                FileMeta meta = new FileMeta();
+                meta.dialogId = cursor.longValue(1);
+                meta.messageId = cursor.intValue(2);
+                meta.messageType = cursor.intValue(3);
+                map.put(docId, meta);
+            }
+            cursor.dispose();
+            cursor = null;
+
+            cursor = database.queryFinalized("SELECT path, dialog_id, message_id, message_type FROM paths_by_dialog_id");
+            while (cursor.next()) {
+                String path = cursor.stringValue(0);
+                long docId = parseDocIdFromPath(path);
+                if (docId != 0 && map.get(docId) == null) {
+                    FileMeta meta = new FileMeta();
+                    meta.dialogId = cursor.longValue(1);
+                    meta.messageId = cursor.intValue(2);
+                    meta.messageType = cursor.intValue(3);
+                    map.put(docId, meta);
+                }
+            }
+        } catch (Throwable e) {
+            FileLog.e(e);
+        } finally {
+            if (cursor != null) {
+                cursor.dispose();
+            }
+        }
+        return map;
     }
 
     private String shield(String path) {

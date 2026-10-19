@@ -21269,9 +21269,15 @@ public class ChatActivity extends BaseFragment implements
                         if (SecureChatEngine.isControlDeleteDisplay(localText)) {
                             message.applyNewText("");
                             message.deleted = true;
+                            if (secureChat != null) {
+                                List<byte[]> digests = secureChat.getDeleteControlDigests(carrier);
+                                if (digests != null && !digests.isEmpty()) {
+                                    purgeForkSecureMessagesByDigests(dialog_id, digests);
+                                }
+                            }
                             getMessagesController().deleteMessages(
                                     new ArrayList<>(java.util.Collections.singletonList(message.getId())),
-                                    null, null, dialog_id, 0, false, 0, true);
+                                    null, null, dialog_id, 0, true, 0, false);
                         } else if (SecureChatEngine.isStaticStickerDisplay(localText)) {
                             applySecureStickerMedia(message, secureChat, carrier);
                         } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
@@ -21301,9 +21307,15 @@ public class ChatActivity extends BaseFragment implements
                     if (SecureChatEngine.isControlDeleteDisplay(localText)) {
                         message.applyNewText("");
                         message.deleted = true;
+                        if (secureChat != null) {
+                            List<byte[]> digests = secureChat.getDeleteControlDigests(carrier);
+                            if (digests != null && !digests.isEmpty()) {
+                                purgeForkSecureMessagesByDigests(dialog_id, digests);
+                            }
+                        }
                         getMessagesController().deleteMessages(
                                 new ArrayList<>(java.util.Collections.singletonList(message.getId())),
-                                null, null, dialog_id, 0, false, 0, true);
+                                null, null, dialog_id, 0, true, 0, false);
                     } else {
                         if (secureChat.shouldAcknowledgeSessionReady(
                                 localText, message.getId())) {
@@ -21596,9 +21608,15 @@ public class ChatActivity extends BaseFragment implements
                     message.applyNewText("");
                     message.deleted = true;
                     applyForkSecureServiceStyle(message, true);
+                    if (secureChat != null) {
+                        List<byte[]> digests = secureChat.getDeleteControlDigests(carrier);
+                        if (digests != null && !digests.isEmpty()) {
+                            purgeForkSecureMessagesByDigests(dialog_id, digests);
+                        }
+                    }
                     getMessagesController().deleteMessages(
                             new ArrayList<>(java.util.Collections.singletonList(message.getId())),
-                            null, null, dialog_id, 0, false, 0, true);
+                            null, null, dialog_id, 0, true, 0, false);
                     return true;
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
@@ -21634,9 +21652,15 @@ public class ChatActivity extends BaseFragment implements
                     message.applyNewText("");
                     message.deleted = true;
                     applyForkSecureServiceStyle(message, true);
+                    if (secureChat != null) {
+                        List<byte[]> digests = secureChat.getDeleteControlDigests(carrier);
+                        if (digests != null && !digests.isEmpty()) {
+                            purgeForkSecureMessagesByDigests(dialog_id, digests);
+                        }
+                    }
                     getMessagesController().deleteMessages(
                             new ArrayList<>(java.util.Collections.singletonList(message.getId())),
-                            null, null, dialog_id, 0, false, 0, true);
+                            null, null, dialog_id, 0, true, 0, false);
                     return true;
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
@@ -21931,7 +21955,7 @@ public class ChatActivity extends BaseFragment implements
                     if (destination.isFile()
                             && destination.length() == manifest.plaintextSize) {
                         SecureMediaCache.touchAndPrune(
-                                destination, 32, 768L * 1024L * 1024L);
+                                destination, 4096, 4096L * 1024L * 1024L);
                     }
                 }
             } catch (RuntimeException error) {
@@ -22159,7 +22183,7 @@ public class ChatActivity extends BaseFragment implements
                     if (destination.isFile()
                             && destination.length() == manifest.plaintextSize) {
                         SecureMediaCache.touchAndPrune(
-                                destination, 64, 32L * 1024L * 1024L);
+                                destination, 2048, 256L * 1024L * 1024L);
                     }
                 }
             } catch (RuntimeException error) {
@@ -23323,6 +23347,10 @@ public class ChatActivity extends BaseFragment implements
             return "";
         }
         return plaintext;
+    }
+
+    private void purgeForkSecureMessagesByDigests(long dialogId, List<byte[]> digests) {
+        getMessagesController().purgeForkSecureMessagesByDigests(dialogId, digests);
     }
 
     public boolean isForkSecureActive() {
@@ -38528,10 +38556,16 @@ public class ChatActivity extends BaseFragment implements
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), themeDelegate);
         builder.setTitle(LocaleController.getString(R.string.AppName));
         builder.setPositiveButton(LocaleController.getString(R.string.OK), null);
-        if (message.type == MessageObject.TYPE_VIDEO) {
+        if (message != null && message.isForkSecureCarrier()) {
+            String mime = !TextUtils.isEmpty(message.forkSecureMediaMime)
+                    ? message.forkSecureMediaMime
+                    : (message.getDocument() != null ? message.getDocument().mime_type : "application/octet-stream");
+            builder.setMessage(LocaleController.formatString("NoHandleAppInstalled", R.string.NoHandleAppInstalled, mime));
+        } else if (message != null && message.type == MessageObject.TYPE_VIDEO) {
             builder.setMessage(LocaleController.getString(R.string.NoPlayerInstalled));
         } else {
-            builder.setMessage(LocaleController.formatString("NoHandleAppInstalled", R.string.NoHandleAppInstalled, message.getDocument().mime_type));
+            String mime = message != null && message.getDocument() != null ? message.getDocument().mime_type : "";
+            builder.setMessage(LocaleController.formatString("NoHandleAppInstalled", R.string.NoHandleAppInstalled, mime));
         }
         showDialog(builder.create());
     }
@@ -45050,54 +45084,99 @@ public class ChatActivity extends BaseFragment implements
             } else if (message.isSending()) {
                 return;
             }
-            if ((message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
-                    || message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO)
-                    && !TextUtils.isEmpty(message.forkSecureMediaPath)) {
-                File verifiedFile = new File(message.forkSecureMediaPath);
-                if (!verifiedFile.isFile()) {
-                    alertUserOpenError(message);
-                    return;
+            if (message != null && message.isForkSecureCarrier()) {
+                if (TextUtils.isEmpty(message.forkSecureMediaPath) || !new File(message.forkSecureMediaPath).isFile()) {
+                    message.restoreReadyForkSecureMedia();
                 }
-                if (message.isRoundVideo() || message.isVoice() || message.isMusic()) {
-                    needPlayMessage(cell, message, false);
-                    return;
-                }
-                if (message.isGif() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
-                    openForkSecureVideoViewer(cell, message, verifiedFile);
-                    return;
-                }
-                if (message.forkSecureMediaKind
-                        == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
-                        && !TextUtils.isEmpty(message.forkSecureMediaMime)
-                        && message.forkSecureMediaMime.toLowerCase(Locale.ROOT)
-                                .startsWith("video/")) {
-                    openForkSecureVideoViewer(cell, message, verifiedFile);
-                    return;
-                }
-                if (message.forkSecureMediaKind
-                        == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
-                        || (!TextUtils.isEmpty(message.forkSecureMediaMime)
-                                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("image/"))) {
-                    openForkSecurePhotoViewer(cell, message, verifiedFile);
-                    return;
-                }
-                try {
-                    String mimeType = TextUtils.isEmpty(message.forkSecureMediaMime)
-                            ? "application/octet-stream" : message.forkSecureMediaMime;
-                    String fileName = TextUtils.isEmpty(message.forkSecureMediaName)
-                            ? verifiedFile.getName() : message.forkSecureMediaName;
-                    if (!AndroidUtilities.openForView(
-                            verifiedFile,
-                            fileName,
-                            mimeType,
-                            getParentActivity(),
-                            themeDelegate,
-                            false)) {
-                        alertUserOpenError(message);
+                if (!TextUtils.isEmpty(message.forkSecureMediaPath)) {
+                    File verifiedFile = new File(message.forkSecureMediaPath);
+                    if (verifiedFile.isFile()) {
+                        if (message.isRoundVideo() || message.isVoice() || message.isMusic()) {
+                            needPlayMessage(cell, message, false);
+                            return;
+                        }
+                        if (message.isGif() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
+                            openForkSecureVideoViewer(cell, message, verifiedFile);
+                            return;
+                        }
+                        if ((message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE || message.isVideo())
+                                && !TextUtils.isEmpty(message.forkSecureMediaMime)
+                                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/")) {
+                            openForkSecureVideoViewer(cell, message, verifiedFile);
+                            return;
+                        }
+                        if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                                || (!TextUtils.isEmpty(message.forkSecureMediaMime)
+                                        && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("image/"))) {
+                            openForkSecurePhotoViewer(cell, message, verifiedFile);
+                            return;
+                        }
+                        try {
+                            String mimeType = TextUtils.isEmpty(message.forkSecureMediaMime)
+                                    ? "application/octet-stream" : message.forkSecureMediaMime;
+                            String fileName = TextUtils.isEmpty(message.forkSecureMediaName)
+                                    ? verifiedFile.getName() : message.forkSecureMediaName;
+                            if (!AndroidUtilities.openForView(
+                                    verifiedFile,
+                                    fileName,
+                                    mimeType,
+                                    getParentActivity(),
+                                    themeDelegate,
+                                    false)) {
+                                alertUserOpenError(message);
+                            }
+                        } catch (Exception e) {
+                            FileLog.e(e);
+                            alertUserOpenError(message);
+                        }
+                        return;
                     }
-                } catch (Exception e) {
-                    FileLog.e(e);
-                    alertUserOpenError(message);
+                }
+                File cipherCandidate = null;
+                if (!TextUtils.isEmpty(message.forkSecureCipherPath)) {
+                    File candidate = new File(message.forkSecureCipherPath);
+                    if (candidate.isFile()) {
+                        cipherCandidate = candidate;
+                    }
+                }
+                if (cipherCandidate == null && message.messageOwner != null
+                        && !TextUtils.isEmpty(message.messageOwner.attachPath)
+                        && message.messageOwner.attachPath.endsWith(".bin")) {
+                    File candidate = new File(message.messageOwner.attachPath);
+                    if (candidate.isFile()) {
+                        cipherCandidate = candidate;
+                    }
+                }
+                if (cipherCandidate == null && message.getDocument() != null) {
+                    File candidate = getFileLoader().getPathToAttach(message.getDocument(), true);
+                    if (candidate.isFile()) {
+                        cipherCandidate = candidate;
+                    }
+                }
+                if (cipherCandidate == null && message.getDocument() != null) {
+                    File candidate = getFileLoader().getPathToAttach(message.getDocument());
+                    if (candidate.isFile()) {
+                        cipherCandidate = candidate;
+                    }
+                }
+                if (cipherCandidate == null && message.messageOwner != null) {
+                    File candidate = getFileLoader().getPathToMessage(message.messageOwner);
+                    if (candidate.isFile()) {
+                        cipherCandidate = candidate;
+                    }
+                }
+                if (cipherCandidate != null && message.messageOwner != null && !TextUtils.isEmpty(message.messageOwner.message)) {
+                    applySecureAttachmentMedia(
+                            message,
+                            null,
+                            message.messageOwner.message,
+                            message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO);
+                } else if (message.getDocument() != null) {
+                    getFileLoader().loadFile(
+                            message.getDocument(),
+                            message,
+                            FileLoader.PRIORITY_HIGH,
+                            1);
                 }
                 return;
             }
@@ -45181,7 +45260,7 @@ public class ChatActivity extends BaseFragment implements
                 StickersAlert alert = new StickersAlert(getParentActivity(), ChatActivity.this, message.getInputStickerSet(), null, bottomChannelButtonsLayout.getVisibility() != View.VISIBLE && (currentChat == null || ChatObject.canSendStickers(currentChat)) ? chatActivityEnterView : null, themeDelegate, false);
                 alert.setCalcMandatoryInsets(isKeyboardVisible());
                 showDialog(alert);
-            } else if (message.isVideo() || message.type == MessageObject.TYPE_PHOTO || message.type == MessageObject.TYPE_TEXT && !message.isWebpageDocument() || message.isGif()) {
+            } else if ((message.isVideo() || message.type == MessageObject.TYPE_PHOTO || message.type == MessageObject.TYPE_TEXT && !message.isWebpageDocument() || message.isGif()) && !message.isForkSecureCarrier()) {
                 if (message.isSponsored()) {
                     if (message.isGif() || message.isPhoto()) {
                         logSponsoredClicked(message, true, false);
@@ -45217,7 +45296,7 @@ public class ChatActivity extends BaseFragment implements
                     message.forceSeekTo = (float) (timestamp / message.getDuration());
                 }
                 openPhotoViewerForMessage(cell, message);
-            } else if (message.type == MessageObject.TYPE_VIDEO) {
+            } else if (message.type == MessageObject.TYPE_VIDEO && !message.isForkSecureCarrier()) {
                 sendSecretMessageRead(message, true);
                 try {
                     File f = null;

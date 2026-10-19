@@ -10,11 +10,14 @@ package org.telegram.ui.Cells;
 
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.text.SpannableStringBuilder;
+import android.text.Spanned;
 import android.text.TextUtils;
 import android.transition.ChangeBounds;
 import android.transition.Fade;
@@ -46,6 +49,7 @@ import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Components.AnimatedEmojiSpan;
 import org.telegram.ui.Components.BackupImageView;
 import org.telegram.ui.Components.CheckBox2;
+import org.telegram.ui.Components.ColoredImageSpan;
 import org.telegram.ui.Components.CubicBezierInterpolator;
 import org.telegram.ui.Components.DotDividerSpan;
 import org.telegram.ui.Components.FlickerLoadingView;
@@ -75,6 +79,16 @@ public class SharedDocumentCell extends FrameLayout implements DownloadControlle
     private boolean drawDownloadIcon = true;
 
     private boolean needDivider;
+    private boolean isForkSecure;
+    private final Paint forkSecureBadgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Drawable forkSecureLockDrawable;
+
+    public void setForkSecure(boolean secure) {
+        if (this.isForkSecure != secure) {
+            this.isForkSecure = secure;
+            invalidate();
+        }
+    }
 
     private int currentAccount = UserConfig.selectedAccount;
     private int TAG;
@@ -256,7 +270,15 @@ public class SharedDocumentCell extends FrameLayout implements DownloadControlle
     }
 
     public void setTextAndValueAndTypeAndThumb(String text, String value, String type, String thumb, int resId, boolean divider) {
-        nameTextView.setText(text);
+        if (isForkSecure && text != null) {
+            SpannableStringBuilder builder = new SpannableStringBuilder();
+            builder.append("  ");
+            builder.setSpan(new ColoredImageSpan(R.drawable.msg_mini_lock3), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            builder.append(text);
+            nameTextView.setText(builder);
+        } else {
+            nameTextView.setText(text);
+        }
         dateTextView.setText(value);
         if (type != null) {
             extTextView.setVisibility(VISIBLE);
@@ -434,10 +456,16 @@ public class SharedDocumentCell extends FrameLayout implements DownloadControlle
                 name = fileName;
             }
             CharSequence nameH = AndroidUtilities.highlightText(name, messageObject.highlightedWords, resourcesProvider);
-            if (nameH != null) {
-                nameTextView.setText(nameH);
+            isForkSecure = messageObject != null && (messageObject.isForkSecureCarrier() || messageObject.forkSecureVerified);
+            CharSequence finalDisplayName = nameH != null ? nameH : name;
+            if (isForkSecure && finalDisplayName != null) {
+                SpannableStringBuilder builder = new SpannableStringBuilder();
+                builder.append("  ");
+                builder.setSpan(new ColoredImageSpan(R.drawable.msg_mini_lock3), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                builder.append(finalDisplayName);
+                nameTextView.setText(builder);
             } else {
-                nameTextView.setText(name);
+                nameTextView.setText(finalDisplayName);
             }
 
             placeholderImageView.setVisibility(VISIBLE);
@@ -726,6 +754,7 @@ public class SharedDocumentCell extends FrameLayout implements DownloadControlle
             super.dispatchDraw(canvas);
             drawDivider(canvas);
         }
+        drawForkSecureBadge(canvas);
 
         if (showReorderIcon || showReorderIconProgress != 0) {
             if (showReorderIcon && showReorderIconProgress != 1f) {
@@ -782,5 +811,34 @@ public class SharedDocumentCell extends FrameLayout implements DownloadControlle
         } else {
             thumbImageView.setVisibility(View.GONE);
         }
+    }
+
+    private void drawForkSecureBadge(Canvas canvas) {
+        if (!isForkSecure && (message == null || !(message.isForkSecureCarrier() || message.forkSecureVerified))) {
+            return;
+        }
+        float centerX;
+        if (LocaleController.isRTL) {
+            centerX = getMeasuredWidth() - AndroidUtilities.dp(viewType == VIEW_TYPE_PICKER ? (16 + 42 - 6) : (12 + 40 - 6));
+        } else {
+            centerX = AndroidUtilities.dp(viewType == VIEW_TYPE_PICKER ? (16 + 42 - 6) : (12 + 40 - 6));
+        }
+        float centerY = AndroidUtilities.dp(viewType == VIEW_TYPE_PICKER ? (12 + 42 - 6) : (8 + 40 - 6));
+        forkSecureBadgePaint.setColor(0x99000000);
+        canvas.drawCircle(centerX, centerY, AndroidUtilities.dp(7.5f), forkSecureBadgePaint);
+        if (forkSecureLockDrawable == null) {
+            forkSecureLockDrawable = getContext().getResources()
+                    .getDrawable(R.drawable.msg_mini_lock3).mutate();
+            forkSecureLockDrawable.setColorFilter(
+                    new PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN));
+        }
+        int halfWidth = AndroidUtilities.dp(4);
+        int halfHeight = AndroidUtilities.dp(5);
+        forkSecureLockDrawable.setBounds(
+                (int) centerX - halfWidth,
+                (int) centerY - halfHeight,
+                (int) centerX + halfWidth,
+                (int) centerY + halfHeight);
+        forkSecureLockDrawable.draw(canvas);
     }
 }

@@ -447,4 +447,6 @@
     <string name="ForkSecureAuditLinkGuard">Захист від фішингу посилань</string>
     <string name="ForkSecureAuditLinkGuardActive">Активний (детекція Punycode та омогліфів)</string>
     <string name="ForkSecureAuditInfo">Аудит аналізує ключові налаштування пристрою та клієнта, які можуть впливати на конфіденційність при фізичному або локальному доступі.</string>
+    <string name="CacheEncryptedChats">Захищені чати</string>
+    <string name="CacheEncryptedStorage">Захищене сховище</string>
 </resources>

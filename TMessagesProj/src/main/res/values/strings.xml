@@ -6047,6 +6047,8 @@
     <string name="SetAutoDeleteTimer">Set Auto-Delete</string>
     <string name="AutoDeleteCustom2">Set custom time</string>
     <string name="CacheOtherChats">Other Chats</string>
+    <string name="CacheEncryptedChats">Encrypted Chats</string>
+    <string name="CacheEncryptedStorage">Encrypted Storage</string>
     <string name="ClearCacheForChats">Are you sure you want to delete cached data for selected chats?</string>
     <string name="ClearCacheForChat">Are you sure you want to delete cached data for selected chat?</string>
     <string name="SelectChatsForAutoDelete">to apply the self-destruct timer</string>
