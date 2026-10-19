@@ -759,12 +759,6 @@ public class MessageObject {
             attachPathExists = plaintext.isFile();
             if (plaintext.isFile()) {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
-                if (getDocument() != null) {
-                    getDocument().localPath = plaintext.getAbsolutePath();
-                }
-                if (messageOwner != null) {
-                    messageOwner.attachPath = plaintext.getAbsolutePath();
-                }
             }
         } else if (entry.kind == SecureMediaIndex.KIND_VIDEO && getDocument() != null) {
             TLRPC.Document document = getDocument();
@@ -834,12 +828,6 @@ public class MessageObject {
             attachPathExists = plaintext.isFile();
             if (plaintext.isFile()) {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
-                if (getDocument() != null) {
-                    getDocument().localPath = plaintext.getAbsolutePath();
-                }
-                if (messageOwner != null) {
-                    messageOwner.attachPath = plaintext.getAbsolutePath();
-                }
             }
         } else if (entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO && getDocument() != null) {
             TLRPC.Document document = getDocument();
@@ -906,12 +894,6 @@ public class MessageObject {
             attachPathExists = plaintext.isFile();
             if (plaintext.isFile()) {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
-                if (getDocument() != null) {
-                    getDocument().localPath = plaintext.getAbsolutePath();
-                }
-                if (messageOwner != null) {
-                    messageOwner.attachPath = plaintext.getAbsolutePath();
-                }
             }
         } else if (entry.kind == SecureMediaIndex.KIND_VOICE && getDocument() != null) {
             TLRPC.Document document = getDocument();
@@ -944,12 +926,6 @@ public class MessageObject {
             attachPathExists = plaintext.isFile();
             if (plaintext.isFile()) {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
-                if (getDocument() != null) {
-                    getDocument().localPath = plaintext.getAbsolutePath();
-                }
-                if (messageOwner != null) {
-                    messageOwner.attachPath = plaintext.getAbsolutePath();
-                }
                 MediaController.getInstance().generateWaveform(this);
             }
         } else if (entry.kind == SecureMediaIndex.KIND_MUSIC && getDocument() != null) {
@@ -983,12 +959,6 @@ public class MessageObject {
             attachPathExists = plaintext.isFile();
             if (plaintext.isFile()) {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
-                if (getDocument() != null) {
-                    getDocument().localPath = plaintext.getAbsolutePath();
-                }
-                if (messageOwner != null) {
-                    messageOwner.attachPath = plaintext.getAbsolutePath();
-                }
             }
         } else if (entry.kind == SecureMediaIndex.KIND_GIF && getDocument() != null) {
             TLRPC.Document document = getDocument();
@@ -1234,12 +1204,6 @@ public class MessageObject {
         if (!TextUtils.isEmpty(state.path)) {
             attachPathExists = true;
             mediaExists = true;
-            if (messageOwner != null) {
-                messageOwner.attachPath = state.path;
-            }
-            if (getDocument() != null) {
-                getDocument().localPath = state.path;
-            }
             if (state.kind == FORK_SECURE_MEDIA_KIND_STICKER
                     || state.kind == FORK_SECURE_MEDIA_KIND_PHOTO
                     || state.kind == FORK_SECURE_MEDIA_KIND_FILE) {
@@ -1416,12 +1380,6 @@ public class MessageObject {
             if (hasFile) {
                 mediaExists = true;
                 attachPathExists = true;
-                if (getDocument() != null) {
-                    getDocument().localPath = state.path;
-                }
-                if (messageOwner != null) {
-                    messageOwner.attachPath = state.path;
-                }
             }
         } else if (state.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
                 || (!TextUtils.isEmpty(state.mime) && state.mime.startsWith("video/"))) {
@@ -1476,32 +1434,13 @@ public class MessageObject {
             if (hasFile) {
                 mediaExists = true;
                 attachPathExists = true;
-                if (getDocument() != null) {
-                    getDocument().localPath = state.path;
-                }
-                if (messageOwner != null) {
-                    messageOwner.attachPath = state.path;
-                }
             }
         } else if (state.kind == FORK_SECURE_MEDIA_KIND_FILE) {
             type = TYPE_FILE;
             if (getDocument() != null) {
                 TLRPC.Document document = getDocument();
-                document.mime_type = TextUtils.isEmpty(state.mime) ? "application/octet-stream" : state.mime;
-                for (int i = document.attributes.size() - 1; i >= 0; i--) {
-                    TLRPC.DocumentAttribute attribute = document.attributes.get(i);
-                    if (attribute instanceof TLRPC.TL_documentAttributeFilename) {
-                        document.attributes.remove(i);
-                    }
-                }
-                TLRPC.TL_documentAttributeFilename fileName =
-                        new TLRPC.TL_documentAttributeFilename();
-                fileName.file_name = !TextUtils.isEmpty(state.name) ? state.name : "file";
-                document.attributes.add(fileName);
-                document.file_name_fixed = fileName.file_name;
                 if (!TextUtils.isEmpty(state.path) && new File(state.path).isFile()) {
                     File pFile = new File(state.path);
-                    document.size = (int) Math.min(Integer.MAX_VALUE, pFile.length());
                     boolean isImg = state.mime != null && state.mime.toLowerCase(java.util.Locale.ROOT).startsWith("image/");
                     boolean isVid = state.mime != null && state.mime.toLowerCase(java.util.Locale.ROOT).startsWith("video/");
                     if (isImg) {

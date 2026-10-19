@@ -3264,15 +3264,24 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 showForkSecureError(R.string.ForkSecureAttachmentUnsupported);
                 return true;
             }
+            String uriMime = null;
+            if (info.uri != null && ApplicationLoader.applicationContext != null) {
+                try {
+                    uriMime = ApplicationLoader.applicationContext.getContentResolver().getType(info.uri);
+                } catch (Throwable ignore) {
+                }
+            }
             boolean isGif = !forceDocument && (
                     (sourcePath != null && sourcePath.toLowerCase(java.util.Locale.ROOT).endsWith(".gif"))
-                    || "image/gif".equalsIgnoreCase(info.uri != null ? ApplicationLoader.applicationContext.getContentResolver().getType(info.uri) : null)
+                    || "image/gif".equalsIgnoreCase(uriMime)
             );
+            boolean isPhotoUri = uriMime != null && uriMime.toLowerCase(java.util.Locale.ROOT).startsWith("image/");
             boolean securePhoto = !forceDocument
                     && !info.isVideo
                     && !isGif
                     && (!TextUtils.isEmpty(info.imagePath)
-                    || isForkSecureImagePath(sourcePath));
+                    || isForkSecureImagePath(sourcePath)
+                    || isPhotoUri);
             int presentation = forceDocument
                     ? SecureContentCodec.ATTACHMENT_PRESENTATION_FILE
                     : (isGif ? SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION : -1);
@@ -3988,13 +3997,21 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 extension.toLowerCase(java.util.Locale.ROOT));
             }
         }
+        boolean isPhoto = source.photo;
+        if (!isPhoto
+                && source.presentation != SecureContentCodec.ATTACHMENT_PRESENTATION_FILE
+                && !TextUtils.isEmpty(mimeType)
+                && mimeType.toLowerCase(java.util.Locale.ROOT).startsWith("image/")
+                && !"image/gif".equalsIgnoreCase(mimeType)) {
+            isPhoto = true;
+        }
         return new ForkSecureResolvedSource(
                 file,
                 temporary,
                 safeForkSecureFileName(fileName, mimeType),
                 mimeType,
                 source.caption == null ? "" : source.caption,
-                source.photo,
+                isPhoto,
                 source.presentation,
                 source.durationSeconds,
                 source.ttlSeconds,
@@ -9354,6 +9371,17 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     }
                     if (media.file == null) {
                         String location = message.obj.messageOwner.attachPath;
+                        if (message.obj != null && message.obj.isForkSecureCarrier()) {
+                            if (TextUtils.isEmpty(location)) {
+                                FileLog.e("ForkSecure: carrier upload attempted with empty attachPath!");
+                                return;
+                            }
+                            if (!TextUtils.isEmpty(message.obj.forkSecureMediaPath)
+                                    && TextUtils.equals(location, message.obj.forkSecureMediaPath)) {
+                                FileLog.e("ForkSecure: CRITICAL SECURITY VIOLATION: attachPath matches unencrypted forkSecureMediaPath! Plaintext upload prevented: " + location);
+                                return;
+                            }
+                        }
                         putToDelayedMessages(location, message);
                         getFileLoader().uploadFile(location, message.sendRequest == null, false, ConnectionsManager.FileTypeFile);
                         putToUploadingMessages(message.obj);
