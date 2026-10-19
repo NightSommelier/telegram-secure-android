@@ -10,10 +10,14 @@ Telegram Fork-Secure is a privacy-hardened Telegram Android fork based on the of
 ## Key Features
 
 - **Signal Protocol E2EE (`SecureOverlay`)**: End-to-end encrypted messaging using X3DH, Double Ratchet, Ed25519/X25519 keys, and XChaCha20-Poly1305 authenticated encryption over standard Telegram 1:1 carriers.
+- **Group Chat E2EE via Signal Sender Keys**: Multi-party group encryption using Signal Sender Keys protocol with automatic key distribution, sender key rotation upon member departure/removal, and group lock indicator UI.
 - **Encrypted Rich Media**: Complete encryption of photos, voice notes, round video notes, audio/music files, documents, and stickers. Native playback runs directly from the decrypted cache with preserved waveforms and metadata.
+- **View-Once Media Protection**: Ephemeral view-once photos and videos that auto-destruct immediately after viewing without lingering in decrypted storage.
 - **Encrypted Contacts & Live/Static Geo-Location**: Dedicated secure payload codecs for `TYPE_CONTACT` (vCard / phone / name) and `TYPE_GEO_LOCATION` with secret mode protected map rendering.
 - **Authenticated Remote Deletion**: Cryptographically signed remote delete control packets (`TYPE_CONTROL_DELETE`) with carrier digest verification and automatic purge of ciphertext, decrypted cache, and disk files.
 - **Secure Media Forwarding**: Forward protected media across secure sessions; media is decrypted locally and safely re-encrypted under the recipient's ratchet chain, preserving captions, waveforms, and dimensions.
+- **Storage Usage & Ephemeral Decryption Isolation**: Opaque `.bin` carriers are hidden from generic file browsing; authentic original file names, decrypted sizes, and lock badges are rendered in Cache Management; granular secure cache cleanup per-chat or category without leaking unencrypted files.
+- **Individual Media Preloaders & 120Hz Smoothness**: Native indeterminate `RadialProgressView` preloaders in `ChatMessageCell` and grid media cells (`SharedPhotoVideoCell2`) eliminating blank voids during decryption; 120Hz display mode and in-memory media index caching eliminating scroll jank.
 - **Anti-Spoofing Link Guard & Phishing Warning**: Integrated `SecureLinkGuard` detects IDN homoglyphs (confusable Cyrillic/Latin/Greek alphabets), Punycode (`xn--`), BiDi directional override characters, zero-width spaces, and URI authority spoofing (`user:pass@host`), requiring explicit user confirmation before external browser launch.
 - **Screen Protection & Anti-Leak Guards**: Enforced `FLAG_SECURE` window protection across chat, profile, and media viewer; blocked gallery exports, screenshots, and sharing of decrypted media; cloud drafts and link previews suppressed in protected chats; unencrypted reactions blocked fail-closed.
 
