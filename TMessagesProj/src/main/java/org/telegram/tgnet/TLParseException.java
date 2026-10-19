@@ -16,7 +16,7 @@ public class TLParseException extends RuntimeException {
         final TLParseException tlParseException = new TLParseException(message);
 
         FileLog.e(tlParseException, constructorId != 0xcd78e586);
-        if (BuildConfig.DEBUG_VERSION && dataSourceType == TLDataSourceType.NETWORK && constructorId != 0xcd78e586 && constructorId != 0xd18be2ef && constructorId != 0x2001) {
+        if (BuildConfig.DEBUG_VERSION && dataSourceType == TLDataSourceType.NETWORK && constructorId != 0xcd78e586 && constructorId != 0xd18be2ef && constructorId != 0x2001 && constructorId != 0xf35c6d01) {
             AndroidUtilities.runOnUIThread(() -> {
                 NotificationCenter.getGlobalInstance()
                     .postNotificationName(NotificationCenter.tlSchemeParseException, tlParseException);

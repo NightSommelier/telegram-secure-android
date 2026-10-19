@@ -46,7 +46,6 @@ android {
 
     defaultConfig.applicationId = APP_PACKAGE
 
-    sourceSets.main.jniLibs.srcDirs = ['../TMessagesProj/jni/']
 
     packagingOptions {
         jniLibs {
@@ -82,6 +81,12 @@ android {
                 keyAlias releaseSigningProperties.getProperty('RELEASE_KEY_ALIAS')
                 keyPassword releaseSigningProperties.getProperty('RELEASE_KEY_PASSWORD')
             }
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 
@@ -147,22 +152,6 @@ android {
             }
             buildConfigField "boolean", "BUNDLE", "true"
         }
-        bundleAfat_SDK23 {
-            ndk {
-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
-            }
-            sourceSets.debug {
-                manifest.srcFile '../TMessagesProj/config/debug/AndroidManifest_SDK23.xml'
-            }
-            sourceSets.release {
-                manifest.srcFile '../TMessagesProj/config/release/AndroidManifest_SDK23.xml'
-            }
-            minSdkVersion 23
-            ext {
-                abiVersionCode = 2
-            }
-            buildConfigField "boolean", "BUNDLE", "true"
-        }
         afat {
             // libsignal's Android artifact supports API 23 and later.
             minSdkVersion 23
@@ -206,7 +195,7 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 21
+        minSdkVersion 23
         targetSdkVersion 36
         versionName APP_VERSION_NAME
         ndkVersion "27.2.12479018"
