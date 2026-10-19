@@ -14936,6 +14936,9 @@ public class MessageObject {
 
     public Float cachedSavedTimestamp;
     public float getVideoSavedProgress() {
+        if (isGif()) {
+            return 0f;
+        }
 //        if (cachedSavedTimestamp != null) return cachedSavedTimestamp;
         if (cachedSavedTimestamp != null) return PhotoViewer.getSavedProgressFast(this);
         return cachedSavedTimestamp = PhotoViewer.getSavedProgress(this);

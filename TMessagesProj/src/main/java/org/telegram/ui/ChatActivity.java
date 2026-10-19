@@ -45229,27 +45229,44 @@ public class ChatActivity extends BaseFragment implements
                             needPlayMessage(cell, message, false);
                             return;
                         }
-                        if (message.isGif() || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION) {
+                        String fileName = TextUtils.isEmpty(message.forkSecureMediaName)
+                                ? verifiedFile.getName() : message.forkSecureMediaName;
+                        String lowerName = fileName.toLowerCase(Locale.ROOT);
+                        String lowerMime = message.forkSecureMediaMime != null
+                                ? message.forkSecureMediaMime.toLowerCase(Locale.ROOT) : "";
+
+                        if (message.isGif()
+                                || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                                || lowerName.endsWith(".gif")
+                                || "image/gif".equals(lowerMime)) {
                             openForkSecureVideoViewer(cell, message, verifiedFile);
                             return;
                         }
-                        if ((message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE || message.isVideo())
-                                && !TextUtils.isEmpty(message.forkSecureMediaMime)
-                                && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("video/")) {
+                        if (message.isVideo()
+                                || message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO
+                                || lowerMime.startsWith("video/")
+                                || lowerName.endsWith(".mp4")
+                                || lowerName.endsWith(".mkv")
+                                || lowerName.endsWith(".webm")
+                                || lowerName.endsWith(".mov")
+                                || lowerName.endsWith(".avi")) {
                             openForkSecureVideoViewer(cell, message, verifiedFile);
                             return;
                         }
-                        if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
-                                || (!TextUtils.isEmpty(message.forkSecureMediaMime)
-                                        && message.forkSecureMediaMime.toLowerCase(Locale.ROOT).startsWith("image/"))) {
+                        if (message.isPhoto()
+                                || message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
+                                || lowerMime.startsWith("image/")
+                                || lowerName.endsWith(".jpg")
+                                || lowerName.endsWith(".jpeg")
+                                || lowerName.endsWith(".png")
+                                || lowerName.endsWith(".webp")
+                                || lowerName.endsWith(".bmp")) {
                             openForkSecurePhotoViewer(cell, message, verifiedFile);
                             return;
                         }
                         try {
                             String mimeType = TextUtils.isEmpty(message.forkSecureMediaMime)
                                     ? "application/octet-stream" : message.forkSecureMediaMime;
-                            String fileName = TextUtils.isEmpty(message.forkSecureMediaName)
-                                    ? verifiedFile.getName() : message.forkSecureMediaName;
                             if (!AndroidUtilities.openForView(
                                     verifiedFile,
                                     fileName,
@@ -45257,11 +45274,23 @@ public class ChatActivity extends BaseFragment implements
                                     getParentActivity(),
                                     themeDelegate,
                                     false)) {
-                                alertUserOpenError(message);
+                                if (lowerMime.startsWith("video/") || lowerName.endsWith(".mp4") || lowerName.endsWith(".gif") || lowerName.endsWith(".webm") || lowerName.endsWith(".mkv")) {
+                                    openForkSecureVideoViewer(cell, message, verifiedFile);
+                                } else if (lowerMime.startsWith("image/") || lowerName.endsWith(".jpg") || lowerName.endsWith(".png") || lowerName.endsWith(".webp")) {
+                                    openForkSecurePhotoViewer(cell, message, verifiedFile);
+                                } else {
+                                    alertUserOpenError(message);
+                                }
                             }
                         } catch (Exception e) {
                             FileLog.e(e);
-                            alertUserOpenError(message);
+                            if (lowerMime.startsWith("video/") || lowerName.endsWith(".mp4") || lowerName.endsWith(".gif") || lowerName.endsWith(".webm") || lowerName.endsWith(".mkv")) {
+                                openForkSecureVideoViewer(cell, message, verifiedFile);
+                            } else if (lowerMime.startsWith("image/") || lowerName.endsWith(".jpg") || lowerName.endsWith(".png") || lowerName.endsWith(".webp")) {
+                                openForkSecurePhotoViewer(cell, message, verifiedFile);
+                            } else {
+                                alertUserOpenError(message);
+                            }
                         }
                         return;
                     }
@@ -45450,7 +45479,12 @@ public class ChatActivity extends BaseFragment implements
                     getParentActivity().startActivityForResult(intent, 500);
                 } catch (Exception e) {
                     FileLog.e(e);
-                    alertUserOpenError(message);
+                    try {
+                        openPhotoViewerForMessage(cell, message);
+                    } catch (Exception ex) {
+                        FileLog.e(ex);
+                        alertUserOpenError(message);
+                    }
                 }
             } else if (message.type == MessageObject.TYPE_GEO) {
                 if (!AndroidUtilities.isMapsInstalled(ChatActivity.this)) {

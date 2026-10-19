@@ -10343,7 +10343,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         MessageObject activePlayerMsg = currentMessageObject != null ? currentMessageObject : getForkSecureViewerMessage();
         boolean isForkSecureMsg = activePlayerMsg != null && (activePlayerMsg.isForkSecureCarrier() || !TextUtils.isEmpty(activePlayerMsg.forkSecureMediaPath));
-        if (videoPlayer != null && playbackState == ExoPlayer.STATE_READY && (videoPlayer.getDuration() >= 10000 || (isForkSecureMsg && videoPlayer.getDuration() > 0)) && shouldSavePositionForCurrentVideo == null && shouldSavePositionForCurrentVideoShortTerm == null) {
+        if (videoPlayer != null && playbackState == ExoPlayer.STATE_READY && (activePlayerMsg == null || !activePlayerMsg.isGif()) && (videoPlayer.getDuration() >= 10000 || (isForkSecureMsg && videoPlayer.getDuration() > 0)) && shouldSavePositionForCurrentVideo == null && shouldSavePositionForCurrentVideoShortTerm == null) {
             if (activePlayerMsg != null) {
                 currentPlayingForkSecureMessage = currentMessageObject == null ? activePlayerMsg : null;
                 final long duration = videoPlayer.getDuration() / 1000L;
@@ -11180,7 +11180,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 active = getForkSecureViewerMessage();
             }
             boolean isForkSecure = active != null && (active.isForkSecureCarrier() || !TextUtils.isEmpty(active.forkSecureMediaPath));
-            if (shouldSavePositionForCurrentVideoShortTerm == null && (videoPlayer.getDuration() >= 10000 || (isForkSecure && videoPlayer.getDuration() > 0))) {
+            if (shouldSavePositionForCurrentVideoShortTerm == null && (active == null || !active.isGif()) && (videoPlayer.getDuration() >= 10000 || (isForkSecure && videoPlayer.getDuration() > 0))) {
                 if (active != null) {
                     String name = getVideoPositionKey(active, currentPlayingVideoFile);
                     if (!TextUtils.isEmpty(name)) {
@@ -24342,6 +24342,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     public static String getVideoPositionKey(MessageObject msg, Uri uri) {
+        if (msg != null && msg.isGif()) {
+            return null;
+        }
         if (msg != null && (msg.isForkSecureCarrier() || !TextUtils.isEmpty(msg.forkSecureMediaPath))) {
             if (!TextUtils.isEmpty(msg.forkSecureMediaPath)) {
                 return "fork_sec_file_" + new File(msg.forkSecureMediaPath).getName();
@@ -24369,7 +24372,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     public static float getSavedProgressFast(MessageObject msg) {
-        if (msg == null) {
+        if (msg == null || msg.isGif()) {
             return 0;
         }
         final int duration = (int) msg.getDuration();
@@ -24390,7 +24393,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     public static float getSavedProgress(MessageObject msg) {
-        if (msg == null) {
+        if (msg == null || msg.isGif()) {
             return 0;
         }
         final int duration = (int) msg.getDuration();

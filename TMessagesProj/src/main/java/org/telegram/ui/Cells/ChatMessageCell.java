@@ -14783,7 +14783,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     canvas.restore();
                 }
                 drawForkSecurePreloader(canvas);
-                if (!isRoundVideo) {
+                if (!isRoundVideo && (currentMessageObject == null || !currentMessageObject.isGif())) {
                     drawVideoTimestamps(canvas, getThemedColor(currentMessageObject.isOutOwner() ? Theme.key_chat_outReplyLine : Theme.key_chat_inReplyLine));
                 }
                 boolean drawTimeOld = drawTime;
@@ -29776,7 +29776,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     }
 
     public void drawVideoTimestamps(Canvas canvas, int color) {
-        if (currentMessageObject == null || currentMessageObject.isLivePhoto() || controlsAlpha <= 0 || !photoImage.getVisible()) return;
+        if (currentMessageObject == null || currentMessageObject.isGif() || currentMessageObject.isLivePhoto() || controlsAlpha <= 0 || !photoImage.getVisible()) return;
         float progress;
         if (!currentMessageObject.openedInViewer && currentMessageObject.getVideoStartsTimestamp() != -1) {
             progress = currentMessageObject.getVideoStartsTimestamp() / (float) currentMessageObject.getDuration();
