@@ -1,6 +1,6 @@
 # Telegram Fork-Secure [![Android CI](https://github.com/NightSommelier/telegram-secure-android/actions/workflows/android.yml/badge.svg?branch=main)](https://github.com/NightSommelier/telegram-secure-android/actions/workflows/android.yml) [![License: GPL v2 or later](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](LICENSE) [![Latest Release](https://img.shields.io/github/v/release/NightSommelier/telegram-secure-android?include_prereleases&label=release)](https://github.com/NightSommelier/telegram-secure-android/releases)
 
-Telegram Fork-Secure is a privacy-hardened Telegram Android fork based on the official Telegram Android client (**v12.10.5**). It adds a transparent, end-to-end encrypted security overlay for standard 1:1 cloud chats and Saved Messages using the Signal Double Ratchet protocol (`SecureOverlay`), without requiring server-side cooperation or breaking compatibility with standard Telegram chat routing.
+Telegram Fork-Secure is a privacy-hardened Telegram Android fork based on the official Telegram Android client (**v13.0.2**). It adds a transparent, end-to-end encrypted security overlay for standard 1:1 cloud chats and Saved Messages using the Signal Double Ratchet protocol (`SecureOverlay`), without requiring server-side cooperation or breaking compatibility with standard Telegram chat routing.
 
 > [!NOTE]
 > [Українська версія документації доступна у файлі README_UK.md](README_UK.md).
@@ -9,6 +9,7 @@ Telegram Fork-Secure is a privacy-hardened Telegram Android fork based on the of
 
 ## Key Features
 
+- **Upstream Telegram 13.0.2 Platform**: Modernized base incorporating TDLib updates, Prisma code syntax highlighting, high-efficiency `tgcalls` audio/video subsystem, and Telegram MTProto layer 231.
 - **Signal Protocol E2EE (`SecureOverlay`)**: End-to-end encrypted messaging using X3DH, Double Ratchet, Ed25519/X25519 keys, and XChaCha20-Poly1305 authenticated encryption over standard Telegram 1:1 carriers.
 - **Group Chat E2EE via Signal Sender Keys**: Multi-party group encryption using Signal Sender Keys protocol with automatic key distribution, sender key rotation upon member departure/removal, and group lock indicator UI.
 - **Encrypted Rich Media**: Complete encryption of photos, voice notes, round video notes, audio/music files, documents, and stickers. Native playback runs directly from the decrypted cache with preserved waveforms and metadata.
@@ -23,19 +24,19 @@ Telegram Fork-Secure is a privacy-hardened Telegram Android fork based on the of
 
 ---
 
-## Downloads (v12.10.5)
+## Downloads (v13.0.2)
 
 Signed multi-architecture packages:
 
 | Architecture | Package | Checksum |
 | :--- | :--- | :--- |
-| **arm64-v8a** | [`telegram-fork-secure-12.10.5-arm64-v8a.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-arm64-v8a.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-arm64-v8a.apk.sha256) |
-| **universal** | [`telegram-fork-secure-12.10.5-universal.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-universal.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-universal.apk.sha256) |
-| **armeabi-v7a** | [`telegram-fork-secure-12.10.5-armeabi-v7a.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-armeabi-v7a.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-armeabi-v7a.apk.sha256) |
-| **x86_64** | [`telegram-fork-secure-12.10.5-x86_64.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-x86_64.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-x86_64.apk.sha256) |
-| **x86** | [`telegram-fork-secure-12.10.5-x86.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-x86.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v12.10.5%2B5b84ee6/telegram-fork-secure-12.10.5-x86.apk.sha256) |
+| **arm64-v8a** | [`telegram-fork-secure-13.0.2-arm64-v8a.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-arm64-v8a.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-arm64-v8a.apk.sha256) |
+| **universal** | [`telegram-fork-secure-13.0.2-universal.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-universal.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-universal.apk.sha256) |
+| **armeabi-v7a** | [`telegram-fork-secure-13.0.2-armeabi-v7a.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-armeabi-v7a.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-armeabi-v7a.apk.sha256) |
+| **x86_64** | [`telegram-fork-secure-13.0.2-x86_64.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-x86_64.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-x86_64.apk.sha256) |
+| **x86** | [`telegram-fork-secure-13.0.2-x86.apk`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-x86.apk) | [`SHA-256`](https://github.com/NightSommelier/telegram-secure-android/releases/download/v13.0.2/telegram-fork-secure-13.0.2-x86.apk.sha256) |
 
-Release notes and verification details: [Releases](https://github.com/NightSommelier/telegram-secure-android/releases/tag/v12.10.5%2B5b84ee6).
+Release notes and verification details: [Releases](https://github.com/NightSommelier/telegram-secure-android/releases/tag/v13.0.2).
 
 ---
 
