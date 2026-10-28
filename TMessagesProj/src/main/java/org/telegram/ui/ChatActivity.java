@@ -21342,35 +21342,9 @@ public class ChatActivity extends BaseFragment implements
                     }
                     applyForkSecureServiceStyle(message, true);
                 } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
-                    if (message.isOutOwner()) {
-                        message.applyNewText(getString(R.string.ForkSecureGroupKeyDistributed));
-                    } else {
-                        long senderId = message.getFromChatId();
-                        try {
-                            secureChat.processGroupSenderKeyDistributionCarrier(senderId, carrier);
-                            message.applyNewText(getString(R.string.ForkSecureGroupKeyReceived));
-                            if (!forkSecureDeferredMessages.isEmpty()) {
-                                ArrayList<MessageObject> retry = new ArrayList<>();
-                                for (int retryIdx = 0; retryIdx < messages.size(); retryIdx++) {
-                                    MessageObject m = messages.get(retryIdx);
-                                    if (m != null && forkSecureDeferredMessages.contains(m.getId())) {
-                                        retry.add(m);
-                                    }
-                                }
-                                if (!retry.isEmpty()) {
-                                    forkSecureDeferredMessages.clear();
-                                    applySecureTextOverlay(retry);
-                                    if (chatAdapter != null) {
-                                        chatAdapter.notifyDataSetChanged();
-                                    }
-                                }
-                            }
-                        } catch (Exception e) {
-                            FileLog.e(e);
-                            message.applyNewText(getString(R.string.ForkSecureMessageFailed));
-                        }
-                    }
-                    applyForkSecureServiceStyle(message, true);
+                    message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                    message.forkSecureVerified = false;
+                    applyForkSecureServiceStyle(message, false);
                 } else if (message.isOutOwner()) {
                     String localText = getForkSecureOutgoingText(secureChat, carrier);
                     if (localText != null) {

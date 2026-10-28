@@ -7934,24 +7934,32 @@ public class ChatActivityEnterView extends FrameLayout implements
                     }
                     if (DialogObject.isChatDialog(dialog_id)) {
                         secureChat.enableGroup();
-                        text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
-                        secureChat.clearGroupKeyNeedsDistribution();
-                        notify = false;
+                        if (accountInstance.getSendMessagesHelper()
+                                .distributeForkSecureGroupSenderKeyPairwise(dialog_id)) {
+                            secureChat.clearGroupKeyNeedsDistribution();
+                        } else {
+                            secureChat.setGroupKeyNeedsDistribution(true);
+                        }
                         notifySecureModeChanged();
+                        return true;
                     } else {
                         text = secureChat.createPairingOffer();
                         notify = false;
                         notifySecureModeChanged();
                     }
                 } else if ("/secure-group-key".equals(entered) && DialogObject.isChatDialog(dialog_id)) {
-                    text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
-                    secureChat.clearGroupKeyNeedsDistribution();
-                    notify = false;
+                    if (accountInstance.getSendMessagesHelper()
+                            .distributeForkSecureGroupSenderKeyPairwise(dialog_id)) {
+                        secureChat.clearGroupKeyNeedsDistribution();
+                    }
+                    return true;
                 } else if ("/secure-group-rotate".equals(entered) && DialogObject.isChatDialog(dialog_id)) {
                     secureChat.rotateGroupSenderKey();
-                    text = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
-                    secureChat.clearGroupKeyNeedsDistribution();
-                    notify = false;
+                    if (accountInstance.getSendMessagesHelper()
+                            .distributeForkSecureGroupSenderKeyPairwise(dialog_id)) {
+                        secureChat.clearGroupKeyNeedsDistribution();
+                    }
+                    return true;
                 } else if ("/secure-off".equals(entered)) {
                     secureChat.disable();
                     notifySecureModeChanged();
@@ -7962,17 +7970,10 @@ public class ChatActivityEnterView extends FrameLayout implements
                         return false;
                     }
                     if (DialogObject.isChatDialog(dialog_id) && secureChat.isGroupKeyNeedsDistribution()) {
-                        String distCarrier = secureChat.createGroupSenderKeyDistributionCarrier(dialog_id);
-                        SendMessagesHelper.SendMessageParams distParams = SendMessagesHelper.SendMessageParams.of(
-                                distCarrier, dialog_id, null, null, null, false, null, null, null, false, 0, 0, null, false);
-                        distParams.webPage = null;
-                        distParams.mediaWebPage = null;
-                        distParams.searchLinks = false;
-                        distParams.replyQuote = null;
-                        distParams.replyToStoryItem = null;
-                        distParams.entities = null;
-                        accountInstance.getSendMessagesHelper().sendMessage(distParams);
-                        secureChat.clearGroupKeyNeedsDistribution();
+                        if (accountInstance.getSendMessagesHelper()
+                                .distributeForkSecureGroupSenderKeyPairwise(dialog_id)) {
+                            secureChat.clearGroupKeyNeedsDistribution();
+                        }
                     }
                     text = secureChat.encryptText(entered);
                 }
