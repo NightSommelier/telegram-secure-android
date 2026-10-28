@@ -38,6 +38,7 @@ import org.signal.libsignal.protocol.util.KeyHelper;
 
 /** Durable, single-device libsignal state backed by {@link KeystoreEncryptedBlobStore}. */
 public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
+    static final Object PROTOCOL_STATE_LOCK = new Object();
     private static final int ONLY_DEVICE_ID = 1;
     private static final String IDENTITY = "identity";
     private static final String REGISTRATION = "registration";
@@ -46,26 +47,28 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     private final int registrationId;
 
     public KeystoreSignalProtocolStore(Context context) {
-        blobs = new KeystoreEncryptedBlobStore(context);
-        try {
-            byte[] savedIdentity = blobs.get(IDENTITY);
-            byte[] savedRegistration = blobs.get(REGISTRATION);
-            if ((savedIdentity == null) != (savedRegistration == null)) {
-                throw new StateFailure("incomplete local identity state", null);
+        synchronized (PROTOCOL_STATE_LOCK) {
+            blobs = new KeystoreEncryptedBlobStore(context);
+            try {
+                byte[] savedIdentity = blobs.get(IDENTITY);
+                byte[] savedRegistration = blobs.get(REGISTRATION);
+                if ((savedIdentity == null) != (savedRegistration == null)) {
+                    throw new StateFailure("incomplete local identity state", null);
+                }
+                if (savedIdentity == null) {
+                    identity = IdentityKeyPair.generate();
+                    registrationId = KeyHelper.generateRegistrationId(false);
+                    blobs.put(IDENTITY, identity.serialize());
+                    blobs.put(REGISTRATION, ByteBuffer.allocate(4).putInt(registrationId).array());
+                } else {
+                    identity = new IdentityKeyPair(savedIdentity);
+                    if (savedRegistration.length != 4) throw new StateFailure("invalid registration state", null);
+                    registrationId = ByteBuffer.wrap(savedRegistration).getInt();
+                }
+            } catch (Exception e) {
+                if (e instanceof StateFailure) throw (StateFailure) e;
+                throw new StateFailure("cannot load local secure identity", e);
             }
-            if (savedIdentity == null) {
-                identity = IdentityKeyPair.generate();
-                registrationId = KeyHelper.generateRegistrationId(false);
-                blobs.put(IDENTITY, identity.serialize());
-                blobs.put(REGISTRATION, ByteBuffer.allocate(4).putInt(registrationId).array());
-            } else {
-                identity = new IdentityKeyPair(savedIdentity);
-                if (savedRegistration.length != 4) throw new StateFailure("invalid registration state", null);
-                registrationId = ByteBuffer.wrap(savedRegistration).getInt();
-            }
-        } catch (Exception e) {
-            if (e instanceof StateFailure) throw (StateFailure) e;
-            throw new StateFailure("cannot load local secure identity", e);
         }
     }
 
@@ -93,61 +96,65 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
         }
     }
 
-    public synchronized void replenishPreKeysIfNeeded() {
-        try {
-            List<Integer> existing = index("prekey");
-            if (existing.size() >= PRE_KEY_POOL_MIN) {
-                return;
-            }
-            int needed = PRE_KEY_POOL_BATCH - existing.size();
-            for (int i = 0; i < needed; i++) {
-                int id = getNextPreKeyId();
-                while (containsPreKey(id)) {
-                    id = getNextPreKeyId();
+    public void replenishPreKeysIfNeeded() {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                List<Integer> existing = index("prekey");
+                if (existing.size() >= PRE_KEY_POOL_MIN) {
+                    return;
                 }
-                storePreKey(id, new PreKeyRecord(id, ECKeyPair.generate()));
+                int needed = PRE_KEY_POOL_BATCH - existing.size();
+                for (int i = 0; i < needed; i++) {
+                    int id = getNextPreKeyId();
+                    while (containsPreKey(id)) {
+                        id = getNextPreKeyId();
+                    }
+                    storePreKey(id, new PreKeyRecord(id, ECKeyPair.generate()));
+                }
+            } catch (Exception e) {
+                throw failure(e);
             }
-        } catch (Exception e) {
-            throw failure(e);
         }
     }
 
     /** Creates the one-time material required to publish a 1:1 pre-key bundle. */
-    public synchronized LocalPreKeyMaterial ensureLocalPreKeyMaterial() {
-        final int signedPreKeyId = 2;
-        final int kyberPreKeyId = 3;
-        try {
-            replenishPreKeysIfNeeded();
-            List<Integer> existing = index("prekey");
-            int preKeyId;
-            if (!existing.isEmpty()) {
-                byte[] b = blobs.get("counter/prekey_offer_offset");
-                int offset = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 0;
-                if (offset < 0 || offset >= existing.size()) {
-                    offset = 0;
+    public LocalPreKeyMaterial ensureLocalPreKeyMaterial() {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            final int signedPreKeyId = 2;
+            final int kyberPreKeyId = 3;
+            try {
+                replenishPreKeysIfNeeded();
+                List<Integer> existing = index("prekey");
+                int preKeyId;
+                if (!existing.isEmpty()) {
+                    byte[] b = blobs.get("counter/prekey_offer_offset");
+                    int offset = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 0;
+                    if (offset < 0 || offset >= existing.size()) {
+                        offset = 0;
+                    }
+                    preKeyId = existing.get(offset);
+                    int nextOffset = (offset + 1) % existing.size();
+                    blobs.put("counter/prekey_offer_offset", ByteBuffer.allocate(4).putInt(nextOffset).array());
+                } else {
+                    preKeyId = getNextPreKeyId();
+                    storePreKey(preKeyId, new PreKeyRecord(preKeyId, ECKeyPair.generate()));
                 }
-                preKeyId = existing.get(offset);
-                int nextOffset = (offset + 1) % existing.size();
-                blobs.put("counter/prekey_offer_offset", ByteBuffer.allocate(4).putInt(nextOffset).array());
-            } else {
-                preKeyId = getNextPreKeyId();
-                storePreKey(preKeyId, new PreKeyRecord(preKeyId, ECKeyPair.generate()));
-            }
-            if (!containsSignedPreKey(signedPreKeyId)) {
-                ECKeyPair pair = ECKeyPair.generate();
-                storeSignedPreKey(signedPreKeyId, new SignedPreKeyRecord(signedPreKeyId,
-                        System.currentTimeMillis(), pair,
-                        identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize())));
-            }
-            if (!containsKyberPreKey(kyberPreKeyId)) {
-                KEMKeyPair pair = KEMKeyPair.generate(KEMKeyType.KYBER_1024);
-                storeKyberPreKey(kyberPreKeyId, new KyberPreKeyRecord(kyberPreKeyId,
-                        System.currentTimeMillis(), pair,
-                        identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize())));
-            }
-            return new LocalPreKeyMaterial(preKeyId, signedPreKeyId, kyberPreKeyId,
-                    loadPreKey(preKeyId), loadSignedPreKey(signedPreKeyId), loadKyberPreKey(kyberPreKeyId));
-        } catch (Exception e) { throw failure(e); }
+                if (!containsSignedPreKey(signedPreKeyId)) {
+                    ECKeyPair pair = ECKeyPair.generate();
+                    storeSignedPreKey(signedPreKeyId, new SignedPreKeyRecord(signedPreKeyId,
+                            System.currentTimeMillis(), pair,
+                            identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize())));
+                }
+                if (!containsKyberPreKey(kyberPreKeyId)) {
+                    KEMKeyPair pair = KEMKeyPair.generate(KEMKeyType.KYBER_1024);
+                    storeKyberPreKey(kyberPreKeyId, new KyberPreKeyRecord(kyberPreKeyId,
+                            System.currentTimeMillis(), pair,
+                            identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize())));
+                }
+                return new LocalPreKeyMaterial(preKeyId, signedPreKeyId, kyberPreKeyId,
+                        loadPreKey(preKeyId), loadSignedPreKey(signedPreKeyId), loadKyberPreKey(kyberPreKeyId));
+            } catch (Exception e) { throw failure(e); }
+        }
     }
 
     public static final class LocalPreKeyMaterial {
@@ -161,31 +168,39 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     }
 
     @Override public IdentityChange saveIdentity(SignalProtocolAddress address, IdentityKey key) {
-        try {
-            byte[] old = blobs.get(key("identity", address));
-            byte[] next = key.serialize();
-            blobs.put(key("identity", address), next);
-            return old != null && !Arrays.equals(old, next)
-                    ? IdentityChange.REPLACED_EXISTING : IdentityChange.NEW_OR_UNCHANGED;
-        } catch (Exception e) { throw failure(e); }
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                byte[] old = blobs.get(key("identity", address));
+                byte[] next = key.serialize();
+                blobs.put(key("identity", address), next);
+                return old != null && !Arrays.equals(old, next)
+                        ? IdentityChange.REPLACED_EXISTING : IdentityChange.NEW_OR_UNCHANGED;
+            } catch (Exception e) { throw failure(e); }
+        }
     }
 
     @Override public boolean isTrustedIdentity(SignalProtocolAddress address, IdentityKey key, Direction direction) {
-        try {
-            byte[] current = blobs.get(key("identity", address));
-            return current == null || Arrays.equals(current, key.serialize());
-        } catch (Exception e) { throw failure(e); }
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                byte[] current = blobs.get(key("identity", address));
+                return current == null || Arrays.equals(current, key.serialize());
+            } catch (Exception e) { throw failure(e); }
+        }
     }
 
     @Override public IdentityKey getIdentity(SignalProtocolAddress address) {
-        try {
-            byte[] saved = blobs.get(key("identity", address));
-            return saved == null ? null : new IdentityKey(saved);
-        } catch (Exception e) { throw failure(e); }
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                byte[] saved = blobs.get(key("identity", address));
+                return saved == null ? null : new IdentityKey(saved);
+            } catch (Exception e) { throw failure(e); }
+        }
     }
 
     public void deleteIdentity(SignalProtocolAddress address) {
-        remove(key("identity", address));
+        synchronized (PROTOCOL_STATE_LOCK) {
+            remove(key("identity", address));
+        }
     }
 
     /**
@@ -193,18 +208,22 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
      * Device-local display copies use different roots and are deliberately preserved.
      */
     public static void resetProtocolState(Context context) {
-        try {
-            new KeystoreEncryptedBlobStore(context.getApplicationContext()).deleteRoots(
-                    IDENTITY, REGISTRATION, "counter", "prekey", "signed", "kyber", "index",
-                    "kyber-used", "session", "sender");
-        } catch (Exception e) {
-            throw failure(e);
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                new KeystoreEncryptedBlobStore(context.getApplicationContext()).deleteRoots(
+                        IDENTITY, REGISTRATION, "counter", "prekey", "signed", "kyber", "index",
+                        "kyber-used", "session", "sender");
+            } catch (Exception e) {
+                throw failure(e);
+            }
         }
     }
 
     static boolean hasRemoteProtocolState(Context context) {
-        return new KeystoreEncryptedBlobStore(context.getApplicationContext())
-                .hasNameStartingWith("identity/", "session/", "sender/", "kyber-used/");
+        synchronized (PROTOCOL_STATE_LOCK) {
+            return new KeystoreEncryptedBlobStore(context.getApplicationContext())
+                    .hasNameStartingWith("identity/", "session/", "sender/", "kyber-used/");
+        }
     }
 
     static void replaceIdentityForRecovery(
@@ -212,101 +231,175 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
             byte[] serializedIdentity,
             int registrationId,
             Map<String, byte[]> transactionRecords) {
-        try {
-            IdentityKeyPair restored = new IdentityKeyPair(serializedIdentity);
-            if (registrationId <= 0 || registrationId > 16_380) {
-                throw new IllegalArgumentException("invalid recovered registration id");
-            }
-            Map<String, byte[]> replacements = new LinkedHashMap<>();
-            replacements.put(IDENTITY, restored.serialize());
-            replacements.put(
-                    REGISTRATION,
-                    ByteBuffer.allocate(4).putInt(registrationId).array());
-            if (transactionRecords != null) {
-                if (transactionRecords.containsKey(IDENTITY)
-                        || transactionRecords.containsKey(REGISTRATION)) {
-                    throw new IllegalArgumentException(
-                            "recovery transaction cannot override local identity records");
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                IdentityKeyPair restored = new IdentityKeyPair(serializedIdentity);
+                if (registrationId <= 0 || registrationId > 16_380) {
+                    throw new IllegalArgumentException("invalid recovered registration id");
                 }
-                replacements.putAll(transactionRecords);
+                Map<String, byte[]> replacements = new LinkedHashMap<>();
+                replacements.put(IDENTITY, restored.serialize());
+                replacements.put(
+                        REGISTRATION,
+                        ByteBuffer.allocate(4).putInt(registrationId).array());
+                if (transactionRecords != null) {
+                    if (transactionRecords.containsKey(IDENTITY)
+                            || transactionRecords.containsKey(REGISTRATION)) {
+                        throw new IllegalArgumentException(
+                                "recovery transaction cannot override local identity records");
+                    }
+                    replacements.putAll(transactionRecords);
+                }
+                new KeystoreEncryptedBlobStore(context.getApplicationContext()).replaceRoots(
+                        replacements,
+                        IDENTITY,
+                        REGISTRATION,
+                        "counter",
+                        "prekey",
+                        "signed",
+                        "kyber",
+                        "index",
+                        "kyber-used",
+                        "session",
+                        "sender");
+            } catch (Exception error) {
+                throw failure(error);
             }
-            new KeystoreEncryptedBlobStore(context.getApplicationContext()).replaceRoots(
-                    replacements,
-                    IDENTITY,
-                    REGISTRATION,
-                    "counter",
-                    "prekey",
-                    "signed",
-                    "kyber",
-                    "index",
-                    "kyber-used",
-                    "session",
-                    "sender");
-        } catch (Exception error) {
-            throw failure(error);
         }
     }
 
     @Override public SessionRecord loadSession(SignalProtocolAddress address) {
-        requireDevice(address);
-        try {
-            byte[] saved = blobs.get(key("session", address));
-            return saved == null ? new SessionRecord() : new SessionRecord(saved);
-        } catch (Exception e) { throw failure(e); }
+        synchronized (PROTOCOL_STATE_LOCK) {
+            requireDevice(address);
+            try {
+                byte[] saved = blobs.get(key("session", address));
+                return saved == null ? new SessionRecord() : new SessionRecord(saved);
+            } catch (Exception e) { throw failure(e); }
+        }
     }
 
     @Override public List<SessionRecord> loadExistingSessions(List<SignalProtocolAddress> addresses) throws NoSessionException {
-        List<SessionRecord> records = new ArrayList<>();
-        for (SignalProtocolAddress address : addresses) {
-            if (!containsSession(address)) throw new NoSessionException(address, "missing secure session");
-            records.add(loadSession(address));
+        synchronized (PROTOCOL_STATE_LOCK) {
+            List<SessionRecord> records = new ArrayList<>();
+            for (SignalProtocolAddress address : addresses) {
+                if (!containsSession(address)) throw new NoSessionException(address, "missing secure session");
+                records.add(loadSession(address));
+            }
+            return records;
         }
-        return records;
     }
 
     @Override public List<Integer> getSubDeviceSessions(String name) { return Collections.emptyList(); }
-    @Override public void storeSession(SignalProtocolAddress address, SessionRecord record) { put(key("session", address), record.serialize()); }
-    @Override public boolean containsSession(SignalProtocolAddress address) { return has(key("session", address)); }
-    @Override public void deleteSession(SignalProtocolAddress address) { remove(key("session", address)); }
+    @Override public void storeSession(SignalProtocolAddress address, SessionRecord record) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            put(key("session", address), record.serialize());
+        }
+    }
+    @Override public boolean containsSession(SignalProtocolAddress address) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            return has(key("session", address));
+        }
+    }
+    @Override public void deleteSession(SignalProtocolAddress address) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            remove(key("session", address));
+        }
+    }
     @Override public void deleteAllSessions(String name) { /* one-device policy: callers delete the explicit address */ }
 
     @Override public PreKeyRecord loadPreKey(int id) throws InvalidKeyIdException {
-        try { byte[] b = get("prekey", id); if (b == null) throw new InvalidKeyIdException("missing prekey " + id); return new PreKeyRecord(b); }
-        catch (InvalidKeyIdException e) { throw e; } catch (Exception e) { throw new InvalidKeyIdException(e); }
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try { byte[] b = get("prekey", id); if (b == null) throw new InvalidKeyIdException("missing prekey " + id); return new PreKeyRecord(b); }
+            catch (InvalidKeyIdException e) { throw e; } catch (Exception e) { throw new InvalidKeyIdException(e); }
+        }
     }
-    @Override public void storePreKey(int id, PreKeyRecord record) { putIndexed("prekey", id, record.serialize()); }
-    @Override public boolean containsPreKey(int id) { return get("prekey", id) != null; }
-    @Override public void removePreKey(int id) { removeIndexed("prekey", id); }
+    @Override public void storePreKey(int id, PreKeyRecord record) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            putIndexed("prekey", id, record.serialize());
+        }
+    }
+    @Override public boolean containsPreKey(int id) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            return get("prekey", id) != null;
+        }
+    }
+    @Override public void removePreKey(int id) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            removeIndexed("prekey", id);
+        }
+    }
 
     @Override public SignedPreKeyRecord loadSignedPreKey(int id) throws InvalidKeyIdException {
-        try { byte[] b = get("signed", id); if (b == null) throw new InvalidKeyIdException("missing signed prekey " + id); return new SignedPreKeyRecord(b); }
-        catch (InvalidKeyIdException e) { throw e; } catch (Exception e) { throw new InvalidKeyIdException(e); }
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try { byte[] b = get("signed", id); if (b == null) throw new InvalidKeyIdException("missing signed prekey " + id); return new SignedPreKeyRecord(b); }
+            catch (InvalidKeyIdException e) { throw e; } catch (Exception e) { throw new InvalidKeyIdException(e); }
+        }
     }
-    @Override public List<SignedPreKeyRecord> loadSignedPreKeys() { return records("signed", SignedPreKeyRecord.class); }
-    @Override public void storeSignedPreKey(int id, SignedPreKeyRecord record) { putIndexed("signed", id, record.serialize()); }
-    @Override public boolean containsSignedPreKey(int id) { return get("signed", id) != null; }
-    @Override public void removeSignedPreKey(int id) { removeIndexed("signed", id); }
+    @Override public List<SignedPreKeyRecord> loadSignedPreKeys() {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            return records("signed", SignedPreKeyRecord.class);
+        }
+    }
+    @Override public void storeSignedPreKey(int id, SignedPreKeyRecord record) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            putIndexed("signed", id, record.serialize());
+        }
+    }
+    @Override public boolean containsSignedPreKey(int id) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            return get("signed", id) != null;
+        }
+    }
+    @Override public void removeSignedPreKey(int id) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            removeIndexed("signed", id);
+        }
+    }
 
     @Override public KyberPreKeyRecord loadKyberPreKey(int id) throws InvalidKeyIdException {
-        try { byte[] b = get("kyber", id); if (b == null) throw new InvalidKeyIdException("missing Kyber prekey " + id); return new KyberPreKeyRecord(b); }
-        catch (InvalidKeyIdException e) { throw e; } catch (Exception e) { throw new InvalidKeyIdException(e); }
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try { byte[] b = get("kyber", id); if (b == null) throw new InvalidKeyIdException("missing Kyber prekey " + id); return new KyberPreKeyRecord(b); }
+            catch (InvalidKeyIdException e) { throw e; } catch (Exception e) { throw new InvalidKeyIdException(e); }
+        }
     }
-    @Override public List<KyberPreKeyRecord> loadKyberPreKeys() { return records("kyber", KyberPreKeyRecord.class); }
-    @Override public void storeKyberPreKey(int id, KyberPreKeyRecord record) { putIndexed("kyber", id, record.serialize()); }
-    @Override public boolean containsKyberPreKey(int id) { return get("kyber", id) != null; }
+    @Override public List<KyberPreKeyRecord> loadKyberPreKeys() {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            return records("kyber", KyberPreKeyRecord.class);
+        }
+    }
+    @Override public void storeKyberPreKey(int id, KyberPreKeyRecord record) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            putIndexed("kyber", id, record.serialize());
+        }
+    }
+    @Override public boolean containsKyberPreKey(int id) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            return get("kyber", id) != null;
+        }
+    }
     @Override public void markKyberPreKeyUsed(int id, int signedId, ECPublicKey base) throws ReusedBaseKeyException {
-        String marker = "kyber-used/" + id + "/" + signedId + "/" + hex(base.serialize());
-        if (has(marker)) throw new ReusedBaseKeyException("reused Kyber prekey base key");
-        put(marker, new byte[] {1});
+        synchronized (PROTOCOL_STATE_LOCK) {
+            String marker = "kyber-used/" + id + "/" + signedId + "/" + hex(base.serialize());
+            if (has(marker)) throw new ReusedBaseKeyException("reused Kyber prekey base key");
+            put(marker, new byte[] {1});
+        }
     }
 
-    @Override public void storeSenderKey(SignalProtocolAddress sender, UUID distribution, SenderKeyRecord record) { put(key("sender/" + distribution, sender), record.serialize()); }
+    @Override public void storeSenderKey(SignalProtocolAddress sender, UUID distribution, SenderKeyRecord record) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            put(key("sender/" + distribution, sender), record.serialize());
+        }
+    }
     @Override public SenderKeyRecord loadSenderKey(SignalProtocolAddress sender, UUID distribution) {
-        try { byte[] b = blobs.get(key("sender/" + distribution, sender)); return b == null ? null : new SenderKeyRecord(b); }
-        catch (Exception e) { throw failure(e); }
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try { byte[] b = blobs.get(key("sender/" + distribution, sender)); return b == null ? null : new SenderKeyRecord(b); }
+            catch (Exception e) { throw failure(e); }
+        }
     }
     public void deleteSenderKey(SignalProtocolAddress sender, UUID distribution) {
-        remove(key("sender/" + distribution, sender));
+        synchronized (PROTOCOL_STATE_LOCK) {
+            remove(key("sender/" + distribution, sender));
+        }
     }
 
     private boolean has(String name) { try { return blobs.get(name) != null; } catch (Exception e) { throw failure(e); } }
