@@ -646,32 +646,19 @@ public final class SecureChatEngine {
         }
     }
 
-    /** Rolls back a caption-edit ratchet step only if no later secure send used it. */
+    /**
+     * Post-dispatch ratchet rollback is intentionally a no-op (SA-05). Once an edit carrier leaves
+     * {@link #encryptAttachmentForEdit}, its message key is treated as consumed so network timeouts
+     * or server errors cannot cause message key reuse.
+     */
+    @Deprecated
     public void rollbackAttachmentEdit(AttachmentEditTransport transport) {
-        if (transport == null || peerUserId < 0 || transport.previousSession == null) {
-            return;
-        }
-        synchronized (SESSION_LOCK) {
-            try {
-                byte[] currentSession = store.loadSession(peerAddress).serialize();
-                if (!Arrays.equals(currentSession, transport.nextSession)) {
-                    return;
-                }
-                store.storeSession(
-                        peerAddress, new SessionRecord(transport.previousSession));
-                localText.forgetOutgoing(transport.attachmentCarrier);
-                localContent.forgetOutgoing(transport.attachmentCarrier);
-            } catch (Exception error) {
-                throw new SecureChatException(
-                        "cannot roll back secure attachment edit", error);
-            }
-        }
+        // Intentionally no-op after pre-flight validation.
     }
 
     /**
-     * Encrypts a replacement text carrier for editing an existing message. The session is advanced
-     * atomically within a rollback boundary so that if Telegram rejects the edit, the ratchet can be
-     * safely rewound.
+     * Encrypts a replacement text carrier for editing an existing message. Pre-flight length bounds
+     * are validated before returning; once returned, the ratchet step is never rolled back.
      */
     public TextEditTransport encryptTextForEdit(String plaintext, int maxTextCharacters) {
         if (!isPaired()) {
@@ -716,25 +703,14 @@ public final class SecureChatEngine {
         }
     }
 
-    /** Rolls back a text-edit ratchet step only if no later secure send used it. */
+    /**
+     * Post-dispatch ratchet rollback is intentionally a no-op (SA-05). Once an edit carrier leaves
+     * {@link #encryptTextForEdit}, its message key is treated as consumed so network timeouts or
+     * server errors cannot cause message key reuse.
+     */
+    @Deprecated
     public void rollbackTextEdit(TextEditTransport transport) {
-        if (transport == null || peerUserId < 0 || transport.previousSession == null) {
-            return;
-        }
-        synchronized (SESSION_LOCK) {
-            try {
-                byte[] currentSession = store.loadSession(peerAddress).serialize();
-                if (!Arrays.equals(currentSession, transport.nextSession)) {
-                    return;
-                }
-                store.storeSession(
-                        peerAddress, new SessionRecord(transport.previousSession));
-                localText.forgetOutgoing(transport.textCarrier);
-            } catch (Exception error) {
-                throw new SecureChatException(
-                        "cannot roll back secure text edit", error);
-            }
-        }
+        // Intentionally no-op after pre-flight validation.
     }
 
     public String encryptDeleteControl(List<byte[]> carrierDigests) {
