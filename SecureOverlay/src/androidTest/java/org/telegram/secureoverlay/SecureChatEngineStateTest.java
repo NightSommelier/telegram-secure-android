@@ -56,4 +56,101 @@ public final class SecureChatEngineStateTest {
             store.deleteSession(address);
         }
     }
+
+    @Test
+    public void concurrentEncryptAndDecryptShareUnifiedSessionLockWithoutRatchetLoss() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        long peerId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        SignalProtocolAddress localAddress = new SignalProtocolAddress("telegram-user-local", 1);
+        SignalProtocolAddress peerAddress = new SignalProtocolAddress("telegram-user-" + peerId, 1);
+
+        // Remote simulated peer in memory
+        org.signal.libsignal.protocol.IdentityKeyPair remoteIdentity =
+                org.signal.libsignal.protocol.IdentityKeyPair.generate();
+        int remoteRegId = org.signal.libsignal.protocol.util.KeyHelper.generateRegistrationId(false);
+        org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore remoteStore =
+                new org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore(
+                        remoteIdentity, remoteRegId);
+        LibsignalSessionAdapter remoteSessions =
+                new LibsignalSessionAdapter(remoteStore, peerAddress);
+
+        SecureChatEngine localEngine = new SecureChatEngine(context, 0, peerId);
+        String offerCarrier = localEngine.createPairingOffer();
+        SecureCarrierCodec.Decoded decodedOffer = SecureCarrierCodec.decode(offerCarrier);
+        org.signal.libsignal.protocol.state.PreKeyBundle localBundle =
+                SecurePreKeyBundleCodec.decode(decodedOffer.payload);
+        remoteSessions.establish(localAddress, localBundle);
+
+        // First message from remote establishes responder session on localEngine
+        LibsignalSessionAdapter.EncryptedMessage bootstrapMsg =
+                remoteSessions.encrypt(localAddress, SecureContentCodec.encodeText("bootstrap"));
+        String bootstrapCarrier = SecureCarrierCodec.encode(
+                bootstrapMsg.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
+                        ? SecureCarrierCodec.TYPE_PREKEY : SecureCarrierCodec.TYPE_WHISPER,
+                bootstrapMsg.serialized);
+        assertEquals("bootstrap", localEngine.decryptText(bootstrapCarrier));
+
+        // Pre-generate 10 inbound carriers from remote
+        final int count = 10;
+        final String[] inboundCarriers = new String[count];
+        for (int i = 0; i < count; i++) {
+            LibsignalSessionAdapter.EncryptedMessage msg =
+                    remoteSessions.encrypt(localAddress, SecureContentCodec.encodeText("in-" + i));
+            inboundCarriers[i] = SecureCarrierCodec.encode(
+                    msg.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
+                            ? SecureCarrierCodec.TYPE_PREKEY : SecureCarrierCodec.TYPE_WHISPER,
+                    msg.serialized);
+        }
+
+        final String[] outboundCarriers = new String[count];
+        final Throwable[] failure = new Throwable[2];
+        java.util.concurrent.CountDownLatch startGate = new java.util.concurrent.CountDownLatch(1);
+
+        Thread encryptThread = new Thread(() -> {
+            try {
+                startGate.await();
+                for (int i = 0; i < count; i++) {
+                    outboundCarriers[i] = localEngine.encryptText("out-" + i);
+                }
+            } catch (Throwable t) {
+                failure[0] = t;
+            }
+        });
+
+        Thread decryptThread = new Thread(() -> {
+            try {
+                startGate.await();
+                for (int i = 0; i < count; i++) {
+                    assertEquals("in-" + i, localEngine.decryptText(inboundCarriers[i]));
+                }
+            } catch (Throwable t) {
+                failure[1] = t;
+            }
+        });
+
+        try {
+            encryptThread.start();
+            decryptThread.start();
+            startGate.countDown();
+            encryptThread.join(10_000);
+            decryptThread.join(10_000);
+            if (failure[0] != null) throw new AssertionError("Encrypt thread failed", failure[0]);
+            if (failure[1] != null) throw new AssertionError("Decrypt thread failed", failure[1]);
+
+            for (int i = 0; i < count; i++) {
+                SecureCarrierCodec.Decoded outDecoded = SecureCarrierCodec.decode(outboundCarriers[i]);
+                int type = outDecoded.type == SecureCarrierCodec.TYPE_PREKEY
+                        ? LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
+                        : LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
+                byte[] plain = remoteSessions.decrypt(
+                        localAddress,
+                        new LibsignalSessionAdapter.EncryptedMessage(type, outDecoded.payload));
+                assertEquals("out-" + i, SecureContentCodec.decode(plain).text);
+            }
+        } finally {
+            localEngine.disable();
+            new KeystoreSignalProtocolStore(context).deleteSession(peerAddress);
+            new KeystoreSignalProtocolStore(context).deleteIdentity(peerAddress);
+        }
+    }
 }

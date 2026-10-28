@@ -53,8 +53,7 @@ public final class SecureChatEngine {
             "\u0000fork-secure-display:group-key-distributed:v1";
     public static final String GROUP_KEY_RECEIVED_DISPLAY =
             "\u0000fork-secure-display:group-key-received:v1";
-    private static final Object DECRYPT_LOCK = new Object();
-    private static final Object ENCRYPT_LOCK = new Object();
+    private static final Object SESSION_LOCK = KeystoreSignalProtocolStore.PROTOCOL_STATE_LOCK;
     private static final int FAILED_DECRYPT_CACHE_LIMIT = 512;
     private static final java.util.LinkedHashMap<String, Boolean> failedDecryptCarriers =
             new java.util.LinkedHashMap<String, Boolean>(FAILED_DECRYPT_CACHE_LIMIT, 0.75f, true) {
@@ -183,16 +182,18 @@ public final class SecureChatEngine {
 
     /** Creates a public pairing offer to send as a normal Telegram text message. */
     public String createPairingOffer() {
-        requireCurrentIdentity();
-        if (state.isIdentityPending(account, peerUserId)) {
-            throw new SecureChatException("new contact identity requires verification", null);
+        synchronized (SESSION_LOCK) {
+            requireCurrentIdentity();
+            if (state.isIdentityPending(account, peerUserId)) {
+                throw new SecureChatException("new contact identity requires verification", null);
+            }
+            String carrier = SecureCarrierCodec.encode(
+                    SecureCarrierCodec.TYPE_PREKEY_BUNDLE,
+                    SecurePreKeyBundleCodec.encodeRecoveryOffer(
+                        store, recoveryStore.getLocalIdentity()));
+            state.markWaiting(account, peerUserId);
+            return carrier;
         }
-        String carrier = SecureCarrierCodec.encode(
-                SecureCarrierCodec.TYPE_PREKEY_BUNDLE,
-                SecurePreKeyBundleCodec.encodeRecoveryOffer(
-                    store, recoveryStore.getLocalIdentity()));
-        state.markWaiting(account, peerUserId);
-        return carrier;
     }
 
     /** Creates a SenderKey distribution carrier for a group (dialogId < 0) encrypted over this 1:1 pairwise channel. */
@@ -214,7 +215,7 @@ public final class SecureChatEngine {
         if (state.isIdentityPending(account, peerUserId)) {
             throw new SecureChatException("new contact identity requires verification", null);
         }
-        synchronized (ENCRYPT_LOCK) {
+        synchronized (SESSION_LOCK) {
             try {
                 java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
                         ("telegram-group-" + groupChatId).getBytes(StandardCharsets.UTF_8));
@@ -245,7 +246,9 @@ public final class SecureChatEngine {
         if (peerUserId >= 0) {
             throw new IllegalArgumentException("peer dialog id must be negative for groups");
         }
-        state.markPaired(account, peerUserId);
+        synchronized (SESSION_LOCK) {
+            state.markPaired(account, peerUserId);
+        }
     }
 
     /** Rotates local SenderKey for this group chat, forcing generation of a new key upon next distribution. */
@@ -253,10 +256,12 @@ public final class SecureChatEngine {
         if (peerUserId >= 0) {
             throw new IllegalArgumentException("peer dialog id must be negative for groups");
         }
-        java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
-                ("telegram-group-" + peerUserId).getBytes(StandardCharsets.UTF_8));
-        store.deleteSenderKey(localAddress, distributionId);
-        state.setGroupKeyNeedsDistribution(account, peerUserId, true);
+        synchronized (SESSION_LOCK) {
+            java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
+                    ("telegram-group-" + peerUserId).getBytes(StandardCharsets.UTF_8));
+            store.deleteSenderKey(localAddress, distributionId);
+            state.setGroupKeyNeedsDistribution(account, peerUserId, true);
+        }
     }
 
     public boolean isGroupKeyNeedsDistribution() {
@@ -284,127 +289,129 @@ public final class SecureChatEngine {
      * fingerprints and explicitly approves it.</p>
      */
     public PairingOfferResult receivePairingOffer(String carrier, int messageId) {
-        requireCurrentIdentity();
-        if (messageId <= 0) {
-            throw new IllegalArgumentException("pairing message id must be positive");
-        }
-        SecureCarrierCodec.Decoded decoded = requireCarrier(carrier, SecureCarrierCodec.TYPE_PREKEY_BUNDLE);
-        SecurePreKeyBundleCodec.DecodedOffer offer =
-                SecurePreKeyBundleCodec.decodeOffer(decoded.payload);
-        PreKeyBundle remote = offer.preKeyBundle;
-        if (state.isIdentityPending(account, peerUserId)
-                && state.getPendingMessageId(account, peerUserId) == messageId
-                && carrier.equals(state.getPendingCarrier(account, peerUserId))) {
-            return state.getPendingKind(account, peerUserId)
-                            == SecureChatState.PendingKind.RECOVERY_ADVANCE
-                    ? PairingOfferResult.RECOVERY_CHANGE_PENDING
-                    : PairingOfferResult.IDENTITY_CHANGE_PENDING;
-        }
-        IdentityKey trusted = store.getIdentity(peerAddress);
-        boolean sameIdentity = trusted != null && Arrays.equals(
-                trusted.serialize(), remote.getIdentityKey().serialize());
-        int lastPairingMessageId = state.getLastPairingMessageId(account, peerUserId);
-        if (messageId < lastPairingMessageId
-                || (messageId == lastPairingMessageId
-                        && !(sameIdentity && getMode() == Mode.WAITING))) {
-            return PairingOfferResult.STALE;
-        }
-        if (sameIdentity) {
-            SecureRecoveryGenerationStore.Record trustedRecovery =
+        synchronized (SESSION_LOCK) {
+            requireCurrentIdentity();
+            if (messageId <= 0) {
+                throw new IllegalArgumentException("pairing message id must be positive");
+            }
+            SecureCarrierCodec.Decoded decoded = requireCarrier(carrier, SecureCarrierCodec.TYPE_PREKEY_BUNDLE);
+            SecurePreKeyBundleCodec.DecodedOffer offer =
+                    SecurePreKeyBundleCodec.decodeOffer(decoded.payload);
+            PreKeyBundle remote = offer.preKeyBundle;
+            if (state.isIdentityPending(account, peerUserId)
+                    && state.getPendingMessageId(account, peerUserId) == messageId
+                    && carrier.equals(state.getPendingCarrier(account, peerUserId))) {
+                return state.getPendingKind(account, peerUserId)
+                                == SecureChatState.PendingKind.RECOVERY_ADVANCE
+                        ? PairingOfferResult.RECOVERY_CHANGE_PENDING
+                        : PairingOfferResult.IDENTITY_CHANGE_PENDING;
+            }
+            IdentityKey trusted = store.getIdentity(peerAddress);
+            boolean sameIdentity = trusted != null && Arrays.equals(
+                    trusted.serialize(), remote.getIdentityKey().serialize());
+            int lastPairingMessageId = state.getLastPairingMessageId(account, peerUserId);
+            if (messageId < lastPairingMessageId
+                    || (messageId == lastPairingMessageId
+                            && !(sameIdentity && getMode() == Mode.WAITING))) {
+                return PairingOfferResult.STALE;
+            }
+            if (sameIdentity) {
+                SecureRecoveryGenerationStore.Record trustedRecovery =
+                        recoveryStore.getVerifiedPeer(account, peerUserId);
+                boolean bootstrapRecovery = false;
+                if (offer.recovery == null) {
+                    if (trustedRecovery != null) {
+                        return PairingOfferResult.RECOVERY_REJECTED;
+                    }
+                } else {
+                    SecureRecoveryGenerationStore.Decision recoveryDecision =
+                            recoveryStore.classifyPeer(account, peerUserId, offer.recovery);
+                    if (recoveryDecision
+                                    == SecureRecoveryGenerationStore.Decision.REJECT_ROLLBACK
+                            || recoveryDecision
+                                    == SecureRecoveryGenerationStore.Decision.REJECT_CLONE) {
+                        return PairingOfferResult.RECOVERY_REJECTED;
+                    }
+                    if (recoveryDecision
+                            == SecureRecoveryGenerationStore.Decision
+                                    .ADVANCE_REQUIRES_VERIFICATION) {
+                        state.markIdentityPending(
+                                account,
+                                peerUserId,
+                                carrier,
+                                messageId,
+                                SecureChatState.PendingKind.RECOVERY_ADVANCE);
+                        return PairingOfferResult.RECOVERY_CHANGE_PENDING;
+                    }
+                    if (recoveryDecision
+                            == SecureRecoveryGenerationStore.Decision.FIRST_SEEN) {
+                        bootstrapRecovery = true;
+                    }
+                }
+                // Sending our own offer moves the local UI to WAITING without discarding the
+                // established ratchet. A matching offer from the already trusted contact must
+                // complete that state and produce an authenticated acknowledgement. Allow the
+                // equal-id case as a one-time repair for clients that recorded the offer before
+                // this transition existed; history reload then finishes pairing automatically.
+                try {
+                    if (bootstrapRecovery) {
+                        recoveryStore.recordVerifiedPeer(account, peerUserId, offer.recovery);
+                    }
+                    if (getMode() == Mode.WAITING) {
+                        if (!store.containsSession(peerAddress)) {
+                            sessions.establish(peerAddress, remote);
+                        }
+                        state.markPaired(account, peerUserId);
+                    }
+                    state.recordPairingMessage(account, peerUserId, messageId);
+                } catch (Exception e) {
+                    if (bootstrapRecovery) {
+                        try {
+                            recoveryStore.restoreVerifiedPeer(
+                                    account, peerUserId, trustedRecovery);
+                        } catch (RuntimeException rollbackError) {
+                            e.addSuppressed(rollbackError);
+                        }
+                    }
+                    throw new SecureChatException(
+                            "cannot restore secure chat with trusted identity", e);
+                }
+                return PairingOfferResult.SAME_IDENTITY;
+            }
+            if (trusted != null) {
+                state.markIdentityPending(
+                        account,
+                        peerUserId,
+                        carrier,
+                        messageId,
+                        SecureChatState.PendingKind.IDENTITY_CHANGE);
+                return PairingOfferResult.IDENTITY_CHANGE_PENDING;
+            }
+            if (!canAutoAcceptPairingOffer()) {
+                return PairingOfferResult.STALE;
+            }
+            SecureRecoveryGenerationStore.Record previousRecovery =
                     recoveryStore.getVerifiedPeer(account, peerUserId);
-            boolean bootstrapRecovery = false;
-            if (offer.recovery == null) {
-                if (trustedRecovery != null) {
-                    return PairingOfferResult.RECOVERY_REJECTED;
-                }
-            } else {
-                SecureRecoveryGenerationStore.Decision recoveryDecision =
-                        recoveryStore.classifyPeer(account, peerUserId, offer.recovery);
-                if (recoveryDecision
-                                == SecureRecoveryGenerationStore.Decision.REJECT_ROLLBACK
-                        || recoveryDecision
-                                == SecureRecoveryGenerationStore.Decision.REJECT_CLONE) {
-                    return PairingOfferResult.RECOVERY_REJECTED;
-                }
-                if (recoveryDecision
-                        == SecureRecoveryGenerationStore.Decision
-                                .ADVANCE_REQUIRES_VERIFICATION) {
-                    state.markIdentityPending(
-                            account,
-                            peerUserId,
-                            carrier,
-                            messageId,
-                            SecureChatState.PendingKind.RECOVERY_ADVANCE);
-                    return PairingOfferResult.RECOVERY_CHANGE_PENDING;
-                }
-                if (recoveryDecision
-                        == SecureRecoveryGenerationStore.Decision.FIRST_SEEN) {
-                    bootstrapRecovery = true;
-                }
-            }
-            // Sending our own offer moves the local UI to WAITING without discarding the
-            // established ratchet. A matching offer from the already trusted contact must
-            // complete that state and produce an authenticated acknowledgement. Allow the
-            // equal-id case as a one-time repair for clients that recorded the offer before
-            // this transition existed; history reload then finishes pairing automatically.
             try {
-                if (bootstrapRecovery) {
-                    recoveryStore.recordVerifiedPeer(account, peerUserId, offer.recovery);
-                }
-                if (getMode() == Mode.WAITING) {
-                    if (!store.containsSession(peerAddress)) {
-                        sessions.establish(peerAddress, remote);
-                    }
-                    state.markPaired(account, peerUserId);
-                }
+                recoveryStore.replaceVerifiedPeerAfterIdentityChange(
+                        account, peerUserId, offer.recovery);
+                sessions.establish(peerAddress, remote);
+                state.markPaired(account, peerUserId);
                 state.recordPairingMessage(account, peerUserId, messageId);
+                return PairingOfferResult.ACCEPTED_INITIAL;
             } catch (Exception e) {
-                if (bootstrapRecovery) {
-                    try {
-                        recoveryStore.restoreVerifiedPeer(
-                                account, peerUserId, trustedRecovery);
-                    } catch (RuntimeException rollbackError) {
-                        e.addSuppressed(rollbackError);
-                    }
+                // A new peer normally has no prior record, but restore it if this peer ID was seen
+                // before under a separately verified identity.
+                try {
+                    store.deleteSession(peerAddress);
+                    store.deleteIdentity(peerAddress);
+                    recoveryStore.restoreVerifiedPeer(
+                            account, peerUserId, previousRecovery);
+                } catch (RuntimeException rollbackError) {
+                    e.addSuppressed(rollbackError);
                 }
-                throw new SecureChatException(
-                        "cannot restore secure chat with trusted identity", e);
+                throw new SecureChatException("cannot establish secure chat", e);
             }
-            return PairingOfferResult.SAME_IDENTITY;
-        }
-        if (trusted != null) {
-            state.markIdentityPending(
-                    account,
-                    peerUserId,
-                    carrier,
-                    messageId,
-                    SecureChatState.PendingKind.IDENTITY_CHANGE);
-            return PairingOfferResult.IDENTITY_CHANGE_PENDING;
-        }
-        if (!canAutoAcceptPairingOffer()) {
-            return PairingOfferResult.STALE;
-        }
-        SecureRecoveryGenerationStore.Record previousRecovery =
-                recoveryStore.getVerifiedPeer(account, peerUserId);
-        try {
-            recoveryStore.replaceVerifiedPeerAfterIdentityChange(
-                    account, peerUserId, offer.recovery);
-            sessions.establish(peerAddress, remote);
-            state.markPaired(account, peerUserId);
-            state.recordPairingMessage(account, peerUserId, messageId);
-            return PairingOfferResult.ACCEPTED_INITIAL;
-        } catch (Exception e) {
-            // A new peer normally has no prior record, but restore it if this peer ID was seen
-            // before under a separately verified identity.
-            try {
-                store.deleteSession(peerAddress);
-                store.deleteIdentity(peerAddress);
-                recoveryStore.restoreVerifiedPeer(
-                        account, peerUserId, previousRecovery);
-            } catch (RuntimeException rollbackError) {
-                e.addSuppressed(rollbackError);
-            }
-            throw new SecureChatException("cannot establish secure chat", e);
         }
     }
 
@@ -481,7 +488,7 @@ public final class SecureChatEngine {
     }
 
     public SecureContentCodec.StaticSticker decryptStaticStickerManifest(String carrier, long senderUserId) {
-        synchronized (DECRYPT_LOCK) {
+        synchronized (SESSION_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
             if (decoded == null
                     || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE
@@ -559,7 +566,7 @@ public final class SecureChatEngine {
         }
         byte[] content = SecureContentCodec.encodeAttachment(attachment);
         String display = attachment.photo ? PHOTO_DISPLAY : FILE_DISPLAY;
-        synchronized (ENCRYPT_LOCK) {
+        synchronized (SESSION_LOCK) {
             SessionRecord previousSession = null;
             String firstCarrier = null;
             try {
@@ -607,7 +614,7 @@ public final class SecureChatEngine {
         }
         byte[] content = SecureContentCodec.encodeAttachment(attachment);
         String display = attachment.photo ? PHOTO_DISPLAY : FILE_DISPLAY;
-        synchronized (ENCRYPT_LOCK) {
+        synchronized (SESSION_LOCK) {
             byte[] previousSession = null;
             String carrier = null;
             try {
@@ -646,7 +653,7 @@ public final class SecureChatEngine {
         if (transport == null || peerUserId < 0 || transport.previousSession == null) {
             return;
         }
-        synchronized (ENCRYPT_LOCK) {
+        synchronized (SESSION_LOCK) {
             try {
                 byte[] currentSession = store.loadSession(peerAddress).serialize();
                 if (!Arrays.equals(currentSession, transport.nextSession)) {
@@ -679,7 +686,7 @@ public final class SecureChatEngine {
             throw new IllegalArgumentException("secure carrier limits must be positive");
         }
         byte[] content = SecureContentCodec.encodeText(plaintext);
-        synchronized (ENCRYPT_LOCK) {
+        synchronized (SESSION_LOCK) {
             byte[] previousSession = null;
             String carrier = null;
             try {
@@ -716,7 +723,7 @@ public final class SecureChatEngine {
         if (transport == null || peerUserId < 0 || transport.previousSession == null) {
             return;
         }
-        synchronized (ENCRYPT_LOCK) {
+        synchronized (SESSION_LOCK) {
             try {
                 byte[] currentSession = store.loadSession(peerAddress).serialize();
                 if (!Arrays.equals(currentSession, transport.nextSession)) {
@@ -840,7 +847,7 @@ public final class SecureChatEngine {
     }
 
     public SecureContentCodec.Attachment decryptAttachmentManifest(String carrier, long senderUserId) {
-        synchronized (DECRYPT_LOCK) {
+        synchronized (SESSION_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
             if (decoded == null
                     || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE
@@ -981,30 +988,32 @@ public final class SecureChatEngine {
             LibsignalSessionAdapter sessionSource,
             byte[] protocolPlaintext,
             String localDisplayText) {
-        try {
-            LibsignalSessionAdapter.EncryptedMessage encrypted;
-            if (peerUserId < 0) {
-                java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
-                        ("telegram-group-" + peerUserId).getBytes(StandardCharsets.UTF_8));
-                encrypted = sessionSource.encryptGroup(distributionId, protocolPlaintext);
-            } else {
-                encrypted = sessionSource.encrypt(peerAddress, protocolPlaintext);
+        synchronized (SESSION_LOCK) {
+            try {
+                LibsignalSessionAdapter.EncryptedMessage encrypted;
+                if (peerUserId < 0) {
+                    java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
+                            ("telegram-group-" + peerUserId).getBytes(StandardCharsets.UTF_8));
+                    encrypted = sessionSource.encryptGroup(distributionId, protocolPlaintext);
+                } else {
+                    encrypted = sessionSource.encrypt(peerAddress, protocolPlaintext);
+                }
+                int carrierType;
+                if (encrypted.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY) {
+                    carrierType = SecureCarrierCodec.TYPE_PREKEY;
+                } else if (encrypted.type == LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY) {
+                    carrierType = SecureCarrierCodec.TYPE_SENDERKEY;
+                } else {
+                    carrierType = SecureCarrierCodec.TYPE_WHISPER;
+                }
+                String carrier = SecureCarrierCodec.encode(carrierType, encrypted.serialized);
+                // Persist before handing the carrier to Telegram. If this fails, do not send a message
+                // that this client cannot render locally after a reload.
+                localText.rememberOutgoing(carrier, localDisplayText);
+                return carrier;
+            } catch (Exception e) {
+                throw new SecureChatException("cannot encrypt secure text", e);
             }
-            int carrierType;
-            if (encrypted.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY) {
-                carrierType = SecureCarrierCodec.TYPE_PREKEY;
-            } else if (encrypted.type == LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY) {
-                carrierType = SecureCarrierCodec.TYPE_SENDERKEY;
-            } else {
-                carrierType = SecureCarrierCodec.TYPE_WHISPER;
-            }
-            String carrier = SecureCarrierCodec.encode(carrierType, encrypted.serialized);
-            // Persist before handing the carrier to Telegram. If this fails, do not send a message
-            // that this client cannot render locally after a reload.
-            localText.rememberOutgoing(carrier, localDisplayText);
-            return carrier;
-        } catch (Exception e) {
-            throw new SecureChatException("cannot encrypt secure text", e);
         }
     }
 
@@ -1015,18 +1024,20 @@ public final class SecureChatEngine {
      * linked installation. It must not be passed to the inbound ratchet.</p>
      */
     public String getOutgoingText(String carrier) {
-        try {
-            String display = localText.loadOutgoing(carrier);
-            // r24 paused after sending a rejection but retained the now-dead old session. Seeing
-            // the locally cached rejection upgrades that state in place without rotating either
-            // identity or deleting the old trusted fingerprint.
-            if (isPairingRejectionDisplay(display)
-                    && state.isPaused(account, peerUserId)) {
-                store.deleteSession(peerAddress);
+        synchronized (SESSION_LOCK) {
+            try {
+                String display = localText.loadOutgoing(carrier);
+                // r24 paused after sending a rejection but retained the now-dead old session. Seeing
+                // the locally cached rejection upgrades that state in place without rotating either
+                // identity or deleting the old trusted fingerprint.
+                if (isPairingRejectionDisplay(display)
+                        && state.isPaused(account, peerUserId)) {
+                    store.deleteSession(peerAddress);
+                }
+                return display;
+            } catch (Exception e) {
+                throw new SecureChatException("cannot load local outgoing secure text", e);
             }
-            return display;
-        } catch (Exception e) {
-            throw new SecureChatException("cannot load local outgoing secure text", e);
         }
     }
 
@@ -1057,7 +1068,7 @@ public final class SecureChatEngine {
     }
 
     public String decryptText(String carrier, long senderUserId) {
-        synchronized (DECRYPT_LOCK) {
+        synchronized (SESSION_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
             if (decoded == null) return null;
             if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
@@ -1453,12 +1464,14 @@ public final class SecureChatEngine {
      * method deliberately returns false. That recovery requires an explicitly approved re-pair.</p>
      */
     public boolean resumeIfPaused() {
-        requireCurrentIdentity();
-        if (!state.isPaused(account, peerUserId) || !store.containsSession(peerAddress)) {
-            return false;
+        synchronized (SESSION_LOCK) {
+            requireCurrentIdentity();
+            if (!state.isPaused(account, peerUserId) || !store.containsSession(peerAddress)) {
+                return false;
+            }
+            state.markPaired(account, peerUserId);
+            return true;
         }
-        state.markPaired(account, peerUserId);
-        return true;
     }
 
     public String getOwnFingerprint() {
@@ -1510,67 +1523,71 @@ public final class SecureChatEngine {
 
     /** Replaces a changed remote identity only after an explicit fingerprint confirmation. */
     public void acceptPendingIdentity() {
-        requireCurrentIdentity();
-        String carrier = state.getPendingCarrier(account, peerUserId);
-        if (!state.isIdentityPending(account, peerUserId) || carrier == null) {
-            throw new SecureChatException("no pending contact identity", null);
-        }
-        SecureCarrierCodec.Decoded decoded =
-                requireCarrier(carrier, SecureCarrierCodec.TYPE_PREKEY_BUNDLE);
-        SecurePreKeyBundleCodec.DecodedOffer offer =
-                SecurePreKeyBundleCodec.decodeOffer(decoded.payload);
-        PreKeyBundle remote = offer.preKeyBundle;
-        SecureChatState.PendingKind pendingKind =
-                state.getPendingKind(account, peerUserId);
-        IdentityKey oldIdentity = store.getIdentity(peerAddress);
-        boolean hadSession = store.containsSession(peerAddress);
-        SessionRecord oldSession = hadSession ? store.loadSession(peerAddress) : null;
-        SecureRecoveryGenerationStore.Record oldRecovery =
-                recoveryStore.getVerifiedPeer(account, peerUserId);
-        try {
-            if (pendingKind == SecureChatState.PendingKind.RECOVERY_ADVANCE) {
-                if (offer.recovery == null) {
-                    throw new SecurityException("recovery offer lost authenticated metadata");
-                }
-                recoveryStore.recordVerifiedPeer(account, peerUserId, offer.recovery);
-            } else {
-                recoveryStore.replaceVerifiedPeerAfterIdentityChange(
-                        account, peerUserId, offer.recovery);
+        synchronized (SESSION_LOCK) {
+            requireCurrentIdentity();
+            String carrier = state.getPendingCarrier(account, peerUserId);
+            if (!state.isIdentityPending(account, peerUserId) || carrier == null) {
+                throw new SecureChatException("no pending contact identity", null);
             }
-            store.deleteSession(peerAddress);
-            if (oldIdentity != null) {
-                store.deleteIdentity(peerAddress);
-            }
-            sessions.establish(peerAddress, remote);
-            state.approvePendingIdentity(account, peerUserId);
-        } catch (Exception error) {
+            SecureCarrierCodec.Decoded decoded =
+                    requireCarrier(carrier, SecureCarrierCodec.TYPE_PREKEY_BUNDLE);
+            SecurePreKeyBundleCodec.DecodedOffer offer =
+                    SecurePreKeyBundleCodec.decodeOffer(decoded.payload);
+            PreKeyBundle remote = offer.preKeyBundle;
+            SecureChatState.PendingKind pendingKind =
+                    state.getPendingKind(account, peerUserId);
+            IdentityKey oldIdentity = store.getIdentity(peerAddress);
+            boolean hadSession = store.containsSession(peerAddress);
+            SessionRecord oldSession = hadSession ? store.loadSession(peerAddress) : null;
+            SecureRecoveryGenerationStore.Record oldRecovery =
+                    recoveryStore.getVerifiedPeer(account, peerUserId);
             try {
+                if (pendingKind == SecureChatState.PendingKind.RECOVERY_ADVANCE) {
+                    if (offer.recovery == null) {
+                        throw new SecurityException("recovery offer lost authenticated metadata");
+                    }
+                    recoveryStore.recordVerifiedPeer(account, peerUserId, offer.recovery);
+                } else {
+                    recoveryStore.replaceVerifiedPeerAfterIdentityChange(
+                            account, peerUserId, offer.recovery);
+                }
                 store.deleteSession(peerAddress);
-                store.deleteIdentity(peerAddress);
                 if (oldIdentity != null) {
-                    store.saveIdentity(peerAddress, oldIdentity);
+                    store.deleteIdentity(peerAddress);
                 }
-                if (hadSession) {
-                    store.storeSession(peerAddress, oldSession);
+                sessions.establish(peerAddress, remote);
+                state.approvePendingIdentity(account, peerUserId);
+            } catch (Exception error) {
+                try {
+                    store.deleteSession(peerAddress);
+                    store.deleteIdentity(peerAddress);
+                    if (oldIdentity != null) {
+                        store.saveIdentity(peerAddress, oldIdentity);
+                    }
+                    if (hadSession) {
+                        store.storeSession(peerAddress, oldSession);
+                    }
+                    recoveryStore.restoreVerifiedPeer(account, peerUserId, oldRecovery);
+                } catch (RuntimeException rollbackError) {
+                    error.addSuppressed(rollbackError);
                 }
-                recoveryStore.restoreVerifiedPeer(account, peerUserId, oldRecovery);
-            } catch (RuntimeException rollbackError) {
-                error.addSuppressed(rollbackError);
+                throw new SecureChatException("cannot replace contact secure identity", error);
             }
-            throw new SecureChatException("cannot replace contact secure identity", error);
         }
     }
 
     public void rejectPendingIdentity() {
-        requireCurrentIdentity();
-        if (!state.isIdentityPending(account, peerUserId)) {
-            return;
+        synchronized (SESSION_LOCK) {
+            requireCurrentIdentity();
+            if (!state.isIdentityPending(account, peerUserId)) {
+                return;
+            }
+            // The old ratchet cannot be resumed after the contact rotated their identity. Keep the
+            // old trusted fingerprint for comparison, but force the next shield tap to send a fresh
+            // pairing offer instead of promoting a dead session back to PROTECTED.
+            store.deleteSession(peerAddress);
+            state.rejectPendingIdentity(account, peerUserId);
         }
-        // The old ratchet cannot be resumed after the contact rotated their identity. Keep the
-        // old trusted fingerprint for comparison, but force the next shield tap to send a fresh
-        // pairing offer instead of promoting a dead session back to PROTECTED.
-        store.deleteSession(peerAddress);
-        state.rejectPendingIdentity(account, peerUserId);
     }
 
     private void pauseAfterPairingRejection() {
@@ -1592,15 +1609,17 @@ public final class SecureChatEngine {
      * Telegram account data and Keystore-encrypted local display copies are not modified.
      */
     public static String resetOwnIdentity(Context context) {
-        Context appContext = context.getApplicationContext();
-        KeystoreSignalProtocolStore.resetProtocolState(appContext);
-        SecureChatState chatState = new SecureChatState(appContext);
-        chatState.resetForNewIdentity();
-        clearFailedDecryptCache();
-        new SecureRecoveryGenerationStore(appContext)
-                .advanceLocalIdentity(generationForEpoch(chatState.getIdentityEpoch()));
-        return fingerprint(new KeystoreSignalProtocolStore(appContext)
-                .getIdentityKeyPair().getPublicKey().serialize());
+        synchronized (SESSION_LOCK) {
+            Context appContext = context.getApplicationContext();
+            KeystoreSignalProtocolStore.resetProtocolState(appContext);
+            SecureChatState chatState = new SecureChatState(appContext);
+            chatState.resetForNewIdentity();
+            clearFailedDecryptCache();
+            new SecureRecoveryGenerationStore(appContext)
+                    .advanceLocalIdentity(generationForEpoch(chatState.getIdentityEpoch()));
+            return fingerprint(new KeystoreSignalProtocolStore(appContext)
+                    .getIdentityKeyPair().getPublicKey().serialize());
+        }
     }
 
     private static long generationForEpoch(long identityEpoch) {
