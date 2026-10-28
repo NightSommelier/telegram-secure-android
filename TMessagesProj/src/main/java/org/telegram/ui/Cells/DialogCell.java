@@ -3094,6 +3094,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 ? getString(R.string.ForkSecureEncryptedFile)
                 : getString(R.string.ForkSecureReplyPreview));
         try {
+            if (message.isForwarded()) {
+                throw new IllegalStateException("forwarded secure carrier is rejected");
+            }
             if (securePreviewEngine == null
                     || securePreviewPeerId != currentDialogId
                     || securePreviewEngine.isStale()) {
