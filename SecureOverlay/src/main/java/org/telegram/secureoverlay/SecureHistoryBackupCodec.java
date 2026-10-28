@@ -57,9 +57,6 @@ public final class SecureHistoryBackupCodec {
     private static final int MAX_PEERS = 20_000;
     private static final int MAX_PASSWORD_BYTES = 512;
     private static final int MAX_IDENTITY_BYTES = 512;
-    private static final byte[] NO_PASSWORD_KDF_INPUT =
-            "Fork-Secure unprotected history backup v1"
-                    .getBytes(StandardCharsets.US_ASCII);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private SecureHistoryBackupCodec() {
@@ -163,15 +160,14 @@ public final class SecureHistoryBackupCodec {
             throw new IllegalArgumentException("invalid secure history encryption input");
         }
         byte[] plaintext = encodePlaintext(payload);
-        boolean noPassword = password != null && password.length == 0;
-        byte[] passwordBytes = encodePassword(password, noPassword);
+        byte[] passwordBytes = encodePassword(password);
         byte[] key = null;
         try {
             byte[] header = encodeHeader(
                     plaintext.length,
                     salt,
                     nonce,
-                    noPassword ? FLAG_NO_PASSWORD : 0);
+                    0);
             key = pbkdf2HmacSha256(passwordBytes, salt);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(
@@ -198,7 +194,7 @@ public final class SecureHistoryBackupCodec {
 
     public static Payload decrypt(byte[] archive, char[] password) {
         ParsedContainer parsed = parseContainer(archive);
-        byte[] passwordBytes = encodePassword(password, parsed.noPassword);
+        byte[] passwordBytes = encodePassword(password);
         byte[] key = null;
         byte[] plaintext = null;
         try {
@@ -478,7 +474,7 @@ public final class SecureHistoryBackupCodec {
                     || version != FORMAT_VERSION
                     || kdf != KDF_PBKDF2_HMAC_SHA256
                     || aead != AEAD_AES_256_GCM
-                    || (flags != 0 && flags != FLAG_NO_PASSWORD)
+                    || flags != 0
                     || iterations != PBKDF2_ITERATIONS
                     || reservedKdf != 0
                     || parallelism != 1
@@ -547,18 +543,8 @@ public final class SecureHistoryBackupCodec {
         }
     }
 
-    private static byte[] encodePassword(char[] password, boolean noPassword) {
-        if (password == null) {
-            throw new IllegalArgumentException("secure history password is required");
-        }
-        if (noPassword) {
-            if (password.length != 0) {
-                throw new SecurityException(
-                        "unprotected secure history backup requires an empty password");
-            }
-            return NO_PASSWORD_KDF_INPUT.clone();
-        }
-        if (password.length == 0) {
+    private static byte[] encodePassword(char[] password) {
+        if (password == null || password.length == 0) {
             throw new IllegalArgumentException("secure history password is required");
         }
         try {
