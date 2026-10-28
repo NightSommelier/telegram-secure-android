@@ -1536,30 +1536,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         object.messageOwner.attachPath = object.previousAttachPath;
         object.messageOwner.send_state = MessageObject.MESSAGE_SEND_STATE_SENT;
 
-        if (object.forkSecureTextEditTransport != null) {
-            try {
-                SecureChatEngine secureChat = new SecureChatEngine(
-                        ApplicationLoader.applicationContext,
-                        currentAccount,
-                        object.getDialogId());
-                secureChat.rollbackTextEdit(object.forkSecureTextEditTransport);
-            } catch (Exception e) {
-                FileLog.e(e);
-            }
-            object.forkSecureTextEditTransport = null;
-        }
-        if (object.forkSecureAttachmentEditTransport != null) {
-            try {
-                SecureChatEngine secureChat = new SecureChatEngine(
-                        ApplicationLoader.applicationContext,
-                        currentAccount,
-                        object.getDialogId());
-                secureChat.rollbackAttachmentEdit(object.forkSecureAttachmentEditTransport);
-            } catch (Exception e) {
-                FileLog.e(e);
-            }
-            object.forkSecureAttachmentEditTransport = null;
-        }
+        object.forkSecureTextEditTransport = null;
+        object.forkSecureAttachmentEditTransport = null;
 
         if (object.messageOwner.entities != null) {
             object.messageOwner.flags |= 128;
@@ -3458,31 +3436,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 request.message = newCarrier;
                 request.flags |= 2048;
                 request.no_webpage = true;
-                SecureChatEngine finalSecureChat = secureChat;
-                SecureChatEngine.AttachmentEditTransport finalEditTransport = editTransport;
                 accountInstance.getConnectionsManager().sendRequest(request, (response, error) -> {
                     if (error == null) {
                         accountInstance.getMessagesController()
                                 .processUpdates((TLRPC.Updates) response, false);
                     } else {
-                        if (finalSecureChat != null && finalEditTransport != null) {
-                            try {
-                                finalSecureChat.rollbackAttachmentEdit(finalEditTransport);
-                            } catch (RuntimeException rollbackError) {
-                                FileLog.e(rollbackError);
-                            }
-                        }
                         showForkSecureError(R.string.ForkSecureEditFailed);
                     }
                 });
             } catch (Exception error) {
-                if (secureChat != null && editTransport != null) {
-                    try {
-                        secureChat.rollbackAttachmentEdit(editTransport);
-                    } catch (RuntimeException rollbackError) {
-                        error.addSuppressed(rollbackError);
-                    }
-                }
                 FileLog.e(error);
                 showForkSecureError(R.string.ForkSecureEditFailed);
             }
@@ -5927,30 +5889,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             if (error == null) {
                 getMessagesController().processUpdates((TLRPC.Updates) response, false);
             } else {
-                if (messageObject.forkSecureTextEditTransport != null) {
-                    try {
-                        SecureChatEngine secureChat = new SecureChatEngine(
-                                ApplicationLoader.applicationContext,
-                                currentAccount,
-                                messageObject.getDialogId());
-                        secureChat.rollbackTextEdit(messageObject.forkSecureTextEditTransport);
-                    } catch (Exception rollbackError) {
-                        FileLog.e(rollbackError);
-                    }
-                    messageObject.forkSecureTextEditTransport = null;
-                }
-                if (messageObject.forkSecureAttachmentEditTransport != null) {
-                    try {
-                        SecureChatEngine secureChat = new SecureChatEngine(
-                                ApplicationLoader.applicationContext,
-                                currentAccount,
-                                messageObject.getDialogId());
-                        secureChat.rollbackAttachmentEdit(messageObject.forkSecureAttachmentEditTransport);
-                    } catch (Exception rollbackError) {
-                        FileLog.e(rollbackError);
-                    }
-                    messageObject.forkSecureAttachmentEditTransport = null;
-                }
+                messageObject.forkSecureTextEditTransport = null;
+                messageObject.forkSecureAttachmentEditTransport = null;
                 AndroidUtilities.runOnUIThread(() -> AlertsCreator.processError(currentAccount, error, fragment, req));
             }
         });

@@ -536,6 +536,8 @@ public final class SecureIdentityRotationTest {
 
         SecureChatEngine.TextEditTransport nextTransport =
                 engine.encryptTextForEdit("recovered text", 4096);
+        byte[] failedDecrypted = decryptFromEngine(remotePeer, failedTransport.textCarrier);
+        assertEquals("failed text", SecureContentCodec.decode(failedDecrypted).text);
         byte[] nextDecrypted = decryptFromEngine(remotePeer, nextTransport.textCarrier);
         SecureContentCodec.Decoded nextDecoded = SecureContentCodec.decode(nextDecrypted);
         assertEquals("recovered text", nextDecoded.text);
