@@ -153,4 +153,21 @@ public final class SecureChatEngineStateTest {
             new KeystoreSignalProtocolStore(context).deleteIdentity(peerAddress);
         }
     }
+
+    @Test
+    public void rejectsCrossPeerSenderBindingInOneToOneChat() {
+        Context context = ApplicationProvider.getApplicationContext();
+        long peerA = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE / 2);
+        long peerB = peerA + 1;
+        SecureChatEngine engineA = new SecureChatEngine(context, 0, peerA);
+        String carrier = SecureCarrierCodec.encode(
+                SecureCarrierCodec.TYPE_WHISPER,
+                new byte[] {1, 2, 3, 4});
+        try {
+            engineA.decryptText(carrier, peerB);
+            org.junit.Assert.fail("Expected cross-peer senderUserId to be rejected");
+        } catch (SecureChatEngine.SecureChatException expected) {
+            assertEquals("1:1 message sender does not match peer dialog", expected.getMessage());
+        }
+    }
 }

@@ -501,9 +501,7 @@ public final class SecureChatEngine {
             if (peerUserId > 0 && decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
                 throw new SecureChatException("1:1 chat rejects group sender key carrier", null);
             }
-            if (peerUserId < 0 && senderUserId <= 0) {
-                throw new SecureChatException("group message requires positive sender user ID", null);
-            }
+            requireValidInboundSender(peerUserId, senderUserId);
             try {
                 byte[] content = localContent.loadIncoming(carrier);
                 if (content == null) {
@@ -860,9 +858,7 @@ public final class SecureChatEngine {
             if (peerUserId > 0 && decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
                 throw new SecureChatException("1:1 chat rejects group sender key carrier", null);
             }
-            if (peerUserId < 0 && senderUserId <= 0) {
-                throw new SecureChatException("group message requires positive sender user ID", null);
-            }
+            requireValidInboundSender(peerUserId, senderUserId);
             try {
                 byte[] content = localContent.loadIncoming(carrier);
                 if (content == null) {
@@ -1084,9 +1080,7 @@ public final class SecureChatEngine {
             if (peerUserId > 0 && decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
                 throw new SecureChatException("1:1 chat rejects group sender key carrier", null);
             }
-            if (peerUserId < 0 && senderUserId <= 0) {
-                throw new SecureChatException("group message requires positive sender user ID", null);
-            }
+            requireValidInboundSender(peerUserId, senderUserId);
             try {
                 String cached = localText.loadIncoming(carrier);
                 if (cached != null) {
@@ -1249,6 +1243,7 @@ public final class SecureChatEngine {
                     controlPreviewKind(local),
                     isControlDisplay(local) ? null : local);
         }
+        requireValidInboundSender(peerUserId, senderUserId);
         try {
             String cached = localText.loadIncoming(carrier);
             if (cached != null) {
@@ -1651,6 +1646,15 @@ public final class SecureChatEngine {
             return grouped.toString();
         } catch (Exception e) {
             throw new AssertionError("SHA-256 is unavailable", e);
+        }
+    }
+
+    static void requireValidInboundSender(long peerUserId, long senderUserId) {
+        if (peerUserId < 0 && senderUserId <= 0) {
+            throw new SecureChatException("group message requires positive sender user ID", null);
+        }
+        if (peerUserId > 0 && senderUserId != 0 && senderUserId != peerUserId) {
+            throw new SecureChatException("1:1 message sender does not match peer dialog", null);
         }
     }
 

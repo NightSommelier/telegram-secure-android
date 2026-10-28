@@ -21298,6 +21298,9 @@ public class ChatActivity extends BaseFragment implements
                 if (decoded == null) {
                     continue;
                 }
+                if (message.isForwarded()) {
+                    throw new IllegalStateException("forwarded secure carrier is rejected");
+                }
                 if (decoded.type != SecureCarrierCodec.TYPE_PREKEY_BUNDLE
                         && restorePreparedSecureSticker(message)) {
                     continue;

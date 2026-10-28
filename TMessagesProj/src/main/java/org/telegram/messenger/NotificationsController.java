@@ -1875,6 +1875,9 @@ public class NotificationsController extends BaseController implements Notificat
         }
         String result;
         try {
+            if (messageObject.isForwarded()) {
+                return LocaleController.getString(R.string.ForkSecureMessageFailed);
+            }
             SecureCarrierCodec.Decoded decoded =
                     SecureCarrierCodec.decode(messageObject.messageOwner.message);
             if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
