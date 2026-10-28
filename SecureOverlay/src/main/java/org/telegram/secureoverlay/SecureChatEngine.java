@@ -196,40 +196,49 @@ public final class SecureChatEngine {
         }
     }
 
-    /** Creates a SenderKey distribution carrier for a group (dialogId < 0) to be delivered to a member over 1:1 pairwise channel. */
+    /** Creates a SenderKey distribution carrier for a group (dialogId < 0) encrypted over this 1:1 pairwise channel. */
     public String createGroupSenderKeyDistributionCarrier(long groupChatId) {
         if (groupChatId >= 0) {
             throw new IllegalArgumentException("group dialog id must be negative");
         }
+        if (peerUserId <= 0) {
+            throw new SecureChatException(
+                    "group sender key distribution requires a 1:1 peer session", null);
+        }
+        requireCurrentIdentity();
+        if (!isPaired()) {
+            throw new SecureChatException("secure chat is not paired", null);
+        }
+        if (state.isPaused(account, peerUserId)) {
+            throw new SecureChatException("secure chat is paused", null);
+        }
+        if (state.isIdentityPending(account, peerUserId)) {
+            throw new SecureChatException("new contact identity requires verification", null);
+        }
         synchronized (SESSION_LOCK) {
-            java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
-                    ("telegram-group-" + groupChatId).getBytes(StandardCharsets.UTF_8));
-            byte[] distributionBytes = sessions.createGroupDistributionMessage(distributionId);
-            return SecureCarrierCodec.encode(
-                    SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION, distributionBytes);
+            try {
+                java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
+                        ("telegram-group-" + groupChatId).getBytes(StandardCharsets.UTF_8));
+                byte[] distributionBytes = sessions.createGroupDistributionMessage(distributionId);
+                byte[] content = SecureContentCodec.encodeSenderKeyDistribution(
+                        groupChatId, distributionBytes);
+                String carrier = encryptAndRemember(
+                        sessions, content, GROUP_KEY_DISTRIBUTED_DISPLAY);
+                localContent.rememberOutgoing(carrier, content);
+                return carrier;
+            } catch (SecureChatException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new SecureChatException(
+                        "cannot create pairwise group sender key distribution", e);
+            }
         }
     }
 
-    /** Processes a SenderKey distribution message received from a group member. */
+    /** Rejects unencrypted SenderKey distribution carriers; distribution must be 1:1 Double Ratchet encrypted. */
     public void processGroupSenderKeyDistributionCarrier(long senderUserId, String carrier) {
-        if (senderUserId <= 0) {
-            throw new IllegalArgumentException("sender user ID must be positive");
-        }
-        SecureCarrierCodec.Decoded decoded = requireCarrier(
-                carrier, SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION);
-        synchronized (SESSION_LOCK) {
-            try {
-                SignalProtocolAddress senderAddress =
-                        new SignalProtocolAddress("telegram-user-" + senderUserId, 1);
-                sessions.processGroupDistributionMessage(senderAddress, decoded.payload);
-                clearFailedDecryptCache();
-                if (peerUserId < 0 && !isPaired()) {
-                    enableGroup();
-                }
-            } catch (Exception e) {
-                throw new SecureChatException("cannot process group sender key distribution", e);
-            }
-        }
+        throw new SecureChatException(
+                "unencrypted group sender key distribution is rejected", null);
     }
 
     /** Enables encryption for a group dialog (dialogId < 0). */
@@ -481,8 +490,19 @@ public final class SecureChatEngine {
     public SecureContentCodec.StaticSticker decryptStaticStickerManifest(String carrier, long senderUserId) {
         synchronized (SESSION_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
-            if (decoded == null || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+            if (decoded == null
+                    || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                    || decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
                 throw new SecureChatException("secure sticker carrier is invalid", null);
+            }
+            if (peerUserId < 0 && decoded.type != SecureCarrierCodec.TYPE_SENDERKEY) {
+                throw new SecureChatException("group chat requires sender key carrier", null);
+            }
+            if (peerUserId > 0 && decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
+                throw new SecureChatException("1:1 chat rejects group sender key carrier", null);
+            }
+            if (peerUserId < 0 && senderUserId <= 0) {
+                throw new SecureChatException("group message requires positive sender user ID", null);
             }
             try {
                 byte[] content = localContent.loadIncoming(carrier);
@@ -495,7 +515,7 @@ public final class SecureChatEngine {
                     } else {
                         libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
                     }
-                    SignalProtocolAddress decryptAddress = (senderUserId > 0)
+                    SignalProtocolAddress decryptAddress = (peerUserId < 0)
                             ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
                             : peerAddress;
                     content = sessions.decrypt(
@@ -505,7 +525,8 @@ public final class SecureChatEngine {
                     SecureContentCodec.StaticSticker sticker = requireStaticSticker(content);
                     localContent.rememberIncoming(carrier, content);
                     localText.rememberIncoming(carrier, STATIC_STICKER_DISPLAY);
-                    if (!state.isPaused(account, peerUserId)
+                    if (peerUserId > 0
+                            && !state.isPaused(account, peerUserId)
                             && !state.isIdentityPending(account, peerUserId)) {
                         state.markPaired(account, peerUserId);
                     }
@@ -828,8 +849,19 @@ public final class SecureChatEngine {
     public SecureContentCodec.Attachment decryptAttachmentManifest(String carrier, long senderUserId) {
         synchronized (SESSION_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
-            if (decoded == null || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+            if (decoded == null
+                    || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                    || decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
                 throw new SecureChatException("secure attachment carrier is invalid", null);
+            }
+            if (peerUserId < 0 && decoded.type != SecureCarrierCodec.TYPE_SENDERKEY) {
+                throw new SecureChatException("group chat requires sender key carrier", null);
+            }
+            if (peerUserId > 0 && decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
+                throw new SecureChatException("1:1 chat rejects group sender key carrier", null);
+            }
+            if (peerUserId < 0 && senderUserId <= 0) {
+                throw new SecureChatException("group message requires positive sender user ID", null);
             }
             try {
                 byte[] content = localContent.loadIncoming(carrier);
@@ -842,7 +874,7 @@ public final class SecureChatEngine {
                     } else {
                         libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
                     }
-                    SignalProtocolAddress decryptAddress = (senderUserId > 0)
+                    SignalProtocolAddress decryptAddress = (peerUserId < 0)
                             ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
                             : peerAddress;
                     content = sessions.decrypt(
@@ -854,7 +886,8 @@ public final class SecureChatEngine {
                     localContent.rememberIncoming(carrier, content);
                     localText.rememberIncoming(
                             carrier, attachment.photo ? PHOTO_DISPLAY : FILE_DISPLAY);
-                    if (!state.isPaused(account, peerUserId)
+                    if (peerUserId > 0
+                            && !state.isPaused(account, peerUserId)
                             && !state.isIdentityPending(account, peerUserId)) {
                         state.markPaired(account, peerUserId);
                     }
@@ -1041,12 +1074,26 @@ public final class SecureChatEngine {
             if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
                 throw new SecureChatException("pairing offer requires explicit acceptance", null);
             }
+            if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
+                throw new SecureChatException(
+                        "unencrypted group sender key distribution is rejected", null);
+            }
+            if (peerUserId < 0 && decoded.type != SecureCarrierCodec.TYPE_SENDERKEY) {
+                throw new SecureChatException("group chat requires sender key carrier", null);
+            }
+            if (peerUserId > 0 && decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
+                throw new SecureChatException("1:1 chat rejects group sender key carrier", null);
+            }
+            if (peerUserId < 0 && senderUserId <= 0) {
+                throw new SecureChatException("group message requires positive sender user ID", null);
+            }
             try {
                 String cached = localText.loadIncoming(carrier);
                 if (cached != null) {
                     if (isPairingRejectionDisplay(cached)) {
                         pauseAfterPairingRejection();
-                    } else if (!isPaired()
+                    } else if (peerUserId > 0
+                            && !isPaired()
                             && !state.isPaused(account, peerUserId)
                             && !state.isIdentityPending(account, peerUserId)) {
                         state.markPaired(account, peerUserId);
@@ -1066,7 +1113,7 @@ public final class SecureChatEngine {
                 } else {
                     libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
                 }
-                SignalProtocolAddress decryptAddress = (senderUserId > 0)
+                SignalProtocolAddress decryptAddress = (peerUserId < 0)
                         ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
                         : peerAddress;
                 byte[] plain = sessions.decrypt(decryptAddress, new LibsignalSessionAdapter.EncryptedMessage(libsignalType, decoded.payload));
@@ -1112,6 +1159,19 @@ public final class SecureChatEngine {
                     } else if (content.type == SecureContentCodec.TYPE_GEO_LOCATION) {
                         localContent.rememberIncoming(carrier, plain);
                         result = LOCATION_DISPLAY;
+                    } else if (content.type == SecureContentCodec.TYPE_SENDER_KEY_DISTRIBUTION) {
+                        if (peerUserId <= 0
+                                || (senderUserId > 0 && senderUserId != peerUserId)
+                                || content.senderKeyDistribution == null
+                                || content.senderKeyDistribution.groupChatId >= 0) {
+                            throw new SecureChatException(
+                                    "sender key distribution requires 1:1 peer session", null);
+                        }
+                        sessions.processGroupDistributionMessage(
+                                peerAddress, content.senderKeyDistribution.distributionBytes);
+                        clearFailedDecryptCache();
+                        localContent.rememberIncoming(carrier, plain);
+                        result = GROUP_KEY_RECEIVED_DISPLAY;
                     } else {
                         throw new SecureChatException("unsupported secure content", null);
                     }
@@ -1131,7 +1191,8 @@ public final class SecureChatEngine {
                 localText.rememberIncoming(carrier, result);
                 if (isPairingRejectionDisplay(result)) {
                     pauseAfterPairingRejection();
-                } else if (!state.isPaused(account, peerUserId)
+                } else if (peerUserId > 0
+                        && !state.isPaused(account, peerUserId)
                         && !state.isIdentityPending(account, peerUserId)) {
                     state.markPaired(account, peerUserId);
                 }
@@ -1176,11 +1237,8 @@ public final class SecureChatEngine {
                     null);
         }
         if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
-            return new DialogPreview(
-                    outgoing
-                            ? DialogPreview.Kind.GROUP_KEY_DISTRIBUTED
-                            : DialogPreview.Kind.GROUP_KEY_RECEIVED,
-                    null);
+            throw new SecureChatException(
+                    "unencrypted group sender key distribution is rejected", null);
         }
         if (outgoing) {
             String local = getOutgoingText(carrier);
@@ -1217,9 +1275,17 @@ public final class SecureChatEngine {
         return PAIRING_READY_DISPLAY.equals(value);
     }
 
+    public static boolean isGroupKeyDistributedDisplay(String value) {
+        return GROUP_KEY_DISTRIBUTED_DISPLAY.equals(value);
+    }
+
+    public static boolean isGroupKeyReceivedDisplay(String value) {
+        return GROUP_KEY_RECEIVED_DISPLAY.equals(value);
+    }
+
     public static boolean isGroupKeyStatusDisplay(String value) {
-        return GROUP_KEY_DISTRIBUTED_DISPLAY.equals(value)
-                || GROUP_KEY_RECEIVED_DISPLAY.equals(value);
+        return isGroupKeyDistributedDisplay(value)
+                || isGroupKeyReceivedDisplay(value);
     }
 
     /** True only for authenticated pairing lifecycle text rendered as a local service row. */

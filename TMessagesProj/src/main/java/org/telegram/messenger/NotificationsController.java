@@ -1882,19 +1882,7 @@ public class NotificationsController extends BaseController implements Notificat
                         ? R.string.ForkSecurePairingOfferSent
                         : R.string.ForkSecurePairingOfferReceived);
             } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
-                if (!messageObject.isOutOwner() && messageObject.getFromChatId() > 0) {
-                    try {
-                        SecureChatEngine secureChat = new SecureChatEngine(
-                                ApplicationLoader.applicationContext, currentAccount, peerId);
-                        secureChat.processGroupSenderKeyDistributionCarrier(
-                                messageObject.getFromChatId(), messageObject.messageOwner.message);
-                    } catch (Throwable t) {
-                        FileLog.e(t);
-                    }
-                }
-                result = LocaleController.getString(messageObject.isOutOwner()
-                        ? R.string.ForkSecureGroupKeyDistributed
-                        : R.string.ForkSecureGroupKeyReceived);
+                result = LocaleController.getString(R.string.ForkSecureMessageFailed);
             } else {
                 SecureChatEngine secureChat = new SecureChatEngine(
                         ApplicationLoader.applicationContext, currentAccount, peerId);
@@ -1919,6 +1907,12 @@ public class NotificationsController extends BaseController implements Notificat
                 } else if (SecureChatEngine.isPairingRejectionDisplay(result)) {
                     result = LocaleController.getString(
                             R.string.ForkSecurePairingRejected);
+                } else if (SecureChatEngine.isGroupKeyDistributedDisplay(result)) {
+                    result = LocaleController.getString(
+                            R.string.ForkSecureGroupKeyDistributed);
+                } else if (SecureChatEngine.isGroupKeyReceivedDisplay(result)) {
+                    result = LocaleController.getString(
+                            R.string.ForkSecureGroupKeyReceived);
                 } else if (SecureChatEngine.isStaticStickerDisplay(result)) {
                     result = LocaleController.getString(
                             R.string.ForkSecureEncryptedSticker);

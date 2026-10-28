@@ -3571,6 +3571,50 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 null);
     }
 
+    public boolean distributeForkSecureGroupSenderKeyPairwise(long groupDialogId) {
+        if (groupDialogId >= 0) {
+            return false;
+        }
+        TLRPC.ChatFull chatFull = getMessagesController().getChatFull(-groupDialogId);
+        if (chatFull == null
+                || chatFull.participants == null
+                || chatFull.participants.participants == null
+                || chatFull.participants.participants.isEmpty()) {
+            return false;
+        }
+        long selfId = getUserConfig().getClientUserId();
+        int distributedCount = 0;
+        for (int i = 0; i < chatFull.participants.participants.size(); i++) {
+            TLRPC.ChatParticipant participant = chatFull.participants.participants.get(i);
+            if (participant == null || participant.user_id <= 0 || participant.user_id == selfId) {
+                continue;
+            }
+            long memberUserId = participant.user_id;
+            if (!SecureChatEngine.hasLocalState(
+                    ApplicationLoader.applicationContext, currentAccount, memberUserId)) {
+                continue;
+            }
+            try {
+                SecureChatEngine memberEngine = new SecureChatEngine(
+                        ApplicationLoader.applicationContext, currentAccount, memberUserId);
+                if (memberEngine.getMode() != SecureChatEngine.Mode.PROTECTED) {
+                    continue;
+                }
+                String distCarrier =
+                        memberEngine.createGroupSenderKeyDistributionCarrier(groupDialogId);
+                if (distCarrier != null) {
+                    AndroidUtilities.runOnUIThread(() -> {
+                        sendMessage(SendMessageParams.of(distCarrier, memberUserId));
+                    });
+                    distributedCount++;
+                }
+            } catch (Throwable e) {
+                FileLog.e(e);
+            }
+        }
+        return distributedCount > 0;
+    }
+
     private static void prepareForkSecureAttachments(
             AccountInstance accountInstance,
             SecureChatEngine secureChat,
@@ -3593,12 +3637,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         Utilities.globalQueue.postRunnable(() -> {
             if (secureChat != null && DialogObject.isChatDialog(dialogId) && secureChat.isGroupKeyNeedsDistribution()) {
                 try {
-                    String distCarrier = secureChat.createGroupSenderKeyDistributionCarrier(dialogId);
-                    if (distCarrier != null) {
-                        AndroidUtilities.runOnUIThread(() -> {
-                            accountInstance.getSendMessagesHelper().sendMessage(
-                                    SendMessagesHelper.SendMessageParams.of(distCarrier, dialogId));
-                        });
+                    if (accountInstance.getSendMessagesHelper().distributeForkSecureGroupSenderKeyPairwise(dialogId)) {
                         secureChat.clearGroupKeyNeedsDistribution();
                     }
                 } catch (Throwable e) {
@@ -6815,6 +6854,17 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         final boolean forkSecureCarrier =
                 SecureCarrierCodec.isMarked(message) || SecureCarrierCodec.isMarked(caption);
         if (forkSecureCarrier) {
+            String carrierCandidate = SecureCarrierCodec.isMarked(message) ? message : caption;
+            SecureCarrierCodec.Decoded decodedCarrier =
+                    SecureCarrierCodec.decode(carrierCandidate);
+            if (decodedCarrier == null
+                    || decodedCarrier.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION
+                    || (peer < 0 && decodedCarrier.type != SecureCarrierCodec.TYPE_SENDERKEY)
+                    || (peer > 0 && decodedCarrier.type == SecureCarrierCodec.TYPE_SENDERKEY)) {
+                FileLog.e("ForkSecure blocked invalid carrier type for dialog " + peer);
+                showForkSecureError(R.string.ForkSecureSetupSendFailed);
+                return;
+            }
             // A TGS1 carrier owns all protected content. Telegram reply IDs may
             // remain for same-chat navigation, but plaintext quote/story,
             // webpage, entity and bot markup fields must never accompany it.

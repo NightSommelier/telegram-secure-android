@@ -166,32 +166,49 @@ public final class LibsignalGroupSmokeTest {
     }
 
     @Test
-    public void autoEnablesGroupWhenSenderKeyReceived() throws Exception {
+    public void rejectsUnencryptedSenderKeyDistributionAndEnforcesPairwise1To1Delivery() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         long testGroupId = -987654321L;
         long senderUserId = 12345678L;
 
-        SecureChatEngine engine = new SecureChatEngine(context, 0, testGroupId);
-        engine.disable();
-        org.junit.Assert.assertFalse(engine.isPaired());
+        SecureChatEngine groupEngine = new SecureChatEngine(context, 0, testGroupId);
+        groupEngine.disable();
+        org.junit.Assert.assertFalse(groupEngine.isPaired());
 
-        // Create a valid sender key distribution carrier
+        // 1. Unencrypted outer TYPE_SENDERKEY_DISTRIBUTION carrier must be rejected fail-closed
         InMemorySenderKeyStore senderStore = new InMemorySenderKeyStore();
         SignalProtocolAddress senderAddress = new SignalProtocolAddress("telegram-user-" + senderUserId, DEVICE_ID);
         UUID groupDistributionId = UUID.nameUUIDFromBytes(("telegram-group-" + testGroupId).getBytes(StandardCharsets.UTF_8));
         GroupSessionBuilder builder = new GroupSessionBuilder(senderStore);
         byte[] distBytes = builder.create(senderAddress, groupDistributionId).serialize();
-        String carrier = SecureCarrierCodec.encode(SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION, distBytes);
+        String unencryptedCarrier = SecureCarrierCodec.encode(
+                SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION, distBytes);
 
-        // Process carrier
-        engine.processGroupSenderKeyDistributionCarrier(senderUserId, carrier);
+        try {
+            groupEngine.processGroupSenderKeyDistributionCarrier(senderUserId, unencryptedCarrier);
+            org.junit.Assert.fail("Unencrypted SenderKey distribution carrier must be rejected");
+        } catch (SecureChatEngine.SecureChatException expected) {
+            assertNotNull(expected);
+        }
+        try {
+            groupEngine.decryptText(unencryptedCarrier, senderUserId);
+            org.junit.Assert.fail("decryptText must reject TYPE_SENDERKEY_DISTRIBUTION");
+        } catch (SecureChatEngine.SecureChatException expected) {
+            assertNotNull(expected);
+        }
+        org.junit.Assert.assertFalse(groupEngine.isPaired());
 
-        // Group mode should now be automatically paired
-        assertTrue(engine.isPaired());
+        // 2. Pairwise inner FSC1 TYPE_SENDER_KEY_DISTRIBUTION round-trip
+        byte[] encodedInner = SecureContentCodec.encodeSenderKeyDistribution(testGroupId, distBytes);
+        SecureContentCodec.Decoded decodedInner = SecureContentCodec.decode(encodedInner);
+        assertEquals(SecureContentCodec.TYPE_SENDER_KEY_DISTRIBUTION, decodedInner.type);
+        assertNotNull(decodedInner.senderKeyDistribution);
+        assertEquals(testGroupId, decodedInner.senderKeyDistribution.groupChatId);
+        assertArrayEquals(distBytes, decodedInner.senderKeyDistribution.distributionBytes);
     }
 
     @Test
-    public void senderKeyRotationSetsNeedsDistributionFlag() throws Exception {
+    public void senderKeyRotationSetsNeedsDistributionFlagAndBlocksGroupSelfDistribution() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         long testGroupId = -888777666L;
         SecureChatEngine engine = new SecureChatEngine(context, 0, testGroupId);
@@ -203,10 +220,14 @@ public final class LibsignalGroupSmokeTest {
             engine.rotateGroupSenderKey();
             assertTrue(engine.isGroupKeyNeedsDistribution());
 
-            // Creating distribution carrier or clearing flag resets it
-            String carrier = engine.createGroupSenderKeyDistributionCarrier(testGroupId);
-            assertNotNull(carrier);
-            assertTrue(SecureCarrierCodec.isMarked(carrier));
+            // Calling createGroupSenderKeyDistributionCarrier on a group engine (peerUserId < 0) must fail closed
+            try {
+                engine.createGroupSenderKeyDistributionCarrier(testGroupId);
+                org.junit.Assert.fail("Group engine must not create unencrypted self-distribution carrier");
+            } catch (SecureChatEngine.SecureChatException expected) {
+                assertNotNull(expected);
+            }
+
             engine.clearGroupKeyNeedsDistribution();
             org.junit.Assert.assertFalse(engine.isGroupKeyNeedsDistribution());
         } finally {

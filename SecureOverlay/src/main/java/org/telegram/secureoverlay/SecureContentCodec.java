@@ -50,6 +50,9 @@ public final class SecureContentCodec {
     public static final int TYPE_CONTROL = 7;
     public static final int TYPE_CONTACT = 8;
     public static final int TYPE_GEO_LOCATION = 9;
+    public static final int TYPE_SENDER_KEY_DISTRIBUTION = 10;
+
+    private static final int MAX_SENDER_KEY_DISTRIBUTION_BYTES = 4096;
 
     public static final int CONTROL_ACTION_DELETE = 1;
 
@@ -419,6 +422,42 @@ public final class SecureContentCodec {
         return new GeoLocation(lat, lon, accuracy, period);
     }
 
+    public static byte[] encodeSenderKeyDistribution(long groupChatId, byte[] distributionBytes) {
+        return encodeSenderKeyDistribution(
+                new SenderKeyDistribution(groupChatId, distributionBytes));
+    }
+
+    public static byte[] encodeSenderKeyDistribution(SenderKeyDistribution distribution) {
+        if (distribution == null) {
+            throw new IllegalArgumentException("sender key distribution required");
+        }
+        ByteBuffer payload =
+                ByteBuffer.allocate(8 + 4 + distribution.distributionBytes.length)
+                        .order(ByteOrder.BIG_ENDIAN);
+        payload.putLong(distribution.groupChatId);
+        payload.putInt(distribution.distributionBytes.length);
+        payload.put(distribution.distributionBytes);
+        return encode(TYPE_SENDER_KEY_DISTRIBUTION, payload.array());
+    }
+
+    private static SenderKeyDistribution decodeSenderKeyDistribution(byte[] payload) {
+        if (payload == null || payload.length < 13) {
+            throw new IllegalArgumentException("truncated sender key distribution payload");
+        }
+        ByteBuffer input = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
+        long groupChatId = input.getLong();
+        int length = input.getInt();
+        if (groupChatId >= 0
+                || length <= 0
+                || length > MAX_SENDER_KEY_DISTRIBUTION_BYTES
+                || length != input.remaining()) {
+            throw new IllegalArgumentException("invalid sender key distribution fields");
+        }
+        byte[] distributionBytes = new byte[length];
+        input.get(distributionBytes);
+        return new SenderKeyDistribution(groupChatId, distributionBytes);
+    }
+
     public static Decoded decode(byte[] encoded) {
         if (encoded == null || encoded.length < HEADER_BYTES) {
             throw new IllegalArgumentException("truncated secure content");
@@ -453,6 +492,9 @@ public final class SecureContentCodec {
         }
         if (type == TYPE_GEO_LOCATION) {
             return Decoded.location(decodeLocation(payload));
+        }
+        if (type == TYPE_SENDER_KEY_DISTRIBUTION) {
+            return Decoded.senderKeyDistribution(decodeSenderKeyDistribution(payload));
         }
         return Decoded.attachment(decodeAttachment(payload, type == TYPE_PHOTO));
     }
@@ -491,7 +533,8 @@ public final class SecureContentCodec {
                 || type == TYPE_PHOTO
                 || type == TYPE_CONTROL
                 || type == TYPE_CONTACT
-                || type == TYPE_GEO_LOCATION;
+                || type == TYPE_GEO_LOCATION
+                || type == TYPE_SENDER_KEY_DISTRIBUTION;
     }
 
     private static boolean isStickerType(int type) {
@@ -970,6 +1013,7 @@ public final class SecureContentCodec {
         public final Control control;
         public final Contact contact;
         public final GeoLocation location;
+        public final SenderKeyDistribution senderKeyDistribution;
 
         private Decoded(
                 int type,
@@ -978,7 +1022,8 @@ public final class SecureContentCodec {
                 Attachment attachment,
                 Control control,
                 Contact contact,
-                GeoLocation location) {
+                GeoLocation location,
+                SenderKeyDistribution senderKeyDistribution) {
             this.type = type;
             this.text = text;
             this.staticSticker = staticSticker;
@@ -986,10 +1031,11 @@ public final class SecureContentCodec {
             this.control = control;
             this.contact = contact;
             this.location = location;
+            this.senderKeyDistribution = senderKeyDistribution;
         }
 
         private static Decoded text(String text) {
-            return new Decoded(TYPE_TEXT, text, null, null, null, null, null);
+            return new Decoded(TYPE_TEXT, text, null, null, null, null, null, null);
         }
 
         private static Decoded sticker(StaticSticker sticker) {
@@ -997,6 +1043,7 @@ public final class SecureContentCodec {
                     contentTypeForStickerFormat(sticker.format),
                     null,
                     sticker,
+                    null,
                     null,
                     null,
                     null,
@@ -1011,19 +1058,32 @@ public final class SecureContentCodec {
                     attachment,
                     null,
                     null,
+                    null,
                     null);
         }
 
         private static Decoded control(Control control) {
-            return new Decoded(TYPE_CONTROL, null, null, null, control, null, null);
+            return new Decoded(TYPE_CONTROL, null, null, null, control, null, null, null);
         }
 
         private static Decoded contact(Contact contact) {
-            return new Decoded(TYPE_CONTACT, null, null, null, null, contact, null);
+            return new Decoded(TYPE_CONTACT, null, null, null, null, contact, null, null);
         }
 
         private static Decoded location(GeoLocation location) {
-            return new Decoded(TYPE_GEO_LOCATION, null, null, null, null, null, location);
+            return new Decoded(TYPE_GEO_LOCATION, null, null, null, null, null, location, null);
+        }
+
+        private static Decoded senderKeyDistribution(SenderKeyDistribution distribution) {
+            return new Decoded(
+                    TYPE_SENDER_KEY_DISTRIBUTION,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    distribution);
         }
     }
 
@@ -1374,6 +1434,27 @@ public final class SecureContentCodec {
             this.longitude = longitude;
             this.accuracy = accuracy;
             this.period = period;
+        }
+    }
+
+    public static final class SenderKeyDistribution {
+        public final long groupChatId;
+        public final byte[] distributionBytes;
+
+        public SenderKeyDistribution(long groupChatId, byte[] distributionBytes) {
+            if (groupChatId >= 0) {
+                throw new IllegalArgumentException(
+                        "groupChatId must be negative: " + groupChatId);
+            }
+            if (distributionBytes == null
+                    || distributionBytes.length == 0
+                    || distributionBytes.length > MAX_SENDER_KEY_DISTRIBUTION_BYTES) {
+                throw new IllegalArgumentException(
+                        "invalid sender key distribution length: "
+                                + (distributionBytes == null ? 0 : distributionBytes.length));
+            }
+            this.groupChatId = groupChatId;
+            this.distributionBytes = distributionBytes.clone();
         }
     }
 }
