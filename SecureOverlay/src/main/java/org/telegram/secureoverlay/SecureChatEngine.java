@@ -359,6 +359,7 @@ public final class SecureChatEngine {
                     }
                     if (getMode() == Mode.WAITING) {
                         if (!store.containsSession(peerAddress)) {
+                            store.saveIdentity(peerAddress, remote.getIdentityKey());
                             sessions.establish(peerAddress, remote);
                         }
                         state.markPaired(account, peerUserId);
@@ -395,6 +396,7 @@ public final class SecureChatEngine {
             try {
                 recoveryStore.replaceVerifiedPeerAfterIdentityChange(
                         account, peerUserId, offer.recovery);
+                store.saveIdentity(peerAddress, remote.getIdentityKey());
                 sessions.establish(peerAddress, remote);
                 state.markPaired(account, peerUserId);
                 state.recordPairingMessage(account, peerUserId, messageId);
@@ -518,6 +520,13 @@ public final class SecureChatEngine {
                     SignalProtocolAddress decryptAddress = (peerUserId < 0)
                             ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
                             : peerAddress;
+                    requireInboundSessionAllowed(
+                            peerUserId,
+                            isPaired(),
+                            state.isWaiting(account, peerUserId),
+                            state.isIdentityPending(account, peerUserId),
+                            store.containsSession(peerAddress),
+                            store.getIdentity(peerAddress) != null);
                     content = sessions.decrypt(
                             decryptAddress,
                             new LibsignalSessionAdapter.EncryptedMessage(
@@ -525,9 +534,7 @@ public final class SecureChatEngine {
                     SecureContentCodec.StaticSticker sticker = requireStaticSticker(content);
                     localContent.rememberIncoming(carrier, content);
                     localText.rememberIncoming(carrier, STATIC_STICKER_DISPLAY);
-                    if (peerUserId > 0
-                            && !state.isPaused(account, peerUserId)
-                            && !state.isIdentityPending(account, peerUserId)) {
+                    if (peerUserId > 0 && state.isWaiting(account, peerUserId)) {
                         state.markPaired(account, peerUserId);
                     }
                     return sticker;
@@ -877,6 +884,13 @@ public final class SecureChatEngine {
                     SignalProtocolAddress decryptAddress = (peerUserId < 0)
                             ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
                             : peerAddress;
+                    requireInboundSessionAllowed(
+                            peerUserId,
+                            isPaired(),
+                            state.isWaiting(account, peerUserId),
+                            state.isIdentityPending(account, peerUserId),
+                            store.containsSession(peerAddress),
+                            store.getIdentity(peerAddress) != null);
                     content = sessions.decrypt(
                             decryptAddress,
                             new LibsignalSessionAdapter.EncryptedMessage(
@@ -886,9 +900,7 @@ public final class SecureChatEngine {
                     localContent.rememberIncoming(carrier, content);
                     localText.rememberIncoming(
                             carrier, attachment.photo ? PHOTO_DISPLAY : FILE_DISPLAY);
-                    if (peerUserId > 0
-                            && !state.isPaused(account, peerUserId)
-                            && !state.isIdentityPending(account, peerUserId)) {
+                    if (peerUserId > 0 && state.isWaiting(account, peerUserId)) {
                         state.markPaired(account, peerUserId);
                     }
                     return attachment;
@@ -1092,10 +1104,7 @@ public final class SecureChatEngine {
                 if (cached != null) {
                     if (isPairingRejectionDisplay(cached)) {
                         pauseAfterPairingRejection();
-                    } else if (peerUserId > 0
-                            && !isPaired()
-                            && !state.isPaused(account, peerUserId)
-                            && !state.isIdentityPending(account, peerUserId)) {
+                    } else if (peerUserId > 0 && state.isWaiting(account, peerUserId)) {
                         state.markPaired(account, peerUserId);
                     }
                     return cached;
@@ -1116,6 +1125,13 @@ public final class SecureChatEngine {
                 SignalProtocolAddress decryptAddress = (peerUserId < 0)
                         ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
                         : peerAddress;
+                requireInboundSessionAllowed(
+                        peerUserId,
+                        isPaired(),
+                        state.isWaiting(account, peerUserId),
+                        state.isIdentityPending(account, peerUserId),
+                        store.containsSession(peerAddress),
+                        store.getIdentity(peerAddress) != null);
                 byte[] plain = sessions.decrypt(decryptAddress, new LibsignalSessionAdapter.EncryptedMessage(libsignalType, decoded.payload));
                 String result;
                 if (SecureContentCodec.isVersioned(plain)) {
@@ -1191,9 +1207,7 @@ public final class SecureChatEngine {
                 localText.rememberIncoming(carrier, result);
                 if (isPairingRejectionDisplay(result)) {
                     pauseAfterPairingRejection();
-                } else if (peerUserId > 0
-                        && !state.isPaused(account, peerUserId)
-                        && !state.isIdentityPending(account, peerUserId)) {
+                } else if (peerUserId > 0 && state.isWaiting(account, peerUserId)) {
                     state.markPaired(account, peerUserId);
                 }
                 return result;
@@ -1555,6 +1569,7 @@ public final class SecureChatEngine {
                 if (oldIdentity != null) {
                     store.deleteIdentity(peerAddress);
                 }
+                store.saveIdentity(peerAddress, remote.getIdentityKey());
                 sessions.establish(peerAddress, remote);
                 state.approvePendingIdentity(account, peerUserId);
             } catch (Exception error) {
@@ -1632,6 +1647,24 @@ public final class SecureChatEngine {
     private void requireCurrentIdentity() {
         if (isStale()) {
             throw new SecureChatException("secure identity was reset; recreate chat engine", null);
+        }
+    }
+
+    static void requireInboundSessionAllowed(
+            long peerUserId,
+            boolean paired,
+            boolean waiting,
+            boolean identityPending,
+            boolean hasSession,
+            boolean hasTrustedIdentity) {
+        if (peerUserId <= 0) {
+            return;
+        }
+        if (identityPending) {
+            throw new SecureChatException("new contact identity requires verification", null);
+        }
+        if (!paired && !waiting && !hasSession && !hasTrustedIdentity) {
+            throw new SecureChatException("unsolicited secure message before pairing", null);
         }
     }
 

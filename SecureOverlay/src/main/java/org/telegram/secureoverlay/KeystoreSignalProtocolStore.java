@@ -42,12 +42,14 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     private static final int ONLY_DEVICE_ID = 1;
     private static final String IDENTITY = "identity";
     private static final String REGISTRATION = "registration";
+    private final Context appContext;
     private final KeystoreEncryptedBlobStore blobs;
     private final IdentityKeyPair identity;
     private final int registrationId;
 
     public KeystoreSignalProtocolStore(Context context) {
         synchronized (PROTOCOL_STATE_LOCK) {
+            appContext = context.getApplicationContext();
             blobs = new KeystoreEncryptedBlobStore(context);
             try {
                 byte[] savedIdentity = blobs.get(IDENTITY);
@@ -183,8 +185,28 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
                 byte[] current = blobs.get(key("identity", address));
-                return current == null || Arrays.equals(current, key.serialize());
+                if (current != null) {
+                    return Arrays.equals(current, key.serialize());
+                }
+                return direction == Direction.RECEIVING && isWaitingPeerAddress(address);
             } catch (Exception e) { throw failure(e); }
+        }
+    }
+
+    private boolean isWaitingPeerAddress(SignalProtocolAddress address) {
+        if (address == null || address.getName() == null) {
+            return false;
+        }
+        String name = address.getName();
+        if (!name.startsWith("telegram-user-")) {
+            return false;
+        }
+        try {
+            long peerUserId = Long.parseLong(name.substring("telegram-user-".length()));
+            return peerUserId > 0
+                    && new SecureChatState(appContext).isWaitingForAnyAccount(peerUserId);
+        } catch (NumberFormatException ignored) {
+            return false;
         }
     }
 
