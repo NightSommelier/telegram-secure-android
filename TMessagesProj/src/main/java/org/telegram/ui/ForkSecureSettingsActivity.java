@@ -757,13 +757,8 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             char[] repeated = confirmation == null
                     ? null
                     : confirmation.getText().toString().toCharArray();
-            boolean noPassword = confirmPassword
-                    && password.length == 0
-                    && repeated != null
-                    && repeated.length == 0;
-            boolean valid = noPassword
-                    || (password.length >= 5
-                    && (repeated == null || Arrays.equals(password, repeated)));
+            boolean valid = password.length >= 5
+                    && (repeated == null || Arrays.equals(password, repeated));
             if (repeated != null) {
                 Arrays.fill(repeated, '\0');
             }
@@ -778,34 +773,9 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             }
             cancelled[0] = true;
             dialog.dismiss();
-            if (noPassword) {
-                confirmUnprotectedExport(password, callback);
-            } else {
-                callback.onPassword(password);
-            }
+            callback.onPassword(password);
         }));
         showDialog(dialog, ignored -> clearActivePasswordDialogState(dialog));
-    }
-
-    private void confirmUnprotectedExport(
-            char[] password, PasswordCallback callback) {
-        Context context = getContext();
-        if (context == null) {
-            Arrays.fill(password, '\0');
-            return;
-        }
-        AlertDialog warning = new AlertDialog.Builder(context, getResourceProvider())
-                .setTitle(getString(R.string.ForkSecureBackupWithoutPassword))
-                .setMessage(getString(
-                        R.string.ForkSecureBackupWithoutPasswordWarning))
-                .setPositiveButton(getString(R.string.Continue),
-                        (ignored, which) -> callback.onPassword(password))
-                .setNegativeButton(getString(R.string.Cancel),
-                        (ignored, which) -> Arrays.fill(password, '\0'))
-                .create();
-        warning.setOnCancelListener(
-                ignored -> Arrays.fill(password, '\0'));
-        showDialog(warning);
     }
 
     private PasswordField createPasswordField(String hint) {
@@ -937,14 +907,15 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                     showBackupError(R.string.ForkSecureBackupImportFailed);
                     return;
                 }
-                if (requiresPassword) {
-                    showPasswordDialog(
-                            false,
-                            password -> prepareImport(result, password),
-                            () -> Arrays.fill(result, (byte) 0));
-                } else {
-                    confirmUnprotectedImport(result);
+                if (!requiresPassword) {
+                    Arrays.fill(result, (byte) 0);
+                    showBackupError(R.string.ForkSecureBackupImportFailed);
+                    return;
                 }
+                showPasswordDialog(
+                        false,
+                        password -> prepareImport(result, password),
+                        () -> Arrays.fill(result, (byte) 0));
             });
         });
     }
@@ -1008,46 +979,20 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                             R.string.ForkSecureHistoryBackupImportFailed);
                     return;
                 }
-                if (requiresPassword) {
-                    showPasswordDialog(
-                            false,
-                            R.string.ForkSecureImportHistoryBackup,
-                            password ->
-                                    confirmHistoryRestore(result, password),
-                            () -> Arrays.fill(result, (byte) 0));
-                } else {
-                    confirmUnprotectedHistoryImport(result);
+                if (!requiresPassword) {
+                    Arrays.fill(result, (byte) 0);
+                    showBackupError(
+                            R.string.ForkSecureHistoryBackupImportFailed);
+                    return;
                 }
+                showPasswordDialog(
+                        false,
+                        R.string.ForkSecureImportHistoryBackup,
+                        password ->
+                                confirmHistoryRestore(result, password),
+                        () -> Arrays.fill(result, (byte) 0));
             });
         });
-    }
-
-    private void confirmUnprotectedHistoryImport(byte[] archive) {
-        Context context = getContext();
-        if (context == null) {
-            Arrays.fill(archive, (byte) 0);
-            return;
-        }
-        AlertDialog warning =
-                new AlertDialog.Builder(context, getResourceProvider())
-                        .setTitle(getString(
-                                R.string.ForkSecureBackupWithoutPassword))
-                        .setMessage(getString(
-                                R.string
-                                        .ForkSecureHistoryBackupWithoutPasswordImportWarning))
-                        .setPositiveButton(
-                                getString(R.string.Continue),
-                                (ignored, which) ->
-                                        confirmHistoryRestore(
-                                                archive, new char[0]))
-                        .setNegativeButton(
-                                getString(R.string.Cancel),
-                                (ignored, which) ->
-                                        Arrays.fill(archive, (byte) 0))
-                        .create();
-        warning.setOnCancelListener(
-                ignored -> Arrays.fill(archive, (byte) 0));
-        showDialog(warning);
     }
 
     private void confirmHistoryRestore(byte[] archive, char[] password) {
@@ -1136,27 +1081,6 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                         .create());
             });
         });
-    }
-
-    private void confirmUnprotectedImport(byte[] archive) {
-        Context context = getContext();
-        if (context == null) {
-            Arrays.fill(archive, (byte) 0);
-            return;
-        }
-        AlertDialog warning = new AlertDialog.Builder(context, getResourceProvider())
-                .setTitle(getString(R.string.ForkSecureBackupWithoutPassword))
-                .setMessage(getString(
-                        R.string.ForkSecureBackupWithoutPasswordImportWarning))
-                .setPositiveButton(getString(R.string.Continue),
-                        (ignored, which) ->
-                                prepareImport(archive, new char[0]))
-                .setNegativeButton(getString(R.string.Cancel),
-                        (ignored, which) -> Arrays.fill(archive, (byte) 0))
-                .create();
-        warning.setOnCancelListener(
-                ignored -> Arrays.fill(archive, (byte) 0));
-        showDialog(warning);
     }
 
     private void prepareImport(byte[] archive, char[] password) {

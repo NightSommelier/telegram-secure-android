@@ -46,7 +46,7 @@ public final class SecureIdentityBackupCodecTest {
     }
 
     @Test
-    public void emptyPasswordUsesExplicitAuthenticatedContainerFlag() {
+    public void emptyPasswordAndNoPasswordContainerFlagAreRejectedFailClosed() {
         SecureIdentityBackupCodec.Payload payload = new SecureIdentityBackupCodec.Payload(
                 UUID.randomUUID(),
                 123456790L,
@@ -55,25 +55,25 @@ public final class SecureIdentityBackupCodecTest {
                 8193,
                 IdentityKeyPair.generate().serialize());
         char[] noPassword = new char[0];
+        try {
+            SecureIdentityBackupCodec.encrypt(
+                    payload,
+                    noPassword,
+                    sequence(16, 4),
+                    sequence(12, 40));
+            throw new AssertionError("empty password must be rejected");
+        } catch (IllegalArgumentException expected) {
+            // Unprotected export is prohibited (SA-27).
+        }
+
         byte[] archive = SecureIdentityBackupCodec.encrypt(
                 payload,
-                noPassword,
+                "valid-backup-password".toCharArray(),
                 sequence(16, 4),
                 sequence(12, 40));
-
-        assertFalse(SecureIdentityBackupCodec.requiresPassword(archive));
-        SecureIdentityBackupCodec.Payload decoded =
-                SecureIdentityBackupCodec.decrypt(archive, noPassword);
-        assertArrayEquals(payload.serializedIdentity, decoded.serializedIdentity);
-
-        try {
-            SecureIdentityBackupCodec.decrypt(
-                    archive, "unexpected-password".toCharArray());
-            throw new AssertionError(
-                    "unprotected archive accepted a non-empty password");
-        } catch (SecurityException expected) {
-            // The container mode is explicit and authenticated.
-        }
+        byte[] flaggedNoPassword = archive.clone();
+        flaggedNoPassword[9] = 1; // FLAG_NO_PASSWORD in header flags
+        assertMalformed(flaggedNoPassword);
     }
 
     @Test
