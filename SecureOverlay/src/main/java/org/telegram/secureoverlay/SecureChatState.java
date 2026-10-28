@@ -84,6 +84,22 @@ public final class SecureChatState {
         return peerUserId != 0 && preferences.getBoolean(key(WAITING_PREFIX, account, peerUserId), false);
     }
 
+    public boolean isWaitingForAnyAccount(long peerUserId) {
+        if (peerUserId <= 0) {
+            return false;
+        }
+        String peerSuffix = "." + peerUserId;
+        for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
+            String key = entry.getKey();
+            if (key.startsWith(WAITING_PREFIX)
+                    && key.endsWith(peerSuffix)
+                    && Boolean.TRUE.equals(entry.getValue())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean isPaused(int account, long peerUserId) {
         return peerUserId != 0 && preferences.getBoolean(key(PAUSED_PREFIX, account, peerUserId), false);
     }
