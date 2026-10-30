@@ -9588,6 +9588,17 @@ public class MessagesController extends BaseController implements NotificationCe
         });
     }
 
+    public void applyForkSecureControlDelete(final long dialogId, final int controlMessageId, final List<byte[]> digests) {
+        if (digests != null && !digests.isEmpty()) {
+            purgeForkSecureMessagesByDigests(dialogId, digests);
+        }
+        if (controlMessageId != 0) {
+            deleteMessages(
+                    new ArrayList<>(java.util.Collections.singletonList(controlMessageId)),
+                    null, null, dialogId, 0, false, 0, false);
+        }
+    }
+
     public void purgeForkSecureMessagesByDigests(final long dialogId, final List<byte[]> digests) {
         if (digests == null || digests.isEmpty()) {
             return;
@@ -9635,7 +9646,7 @@ public class MessagesController extends BaseController implements NotificationCe
 
             if (!targetMids.isEmpty()) {
                 AndroidUtilities.runOnUIThread(() -> {
-                    deleteMessages(targetMids, null, null, dialogId, 0, true, 0, false);
+                    deleteMessages(targetMids, null, null, dialogId, 0, false, 0, false);
                 });
             }
         });

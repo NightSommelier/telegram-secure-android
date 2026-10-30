@@ -21363,19 +21363,18 @@ public class ChatActivity extends BaseFragment implements
                         applyForkSecureServiceStyle(
                                 message,
                                 SecureChatEngine.isPairingStatusDisplay(localText)
+                                        || SecureChatEngine.isDuplicateMessageDisplay(localText)
                                         || SecureChatEngine.isControlDeleteDisplay(localText));
                         if (SecureChatEngine.isControlDeleteDisplay(localText)) {
                             message.applyNewText("");
                             message.deleted = true;
-                            if (secureChat != null) {
-                                List<byte[]> digests = secureChat.getDeleteControlDigests(carrier);
-                                if (digests != null && !digests.isEmpty()) {
-                                    purgeForkSecureMessagesByDigests(dialog_id, digests);
-                                }
-                            }
-                            getMessagesController().deleteMessages(
-                                    new ArrayList<>(java.util.Collections.singletonList(message.getId())),
-                                    null, null, dialog_id, 0, true, 0, false);
+                            List<byte[]> digests = secureChat != null
+                                    ? secureChat.getDeleteControlDigests(carrier)
+                                    : null;
+                            getMessagesController().applyForkSecureControlDelete(
+                                    dialog_id, message.getId(), digests);
+                        } else if (SecureChatEngine.isDuplicateMessageDisplay(localText)) {
+                            // Duplicate or replayed message: render non-destructive status row only.
                         } else if (SecureChatEngine.isStaticStickerDisplay(localText)) {
                             applySecureStickerMedia(message, secureChat, carrier);
                         } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
@@ -21401,19 +21400,18 @@ public class ChatActivity extends BaseFragment implements
                     applyForkSecureServiceStyle(
                             message,
                             SecureChatEngine.isPairingStatusDisplay(localText)
+                                    || SecureChatEngine.isDuplicateMessageDisplay(localText)
                                     || SecureChatEngine.isControlDeleteDisplay(localText));
                     if (SecureChatEngine.isControlDeleteDisplay(localText)) {
                         message.applyNewText("");
                         message.deleted = true;
-                        if (secureChat != null) {
-                            List<byte[]> digests = secureChat.getDeleteControlDigests(carrier);
-                            if (digests != null && !digests.isEmpty()) {
-                                purgeForkSecureMessagesByDigests(dialog_id, digests);
-                            }
-                        }
-                        getMessagesController().deleteMessages(
-                                new ArrayList<>(java.util.Collections.singletonList(message.getId())),
-                                null, null, dialog_id, 0, true, 0, false);
+                        List<byte[]> digests = secureChat != null
+                                ? secureChat.getDeleteControlDigests(carrier)
+                                : null;
+                        getMessagesController().applyForkSecureControlDelete(
+                                dialog_id, message.getId(), digests);
+                    } else if (SecureChatEngine.isDuplicateMessageDisplay(localText)) {
+                        // Duplicate or replayed message: render non-destructive status row only.
                     } else {
                         if (secureChat.shouldAcknowledgeSessionReady(
                                 localText, message.getId())) {
@@ -21710,23 +21708,22 @@ public class ChatActivity extends BaseFragment implements
                     message.applyNewText("");
                     message.deleted = true;
                     applyForkSecureServiceStyle(message, true);
-                    if (secureChat != null) {
-                        List<byte[]> digests = secureChat.getDeleteControlDigests(carrier);
-                        if (digests != null && !digests.isEmpty()) {
-                            purgeForkSecureMessagesByDigests(dialog_id, digests);
-                        }
-                    }
-                    getMessagesController().deleteMessages(
-                            new ArrayList<>(java.util.Collections.singletonList(message.getId())),
-                            null, null, dialog_id, 0, true, 0, false);
+                    List<byte[]> digests = secureChat != null
+                            ? secureChat.getDeleteControlDigests(carrier)
+                            : null;
+                    getMessagesController().applyForkSecureControlDelete(
+                            dialog_id, message.getId(), digests);
                     return true;
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
                     message.forkSecureVerified = true;
                     applyForkSecureServiceStyle(
                             message,
-                            SecureChatEngine.isPairingStatusDisplay(localText));
-                    if (SecureChatEngine.isStaticStickerDisplay(localText)) {
+                            SecureChatEngine.isPairingStatusDisplay(localText)
+                                    || SecureChatEngine.isDuplicateMessageDisplay(localText));
+                    if (SecureChatEngine.isDuplicateMessageDisplay(localText)) {
+                        // Non-destructive duplicate indicator
+                    } else if (SecureChatEngine.isStaticStickerDisplay(localText)) {
                         applySecureStickerMedia(message, secureChat, carrier);
                     } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
                         applySecureAttachmentMedia(
@@ -21754,23 +21751,22 @@ public class ChatActivity extends BaseFragment implements
                     message.applyNewText("");
                     message.deleted = true;
                     applyForkSecureServiceStyle(message, true);
-                    if (secureChat != null) {
-                        List<byte[]> digests = secureChat.getDeleteControlDigests(carrier);
-                        if (digests != null && !digests.isEmpty()) {
-                            purgeForkSecureMessagesByDigests(dialog_id, digests);
-                        }
-                    }
-                    getMessagesController().deleteMessages(
-                            new ArrayList<>(java.util.Collections.singletonList(message.getId())),
-                            null, null, dialog_id, 0, true, 0, false);
+                    List<byte[]> digests = secureChat != null
+                            ? secureChat.getDeleteControlDigests(carrier)
+                            : null;
+                    getMessagesController().applyForkSecureControlDelete(
+                            dialog_id, message.getId(), digests);
                     return true;
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
                     message.forkSecureVerified = true;
                     applyForkSecureServiceStyle(
                             message,
-                            SecureChatEngine.isPairingStatusDisplay(localText));
-                    if (SecureChatEngine.isStaticStickerDisplay(localText)) {
+                            SecureChatEngine.isPairingStatusDisplay(localText)
+                                    || SecureChatEngine.isDuplicateMessageDisplay(localText));
+                    if (SecureChatEngine.isDuplicateMessageDisplay(localText)) {
+                        // Non-destructive duplicate indicator
+                    } else if (SecureChatEngine.isStaticStickerDisplay(localText)) {
                         applySecureStickerMedia(message, secureChat, carrier);
                     } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
                         applySecureAttachmentMedia(
@@ -23442,6 +23438,9 @@ public class ChatActivity extends BaseFragment implements
         }
         if (SecureChatEngine.isControlDeleteDisplay(plaintext)) {
             return "";
+        }
+        if (SecureChatEngine.isDuplicateMessageDisplay(plaintext)) {
+            return getString(R.string.ForkSecureDuplicateMessage);
         }
         return plaintext;
     }

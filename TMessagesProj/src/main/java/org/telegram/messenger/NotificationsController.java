@@ -1897,13 +1897,12 @@ public class NotificationsController extends BaseController implements Notificat
                             R.string.ForkSecureOutgoingUnavailable);
                 } else if (SecureChatEngine.isControlDeleteDisplay(result)) {
                     List<byte[]> digests = secureChat.getDeleteControlDigests(messageObject.messageOwner.message);
-                    if (digests != null && !digests.isEmpty()) {
-                        MessagesController.getInstance(currentAccount).purgeForkSecureMessagesByDigests(peerId, digests);
-                    }
-                    MessagesController.getInstance(currentAccount).deleteMessages(
-                            new ArrayList<>(java.util.Collections.singletonList(messageObject.getId())),
-                            null, null, peerId, 0, true, 0, false);
+                    MessagesController.getInstance(currentAccount).applyForkSecureControlDelete(
+                            peerId, messageObject.getId(), digests);
                     return null;
+                } else if (SecureChatEngine.isDuplicateMessageDisplay(result)) {
+                    result = LocaleController.getString(
+                            R.string.ForkSecureDuplicateMessage);
                 } else if (SecureChatEngine.isPairingAcknowledgementDisplay(result)) {
                     result = LocaleController.getString(
                             R.string.ForkSecurePairingConfirmed);

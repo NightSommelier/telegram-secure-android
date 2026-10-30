@@ -453,4 +453,5 @@
     <string name="ForkSecureAuditInfo">Аудит аналізує ключові налаштування пристрою та клієнта, які можуть впливати на конфіденційність при фізичному або локальному доступі.</string>
     <string name="CacheEncryptedChats">Захищені чати</string>
     <string name="CacheEncryptedStorage">Захищене сховище</string>
+    <string name="ForkSecureDuplicateMessage">🔒 Дубльоване або повторно доставлене захищене повідомлення.</string>
 </resources>

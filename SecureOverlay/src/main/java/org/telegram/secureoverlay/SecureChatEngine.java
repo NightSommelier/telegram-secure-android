@@ -53,6 +53,8 @@ public final class SecureChatEngine {
             "\u0000fork-secure-display:group-key-distributed:v1";
     public static final String GROUP_KEY_RECEIVED_DISPLAY =
             "\u0000fork-secure-display:group-key-received:v1";
+    public static final String DUPLICATE_MESSAGE_DISPLAY =
+            "\u0000fork-secure-display:duplicate-message:v1";
     private static final Object SESSION_LOCK = KeystoreSignalProtocolStore.PROTOCOL_STATE_LOCK;
     private static final int FAILED_DECRYPT_CACHE_LIMIT = 512;
     private static final java.util.LinkedHashMap<String, Boolean> failedDecryptCarriers =
@@ -1220,6 +1222,12 @@ public final class SecureChatEngine {
                     state.markPaired(account, peerUserId);
                 }
                 return result;
+            } catch (org.signal.libsignal.protocol.DuplicateMessageException duplicate) {
+                try {
+                    localText.rememberIncoming(carrier, DUPLICATE_MESSAGE_DISPLAY);
+                } catch (Exception ignore) {
+                }
+                return DUPLICATE_MESSAGE_DISPLAY;
             } catch (SecureChatException e) {
                 throw e;
             } catch (Exception e) {
@@ -1344,6 +1352,10 @@ public final class SecureChatEngine {
         return CONTROL_DELETE_DISPLAY.equals(value);
     }
 
+    public static boolean isDuplicateMessageDisplay(String value) {
+        return DUPLICATE_MESSAGE_DISPLAY.equals(value);
+    }
+
     public static boolean isContactDisplay(String value) {
         return CONTACT_DISPLAY.equals(value);
     }
@@ -1352,7 +1364,7 @@ public final class SecureChatEngine {
         return LOCATION_DISPLAY.equals(value);
     }
 
-    private static boolean isControlDisplay(String value) {
+    static boolean isControlDisplay(String value) {
         return isPairingAcknowledgementDisplay(value)
                 || isPairingReadyDisplay(value)
                 || isPairingRejectionDisplay(value)
@@ -1360,11 +1372,12 @@ public final class SecureChatEngine {
                 || isStaticStickerDisplay(value)
                 || isAttachmentDisplay(value)
                 || isControlDeleteDisplay(value)
+                || isDuplicateMessageDisplay(value)
                 || isContactDisplay(value)
                 || isLocationDisplay(value);
     }
 
-    private static DialogPreview.Kind controlPreviewKind(String value) {
+    static DialogPreview.Kind controlPreviewKind(String value) {
         if (isPairingAcknowledgementDisplay(value)
                 || isPairingReadyDisplay(value)) {
             return DialogPreview.Kind.PAIRING_ACK;
@@ -1390,6 +1403,9 @@ public final class SecureChatEngine {
         if (isControlDeleteDisplay(value)) {
             return DialogPreview.Kind.CONTROL_DELETE;
         }
+        if (isDuplicateMessageDisplay(value)) {
+            return DialogPreview.Kind.DUPLICATE_MESSAGE;
+        }
         if (isContactDisplay(value)) {
             return DialogPreview.Kind.CONTACT;
         }
@@ -1410,6 +1426,7 @@ public final class SecureChatEngine {
             FILE,
             PHOTO,
             CONTROL_DELETE,
+            DUPLICATE_MESSAGE,
             CONTACT,
             LOCATION,
             PAIRING_OFFER_SENT,
