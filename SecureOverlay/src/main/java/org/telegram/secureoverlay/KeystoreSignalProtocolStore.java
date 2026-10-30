@@ -43,14 +43,27 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     private static final String IDENTITY = "identity";
     private static final String REGISTRATION = "registration";
     private final Context appContext;
-    private final KeystoreEncryptedBlobStore blobs;
+    private final EncryptedStateStorage blobs;
     private final IdentityKeyPair identity;
     private final int registrationId;
 
+    interface EncryptedStateStorage {
+        byte[] get(String name) throws Exception;
+        void put(String name, byte[] data) throws Exception;
+        void delete(String name) throws Exception;
+        void deleteRoots(String... roots) throws Exception;
+        void replaceRoots(Map<String, byte[]> replacements, String... roots) throws Exception;
+        boolean hasNameStartingWith(String... prefixes);
+    }
+
     public KeystoreSignalProtocolStore(Context context) {
+        this(context, new KeystoreEncryptedBlobStore(context));
+    }
+
+    KeystoreSignalProtocolStore(Context context, EncryptedStateStorage storage) {
         synchronized (PROTOCOL_STATE_LOCK) {
-            appContext = context.getApplicationContext();
-            blobs = new KeystoreEncryptedBlobStore(context);
+            appContext = context != null ? context.getApplicationContext() : null;
+            blobs = storage;
             try {
                 byte[] savedIdentity = blobs.get(IDENTITY);
                 byte[] savedRegistration = blobs.get(REGISTRATION);
@@ -79,6 +92,9 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
 
     private static final int PRE_KEY_POOL_MIN = 10;
     private static final int PRE_KEY_POOL_BATCH = 50;
+    public static final long SIGNED_PREKEY_ROTATION_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000L;
+    public static final long KYBER_PREKEY_ROTATION_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000L;
+    public static final long PREKEY_SUNSET_GRACE_PERIOD_MS = 30L * 24 * 60 * 60 * 1000L;
 
     private int getNextPreKeyId() {
         try {
@@ -98,20 +114,208 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
         }
     }
 
+    private int getNextSignedPreKeyId() {
+        try {
+            byte[] b = blobs.get("counter/signed_prekey");
+            int current = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 1;
+            int next = current + 1;
+            if (next >= 0xFFFFFF || next <= 0) {
+                next = 1;
+            }
+            blobs.put("counter/signed_prekey", ByteBuffer.allocate(4).putInt(next).array());
+            return next;
+        } catch (Exception e) {
+            throw failure(e);
+        }
+    }
+
+    private int getNextKyberPreKeyId() {
+        try {
+            byte[] b = blobs.get("counter/kyber_prekey");
+            int current = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 2;
+            int next = current + 1;
+            if (next >= 0xFFFFFF || next <= 0) {
+                next = 1;
+            }
+            blobs.put("counter/kyber_prekey", ByteBuffer.allocate(4).putInt(next).array());
+            return next;
+        } catch (Exception e) {
+            throw failure(e);
+        }
+    }
+
+    public int getActiveSignedPreKeyId() {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                byte[] b = blobs.get("current/signed_prekey_id");
+                if (b != null && b.length == 4) {
+                    return ByteBuffer.wrap(b).getInt();
+                }
+                if (containsSignedPreKey(2)) {
+                    blobs.put("current/signed_prekey_id", ByteBuffer.allocate(4).putInt(2).array());
+                    return 2;
+                }
+                List<Integer> ids = index("signed");
+                if (!ids.isEmpty()) {
+                    int last = ids.get(ids.size() - 1);
+                    blobs.put("current/signed_prekey_id", ByteBuffer.allocate(4).putInt(last).array());
+                    return last;
+                }
+                return -1;
+            } catch (Exception e) {
+                throw failure(e);
+            }
+        }
+    }
+
+    public int getActiveKyberPreKeyId() {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                byte[] b = blobs.get("current/kyber_prekey_id");
+                if (b != null && b.length == 4) {
+                    return ByteBuffer.wrap(b).getInt();
+                }
+                if (containsKyberPreKey(3)) {
+                    blobs.put("current/kyber_prekey_id", ByteBuffer.allocate(4).putInt(3).array());
+                    return 3;
+                }
+                List<Integer> ids = index("kyber");
+                if (!ids.isEmpty()) {
+                    int last = ids.get(ids.size() - 1);
+                    blobs.put("current/kyber_prekey_id", ByteBuffer.allocate(4).putInt(last).array());
+                    return last;
+                }
+                return -1;
+            } catch (Exception e) {
+                throw failure(e);
+            }
+        }
+    }
+
     public void replenishPreKeysIfNeeded() {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
-                List<Integer> existing = index("prekey");
-                if (existing.size() >= PRE_KEY_POOL_MIN) {
+                List<Integer> pool = index("prekey_pool");
+                if (blobs.get("index/prekey_pool") == null) {
+                    List<Integer> existing = index("prekey");
+                    for (int id : existing) {
+                        if (containsPreKey(id) && !pool.contains(id)) {
+                            pool.add(id);
+                        }
+                    }
+                }
+                if (pool.size() >= PRE_KEY_POOL_MIN) {
                     return;
                 }
-                int needed = PRE_KEY_POOL_BATCH - existing.size();
+                int needed = PRE_KEY_POOL_BATCH - pool.size();
                 for (int i = 0; i < needed; i++) {
                     int id = getNextPreKeyId();
                     while (containsPreKey(id)) {
                         id = getNextPreKeyId();
                     }
                     storePreKey(id, new PreKeyRecord(id, ECKeyPair.generate()));
+                    pool.add(id);
+                }
+                saveIndex("prekey_pool", pool);
+            } catch (Exception e) {
+                throw failure(e);
+            }
+        }
+    }
+
+    public boolean rotateKeysIfNeeded() {
+        return rotateKeysIfNeeded(System.currentTimeMillis());
+    }
+
+    public boolean rotateKeysIfNeeded(long now) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            boolean rotatedSigned = rotateSignedPreKeyIfNeeded(now);
+            boolean rotatedKyber = rotateKyberPreKeyIfNeeded(now);
+            pruneExpiredPreKeys(now);
+            return rotatedSigned || rotatedKyber;
+        }
+    }
+
+    public boolean rotateSignedPreKeyIfNeeded(long now) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                int activeId = getActiveSignedPreKeyId();
+                SignedPreKeyRecord activeRecord = null;
+                if (activeId >= 0 && containsSignedPreKey(activeId)) {
+                    try {
+                        activeRecord = loadSignedPreKey(activeId);
+                    } catch (InvalidKeyIdException ignored) {}
+                }
+                if (activeRecord != null) {
+                    long age = now - activeRecord.getTimestamp();
+                    if (age < SIGNED_PREKEY_ROTATION_INTERVAL_MS) {
+                        return false;
+                    }
+                }
+                int newId = getNextSignedPreKeyId();
+                while (containsSignedPreKey(newId)) {
+                    newId = getNextSignedPreKeyId();
+                }
+                ECKeyPair pair = ECKeyPair.generate();
+                byte[] signature = identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize());
+                SignedPreKeyRecord record = new SignedPreKeyRecord(newId, now, pair, signature);
+                storeSignedPreKey(newId, record);
+                blobs.put("current/signed_prekey_id", ByteBuffer.allocate(4).putInt(newId).array());
+                return true;
+            } catch (Exception e) {
+                throw failure(e);
+            }
+        }
+    }
+
+    public boolean rotateKyberPreKeyIfNeeded(long now) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                int activeId = getActiveKyberPreKeyId();
+                KyberPreKeyRecord activeRecord = null;
+                if (activeId >= 0 && containsKyberPreKey(activeId)) {
+                    try {
+                        activeRecord = loadKyberPreKey(activeId);
+                    } catch (InvalidKeyIdException ignored) {}
+                }
+                if (activeRecord != null) {
+                    long age = now - activeRecord.getTimestamp();
+                    if (age < KYBER_PREKEY_ROTATION_INTERVAL_MS) {
+                        return false;
+                    }
+                }
+                int newId = getNextKyberPreKeyId();
+                while (containsKyberPreKey(newId)) {
+                    newId = getNextKyberPreKeyId();
+                }
+                KEMKeyPair pair = KEMKeyPair.generate(KEMKeyType.KYBER_1024);
+                byte[] signature = identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize());
+                KyberPreKeyRecord record = new KyberPreKeyRecord(newId, now, pair, signature);
+                storeKyberPreKey(newId, record);
+                blobs.put("current/kyber_prekey_id", ByteBuffer.allocate(4).putInt(newId).array());
+                return true;
+            } catch (Exception e) {
+                throw failure(e);
+            }
+        }
+    }
+
+    public void pruneExpiredPreKeys(long now) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            try {
+                int activeSignedId = getActiveSignedPreKeyId();
+                for (SignedPreKeyRecord record : loadSignedPreKeys()) {
+                    if (record.getId() != activeSignedId
+                            && (now - record.getTimestamp()) > PREKEY_SUNSET_GRACE_PERIOD_MS) {
+                        removeSignedPreKey(record.getId());
+                    }
+                }
+                int activeKyberId = getActiveKyberPreKeyId();
+                for (KyberPreKeyRecord record : loadKyberPreKeys()) {
+                    if (record.getId() != activeKyberId
+                            && (now - record.getTimestamp()) > PREKEY_SUNSET_GRACE_PERIOD_MS) {
+                        removeKyberPreKey(record.getId());
+                    }
                 }
             } catch (Exception e) {
                 throw failure(e);
@@ -122,40 +326,35 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     /** Creates the one-time material required to publish a 1:1 pre-key bundle. */
     public LocalPreKeyMaterial ensureLocalPreKeyMaterial() {
         synchronized (PROTOCOL_STATE_LOCK) {
-            final int signedPreKeyId = 2;
-            final int kyberPreKeyId = 3;
             try {
                 replenishPreKeysIfNeeded();
-                List<Integer> existing = index("prekey");
-                int preKeyId;
-                if (!existing.isEmpty()) {
-                    byte[] b = blobs.get("counter/prekey_offer_offset");
-                    int offset = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 0;
-                    if (offset < 0 || offset >= existing.size()) {
-                        offset = 0;
+                rotateKeysIfNeeded();
+
+                List<Integer> pool = index("prekey_pool");
+                int preKeyId = -1;
+                while (!pool.isEmpty()) {
+                    int candidate = pool.remove(0);
+                    if (containsPreKey(candidate)) {
+                        preKeyId = candidate;
+                        break;
                     }
-                    preKeyId = existing.get(offset);
-                    int nextOffset = (offset + 1) % existing.size();
-                    blobs.put("counter/prekey_offer_offset", ByteBuffer.allocate(4).putInt(nextOffset).array());
-                } else {
+                }
+                saveIndex("prekey_pool", pool);
+                if (preKeyId < 0) {
                     preKeyId = getNextPreKeyId();
                     storePreKey(preKeyId, new PreKeyRecord(preKeyId, ECKeyPair.generate()));
                 }
-                if (!containsSignedPreKey(signedPreKeyId)) {
-                    ECKeyPair pair = ECKeyPair.generate();
-                    storeSignedPreKey(signedPreKeyId, new SignedPreKeyRecord(signedPreKeyId,
-                            System.currentTimeMillis(), pair,
-                            identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize())));
+                if (pool.size() < PRE_KEY_POOL_MIN) {
+                    replenishPreKeysIfNeeded();
                 }
-                if (!containsKyberPreKey(kyberPreKeyId)) {
-                    KEMKeyPair pair = KEMKeyPair.generate(KEMKeyType.KYBER_1024);
-                    storeKyberPreKey(kyberPreKeyId, new KyberPreKeyRecord(kyberPreKeyId,
-                            System.currentTimeMillis(), pair,
-                            identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize())));
-                }
+
+                int signedPreKeyId = getActiveSignedPreKeyId();
+                int kyberPreKeyId = getActiveKyberPreKeyId();
                 return new LocalPreKeyMaterial(preKeyId, signedPreKeyId, kyberPreKeyId,
                         loadPreKey(preKeyId), loadSignedPreKey(signedPreKeyId), loadKyberPreKey(kyberPreKeyId));
-            } catch (Exception e) { throw failure(e); }
+            } catch (Exception e) {
+                throw failure(e);
+            }
         }
     }
 
@@ -194,7 +393,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     }
 
     private boolean isWaitingPeerAddress(SignalProtocolAddress address) {
-        if (address == null || address.getName() == null) {
+        if (address == null || address.getName() == null || appContext == null) {
             return false;
         }
         String name = address.getName();
@@ -233,7 +432,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
                 new KeystoreEncryptedBlobStore(context.getApplicationContext()).deleteRoots(
-                        IDENTITY, REGISTRATION, "counter", "prekey", "signed", "kyber", "index",
+                        IDENTITY, REGISTRATION, "counter", "current", "prekey", "signed", "kyber", "index",
                         "kyber-used", "session", "sender");
             } catch (Exception e) {
                 throw failure(e);
@@ -277,6 +476,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
                         IDENTITY,
                         REGISTRATION,
                         "counter",
+                        "current",
                         "prekey",
                         "signed",
                         "kyber",
@@ -348,6 +548,10 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     @Override public void removePreKey(int id) {
         synchronized (PROTOCOL_STATE_LOCK) {
             removeIndexed("prekey", id);
+            List<Integer> pool = index("prekey_pool");
+            if (pool.remove((Integer) id)) {
+                saveIndex("prekey_pool", pool);
+            }
         }
     }
 
@@ -397,6 +601,11 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     @Override public boolean containsKyberPreKey(int id) {
         synchronized (PROTOCOL_STATE_LOCK) {
             return get("kyber", id) != null;
+        }
+    }
+    public void removeKyberPreKey(int id) {
+        synchronized (PROTOCOL_STATE_LOCK) {
+            removeIndexed("kyber", id);
         }
     }
     @Override public void markKyberPreKeyUsed(int id, int signedId, ECPublicKey base) throws ReusedBaseKeyException {

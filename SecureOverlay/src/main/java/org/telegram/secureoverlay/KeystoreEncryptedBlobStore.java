@@ -26,7 +26,7 @@ import javax.crypto.spec.GCMParameterSpec;
  * cannot be moved to a different logical record. Writes use {@link
  * SharedPreferences.Editor#commit()} and report failure synchronously.</p>
  */
-public final class KeystoreEncryptedBlobStore {
+public final class KeystoreEncryptedBlobStore implements KeystoreSignalProtocolStore.EncryptedStateStorage {
     private static final String KEYSTORE = "AndroidKeyStore";
     private static final String PREFS = "telegram_secure_overlay_state_v1";
     private static final String KEY_ALIAS = "telegram_secure_overlay_state_key_v1";
