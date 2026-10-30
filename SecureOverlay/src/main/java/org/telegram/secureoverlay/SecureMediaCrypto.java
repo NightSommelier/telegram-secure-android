@@ -1,6 +1,7 @@
 package org.telegram.secureoverlay;
 
 import java.io.File;
+import java.nio.ByteBuffer;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -24,7 +25,10 @@ public final class SecureMediaCrypto {
     public static final int MAX_STATIC_STICKER_BYTES = 8 * 1024 * 1024;
     /** Streaming attachment ceiling for the local MVP (Telegram documents can be much larger). */
     public static final int MAX_ATTACHMENT_BYTES = 512 * 1024 * 1024;
+    public static final int SEGMENT_SIZE = 64 * 1024;
     public static final int GCM_TAG_BYTES = 16;
+    public static final int MAX_ATTACHMENT_CIPHERTEXT_BYTES =
+            MAX_ATTACHMENT_BYTES + (MAX_ATTACHMENT_BYTES / SEGMENT_SIZE + 1) * GCM_TAG_BYTES;
     private static final int KEY_BYTES = 32;
     private static final int NONCE_BYTES = 12;
     private static final byte[] STICKER_AAD_PREFIX =
@@ -56,6 +60,39 @@ public final class SecureMediaCrypto {
             throw new IllegalArgumentException("padded size exceeds integer max");
         }
         return (int) padded;
+    }
+
+    public static int calculateSegmentedCiphertextSize(long plaintextSize) {
+        if (plaintextSize <= 0 || plaintextSize > MAX_ATTACHMENT_BYTES) {
+            throw new IllegalArgumentException("invalid plaintext size: " + plaintextSize);
+        }
+        int targetPaddedPlaintextSize = padmeSize((int) plaintextSize);
+        int numSegments = (targetPaddedPlaintextSize + SEGMENT_SIZE - 1) / SEGMENT_SIZE;
+        if (numSegments <= 0) {
+            numSegments = 1;
+        }
+        long totalCiphertext = (long) targetPaddedPlaintextSize + ((long) numSegments * GCM_TAG_BYTES);
+        if (totalCiphertext > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("ciphertext size exceeds integer max");
+        }
+        return (int) totalCiphertext;
+    }
+
+    private static byte[] deriveSegmentNonce(byte[] baseNonce, int segmentIndex, boolean isLast) {
+        ByteBuffer nonceBuf = ByteBuffer.allocate(NONCE_BYTES);
+        nonceBuf.put(baseNonce, 0, 7);
+        nonceBuf.putInt(segmentIndex);
+        nonceBuf.put((byte) (isLast ? 1 : 0));
+        return nonceBuf.array();
+    }
+
+    private static byte[] deriveSegmentAad(boolean photo, int segmentIndex, boolean isLast) {
+        ByteBuffer aadBuf = ByteBuffer.allocate(ATTACHMENT_AAD_PREFIX.length + 1 + 4 + 1);
+        aadBuf.put(ATTACHMENT_AAD_PREFIX);
+        aadBuf.put((byte) (photo ? 1 : 0));
+        aadBuf.putInt(segmentIndex);
+        aadBuf.put((byte) (isLast ? 1 : 0));
+        return aadBuf.array();
     }
 
     public static EncryptedStaticSticker encryptStaticSticker(
@@ -402,7 +439,7 @@ public final class SecureMediaCrypto {
             throw new IllegalArgumentException("secure attachment size is invalid");
         }
         int targetPaddedPlaintextSize = padmeSize((int) sourceSize);
-        int expectedCiphertextSize = targetPaddedPlaintextSize + GCM_TAG_BYTES;
+        int expectedCiphertextSize = calculateSegmentedCiphertextSize(sourceSize);
         byte[] mediaId = randomBytes(16);
         byte[] key = randomBytes(KEY_BYTES);
         byte[] nonce = randomBytes(NONCE_BYTES);
@@ -429,47 +466,50 @@ public final class SecureMediaCrypto {
         MessageDigest digest = newSha256();
         long plaintextBytes = 0;
         long ciphertextBytes = 0;
+        int numSegments = (targetPaddedPlaintextSize + SEGMENT_SIZE - 1) / SEGMENT_SIZE;
+        if (numSegments <= 0) {
+            numSegments = 1;
+        }
         try (FileInputStream input = new FileInputStream(source);
                 FileOutputStream output = new FileOutputStream(temporary, false)) {
-            Cipher cipher = createAttachmentCipher(
-                    Cipher.ENCRYPT_MODE, key, nonce, photo);
-            byte[] buffer = new byte[64 * 1024];
-            int count;
-            while ((count = input.read(buffer)) != -1) {
-                plaintextBytes += count;
-                if (plaintextBytes > MAX_ATTACHMENT_BYTES) {
-                    throw new IllegalArgumentException(
-                            "secure attachment exceeds size limit");
-                }
-                byte[] encrypted = cipher.update(buffer, 0, count);
-                if (encrypted != null && encrypted.length != 0) {
-                    output.write(encrypted);
-                    digest.update(encrypted);
-                    ciphertextBytes += encrypted.length;
-                }
-            }
-            if (plaintextBytes != sourceSize) {
-                throw new SecureMediaException("secure attachment size changed while reading", null);
-            }
-            long paddingNeeded = targetPaddedPlaintextSize - plaintextBytes;
-            if (paddingNeeded > 0) {
-                byte[] zeroBuffer = new byte[Math.min((int) paddingNeeded, 64 * 1024)];
-                long remainingPadding = paddingNeeded;
-                while (remainingPadding > 0) {
-                    int toWrite = (int) Math.min(remainingPadding, zeroBuffer.length);
-                    byte[] encrypted = cipher.update(zeroBuffer, 0, toWrite);
-                    if (encrypted != null && encrypted.length != 0) {
-                        output.write(encrypted);
-                        digest.update(encrypted);
-                        ciphertextBytes += encrypted.length;
+            byte[] segmentBuffer = new byte[SEGMENT_SIZE];
+            SecretKeySpec secretKey = new SecretKeySpec(key, "AES");
+            int segmentIndex = 0;
+            long remainingPaddedPlaintext = targetPaddedPlaintextSize;
+            long remainingFilePlaintext = sourceSize;
+
+            while (segmentIndex < numSegments) {
+                boolean isLast = (segmentIndex == numSegments - 1);
+                int segmentTargetLen = isLast
+                        ? (int) remainingPaddedPlaintext
+                        : SEGMENT_SIZE;
+                int bytesReadFromSource = 0;
+                while (bytesReadFromSource < segmentTargetLen && remainingFilePlaintext > 0) {
+                    int toRead = (int) Math.min((long) (segmentTargetLen - bytesReadFromSource), remainingFilePlaintext);
+                    int r = input.read(segmentBuffer, bytesReadFromSource, toRead);
+                    if (r == -1) {
+                        break;
                     }
-                    remainingPadding -= toWrite;
+                    bytesReadFromSource += r;
+                    remainingFilePlaintext -= r;
+                    plaintextBytes += r;
                 }
+                if (bytesReadFromSource < segmentTargetLen) {
+                    Arrays.fill(segmentBuffer, bytesReadFromSource, segmentTargetLen, (byte) 0);
+                }
+                byte[] segmentNonce = deriveSegmentNonce(nonce, segmentIndex, isLast);
+                byte[] segmentAad = deriveSegmentAad(photo, segmentIndex, isLast);
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.ENCRYPT_MODE, secretKey, new GCMParameterSpec(128, segmentNonce));
+                cipher.updateAAD(segmentAad);
+                byte[] encryptedSegment = cipher.doFinal(segmentBuffer, 0, segmentTargetLen);
+
+                output.write(encryptedSegment);
+                digest.update(encryptedSegment);
+                ciphertextBytes += encryptedSegment.length;
+                remainingPaddedPlaintext -= segmentTargetLen;
+                segmentIndex++;
             }
-            byte[] finalBytes = cipher.doFinal();
-            output.write(finalBytes);
-            digest.update(finalBytes);
-            ciphertextBytes += finalBytes.length;
             output.getFD().sync();
         } catch (IllegalArgumentException e) {
             temporary.delete();
@@ -508,7 +548,6 @@ public final class SecureMediaCrypto {
                 title,
                 performer,
                 waveform);
-        // Validate all metadata before a carrier can be produced.
         SecureContentCodec.encodeAttachment(manifest);
         return manifest;
     }
@@ -528,19 +567,113 @@ public final class SecureMediaCrypto {
                 || !MessageDigest.isEqual(
                         sha256File(
                                 ciphertextFile,
-                                MAX_ATTACHMENT_BYTES + GCM_TAG_BYTES),
+                                MAX_ATTACHMENT_CIPHERTEXT_BYTES),
                         manifest.ciphertextSha256)) {
             throw new IllegalArgumentException(
                     "secure attachment ciphertext does not match manifest");
         }
-        int paddedPlaintextSize = manifest.ciphertextSize - GCM_TAG_BYTES;
-        int expectedPaddedPlaintextSize = padmeSize(manifest.plaintextSize);
-        boolean validCiphertextSize = manifest.ciphertextSize == manifest.plaintextSize + GCM_TAG_BYTES
-                || manifest.ciphertextSize == expectedPaddedPlaintextSize + GCM_TAG_BYTES;
-        if (!validCiphertextSize) {
+        int targetPaddedPlaintextSize = padmeSize(manifest.plaintextSize);
+        int expectedSegmentedCiphertextSize = calculateSegmentedCiphertextSize(manifest.plaintextSize);
+        int legacyPaddedCiphertextSize = targetPaddedPlaintextSize + GCM_TAG_BYTES;
+        int legacyUnpaddedCiphertextSize = manifest.plaintextSize + GCM_TAG_BYTES;
+
+        boolean isSegmented = (manifest.ciphertextSize == expectedSegmentedCiphertextSize);
+        boolean isLegacy = (manifest.ciphertextSize == legacyPaddedCiphertextSize
+                || manifest.ciphertextSize == legacyUnpaddedCiphertextSize);
+        if (!isSegmented && !isLegacy) {
             throw new IllegalArgumentException("invalid secure attachment ciphertext size");
         }
+
         File temporary = createSafeTemporaryFile(destination);
+        if (isSegmented) {
+            decryptSegmented(ciphertextFile, temporary, destination, manifest, targetPaddedPlaintextSize);
+        } else {
+            decryptLegacy(ciphertextFile, temporary, destination, manifest);
+        }
+    }
+
+    private static void decryptSegmented(
+            File ciphertextFile,
+            File temporary,
+            File destination,
+            SecureContentCodec.Attachment manifest,
+            int targetPaddedPlaintextSize) {
+        long writtenPlaintextBytes = 0;
+        long totalDecryptedBytes = 0;
+        int numSegments = (targetPaddedPlaintextSize + SEGMENT_SIZE - 1) / SEGMENT_SIZE;
+        if (numSegments <= 0) {
+            numSegments = 1;
+        }
+        try (FileInputStream input = new FileInputStream(ciphertextFile);
+                FileOutputStream output = new FileOutputStream(temporary, false)) {
+            SecretKeySpec secretKey = new SecretKeySpec(manifest.key, "AES");
+            int segmentIndex = 0;
+            long remainingPaddedPlaintext = targetPaddedPlaintextSize;
+            while (segmentIndex < numSegments) {
+                boolean isLast = (segmentIndex == numSegments - 1);
+                int segmentPlaintextLen = isLast
+                        ? (int) remainingPaddedPlaintext
+                        : SEGMENT_SIZE;
+                int segmentCiphertextLen = segmentPlaintextLen + GCM_TAG_BYTES;
+                byte[] segmentCiphertext = new byte[segmentCiphertextLen];
+                int totalRead = 0;
+                while (totalRead < segmentCiphertextLen) {
+                    int r = input.read(segmentCiphertext, totalRead, segmentCiphertextLen - totalRead);
+                    if (r == -1) {
+                        break;
+                    }
+                    totalRead += r;
+                }
+                if (totalRead != segmentCiphertextLen) {
+                    throw new IllegalArgumentException("truncated segmented attachment ciphertext");
+                }
+                byte[] segmentNonce = deriveSegmentNonce(manifest.nonce, segmentIndex, isLast);
+                byte[] segmentAad = deriveSegmentAad(manifest.photo, segmentIndex, isLast);
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(128, segmentNonce));
+                cipher.updateAAD(segmentAad);
+                byte[] decrypted = cipher.doFinal(segmentCiphertext);
+                if (decrypted.length != segmentPlaintextLen) {
+                    throw new IllegalArgumentException("unexpected decrypted segment size");
+                }
+                processDecryptedChunk(decrypted, output, manifest.plaintextSize, writtenPlaintextBytes);
+                totalDecryptedBytes += decrypted.length;
+                writtenPlaintextBytes = Math.min(totalDecryptedBytes, manifest.plaintextSize);
+                remainingPaddedPlaintext -= segmentPlaintextLen;
+                segmentIndex++;
+            }
+            output.getFD().sync();
+        } catch (AEADBadTagException e) {
+            temporary.delete();
+            throw new IllegalArgumentException("secure attachment authentication failed", e);
+        } catch (IllegalArgumentException e) {
+            temporary.delete();
+            throw e;
+        } catch (IOException | GeneralSecurityException e) {
+            temporary.delete();
+            throw new SecureMediaException("cannot decrypt secure attachment", e);
+        }
+        if (writtenPlaintextBytes != manifest.plaintextSize
+                || totalDecryptedBytes != targetPaddedPlaintextSize) {
+            temporary.delete();
+            throw new IllegalArgumentException("secure attachment plaintext size is invalid");
+        }
+        if (destination.exists() && !destination.delete()) {
+            temporary.delete();
+            throw new SecureMediaException("cannot replace decrypted attachment", null);
+        }
+        if (!temporary.renameTo(destination)) {
+            temporary.delete();
+            throw new SecureMediaException("cannot finalize decrypted attachment", null);
+        }
+    }
+
+    private static void decryptLegacy(
+            File ciphertextFile,
+            File temporary,
+            File destination,
+            SecureContentCodec.Attachment manifest) {
+        int paddedPlaintextSize = manifest.ciphertextSize - GCM_TAG_BYTES;
         long writtenPlaintextBytes = 0;
         long totalDecryptedBytes = 0;
         try (FileInputStream input = new FileInputStream(ciphertextFile);

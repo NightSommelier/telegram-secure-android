@@ -163,17 +163,22 @@ public final class SecureChatEngine {
     private final SignalProtocolAddress localAddress;
     private final long identityEpoch;
 
+    public static SecureChatEngine get(Context context, int account, long peerUserId) {
+        return SecureSessionManager.getEngine(context, account, peerUserId);
+    }
+
     public SecureChatEngine(Context context, int account, long peerUserId) {
         if (account < 0 || peerUserId == 0) throw new IllegalArgumentException("secure chats require an account and valid peer");
+        if (peerUserId < 0 && !SecureSessionManager.GROUPS_ENABLED) {
+            throw new SecureChatException("secure groups are disabled", null);
+        }
         this.account = account;
         this.peerUserId = peerUserId;
         Context appContext = context.getApplicationContext();
         this.context = appContext;
-        SecureHistoryBackupManager.resumeInterruptedRestore(appContext);
-        SecureIdentityBackupManager.resumeInterruptedImport(appContext);
+        SecureSessionManager.getInstance(appContext, account).ensureInitialized();
         state = new SecureChatState(appContext);
         recoveryStore = new SecureRecoveryGenerationStore(appContext, account);
-        recoveryStore.ensureLocalIdentity(generationForEpoch(state.getIdentityEpoch(account)));
         store = new KeystoreSignalProtocolStore(appContext, account);
         peerAddress = new SignalProtocolAddress("telegram-user-" + peerUserId, 1);
         localAddress = new SignalProtocolAddress("local-account-" + account, 1);
@@ -1668,7 +1673,7 @@ public final class SecureChatEngine {
         }
     }
 
-    private static long generationForEpoch(long identityEpoch) {
+    static long generationForEpoch(long identityEpoch) {
         if (identityEpoch < 0 || identityEpoch == Long.MAX_VALUE) {
             throw new SecureChatException("invalid secure identity epoch", null);
         }

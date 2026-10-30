@@ -197,7 +197,7 @@ public final class SecureMediaCryptoTest {
         // remains the caller-provided opaque name and never needs to expose source.jpg.
         assertEquals("holiday.jpg", decoded.attachment.fileName);
         assertEquals("opaque.bin", encrypted.getName());
-        assertEquals(SecureMediaCrypto.padmeSize(plaintext.length) + SecureMediaCrypto.GCM_TAG_BYTES,
+        assertEquals(SecureMediaCrypto.calculateSegmentedCiphertextSize(plaintext.length),
                 encrypted.length());
         assertArrayEquals(plaintext, readFile(decrypted));
         source.delete();

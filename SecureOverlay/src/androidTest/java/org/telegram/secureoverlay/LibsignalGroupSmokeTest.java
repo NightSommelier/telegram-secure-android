@@ -26,6 +26,16 @@ import org.signal.libsignal.protocol.message.SenderKeyDistributionMessage;
 public final class LibsignalGroupSmokeTest {
     private static final int DEVICE_ID = 1;
 
+    @org.junit.Before
+    public void setUp() {
+        SecureSessionManager.GROUPS_ENABLED = true;
+    }
+
+    @org.junit.After
+    public void tearDown() {
+        SecureSessionManager.GROUPS_ENABLED = false;
+    }
+
     @Test
     public void distributesSenderKeyAndEncryptsGroupMessage() throws Exception {
         InMemorySenderKeyStore aliceStore = new InMemorySenderKeyStore();

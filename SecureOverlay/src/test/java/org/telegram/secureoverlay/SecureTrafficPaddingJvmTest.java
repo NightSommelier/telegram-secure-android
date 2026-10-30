@@ -216,7 +216,7 @@ public final class SecureTrafficPaddingJvmTest {
         assertEquals(123, manifest.plaintextSize);
         int expectedPaddedPlaintext = SecureMediaCrypto.padmeSize(123);
         assertEquals(256, expectedPaddedPlaintext);
-        int expectedCiphertext = expectedPaddedPlaintext + SecureMediaCrypto.GCM_TAG_BYTES;
+        int expectedCiphertext = SecureMediaCrypto.calculateSegmentedCiphertextSize(123);
         assertEquals(expectedCiphertext, manifest.ciphertextSize);
         assertEquals(expectedCiphertext, encrypted.length());
 

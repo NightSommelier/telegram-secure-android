@@ -936,7 +936,9 @@ public final class SecureContentCodec {
                 : dimensionsPresent && (!visualDocument
                         || width <= 0 || width > 16384 || height <= 0 || height > 16384);
         int paddedPlaintextSize = SecureMediaCrypto.padmeSize(plaintextSize);
-        boolean validCiphertextSize = ciphertextSize == plaintextSize + SecureMediaCrypto.GCM_TAG_BYTES
+        int segmentedCiphertextSize = SecureMediaCrypto.calculateSegmentedCiphertextSize(plaintextSize);
+        boolean validCiphertextSize = ciphertextSize == segmentedCiphertextSize
+                || ciphertextSize == plaintextSize + SecureMediaCrypto.GCM_TAG_BYTES
                 || ciphertextSize == paddedPlaintextSize + SecureMediaCrypto.GCM_TAG_BYTES;
         if (mediaId == null
                 || mediaId.length != 16
