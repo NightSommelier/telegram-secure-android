@@ -11345,8 +11345,8 @@
     <string name="ForkSecureBackupPasswordsDoNotMatch">Passwords do not match</string>
     <string name="ForkSecureShowBackupPassword">Show backup password</string>
     <string name="ForkSecureHideBackupPassword">Hide backup password</string>
-    <string name="ForkSecureBackupPasswordHint">A password is optional. If used, enter at least 5 characters. The file contains your private Fork-Secure identity and must not be shared.</string>
-    <string name="ForkSecureBackupPasswordInvalid">Leave both fields empty or enter at least 5 identical characters.</string>
+    <string name="ForkSecureBackupPasswordHint">Enter a strong password or passphrase of at least 12 characters. The file contains your private Fork-Secure identity and must not be shared.</string>
+    <string name="ForkSecureBackupPasswordInvalid">Enter matching passwords of at least 12 non-trivial characters.</string>
     <string name="ForkSecureBackupWithoutPassword">Backup without password</string>
     <string name="ForkSecureBackupWithoutPasswordWarning">Anyone who obtains this file can recover your private Fork-Secure identity and, for a history archive, protected message copies and attachment keys. Continue only if the file will remain in storage you control.</string>
     <string name="ForkSecureBackupWithoutPasswordImportWarning">This backup has no password protection. Continue only if you trust where the file came from and who had access to it.</string>

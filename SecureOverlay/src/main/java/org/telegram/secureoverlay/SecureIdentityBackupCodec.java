@@ -44,6 +44,8 @@ public final class SecureIdentityBackupCodec {
     private static final int KEY_BYTES = 32;
     private static final int FIXED_HEADER_BYTES = 26;
     private static final int MAX_PLAINTEXT_BYTES = 4096;
+    public static final int MIN_PASSWORD_CHARS = 12;
+    private static final int MIN_DISTINCT_PASSWORD_CHARS = 4;
     private static final int MAX_PASSWORD_BYTES = 512;
     private static final int MAX_IDENTITY_BYTES = 512;
     private static final int MAX_REGISTRATION_ID = 16_380;
@@ -390,9 +392,44 @@ public final class SecureIdentityBackupCodec {
         }
     }
 
+    public static boolean isStrongPassword(char[] password) {
+        if (password == null || password.length < MIN_PASSWORD_CHARS) {
+            return false;
+        }
+        int distinctCount = 0;
+        char[] seen = new char[MIN_DISTINCT_PASSWORD_CHARS];
+        for (char c : password) {
+            if (Character.isWhitespace(c)) {
+                continue;
+            }
+            boolean alreadySeen = false;
+            for (int i = 0; i < distinctCount; i++) {
+                if (seen[i] == c) {
+                    alreadySeen = true;
+                    break;
+                }
+            }
+            if (!alreadySeen) {
+                seen[distinctCount++] = c;
+                if (distinctCount >= MIN_DISTINCT_PASSWORD_CHARS) {
+                    Arrays.fill(seen, '\0');
+                    return true;
+                }
+            }
+        }
+        Arrays.fill(seen, '\0');
+        return false;
+    }
+
     private static byte[] encodePassword(char[] password) {
         if (password == null || password.length == 0) {
             throw new IllegalArgumentException("identity backup password is required");
+        }
+        if (!isStrongPassword(password)) {
+            throw new IllegalArgumentException(
+                    "identity backup password must be at least "
+                            + MIN_PASSWORD_CHARS
+                            + " characters with sufficient entropy");
         }
         try {
             ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()

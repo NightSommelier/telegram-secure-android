@@ -55,6 +55,7 @@ public final class SecureHistoryBackupCodec {
     private static final int MAX_RECORD_BYTES = 64 * 1024;
     private static final int MAX_RECORDS = 100_000;
     private static final int MAX_PEERS = 20_000;
+    public static final int MIN_PASSWORD_CHARS = SecureIdentityBackupCodec.MIN_PASSWORD_CHARS;
     private static final int MAX_PASSWORD_BYTES = 512;
     private static final int MAX_IDENTITY_BYTES = 512;
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -546,6 +547,12 @@ public final class SecureHistoryBackupCodec {
     private static byte[] encodePassword(char[] password) {
         if (password == null || password.length == 0) {
             throw new IllegalArgumentException("secure history password is required");
+        }
+        if (!SecureIdentityBackupCodec.isStrongPassword(password)) {
+            throw new IllegalArgumentException(
+                    "secure history password must be at least "
+                            + MIN_PASSWORD_CHARS
+                            + " characters with sufficient entropy");
         }
         try {
             ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()

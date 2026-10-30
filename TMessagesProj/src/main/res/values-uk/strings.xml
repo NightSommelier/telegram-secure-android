@@ -391,8 +391,8 @@
     <string name="ForkSecureBackupPasswordsDoNotMatch">Паролі не збігаються</string>
     <string name="ForkSecureShowBackupPassword">Показати пароль резервної копії</string>
     <string name="ForkSecureHideBackupPassword">Приховати пароль резервної копії</string>
-    <string name="ForkSecureBackupPasswordHint">Пароль необов’язковий. Якщо використовуєте його, введіть щонайменше 5 символів. Файл містить вашу приватну ідентичність Fork-Secure — нікому його не надсилайте.</string>
-    <string name="ForkSecureBackupPasswordInvalid">Залиште обидва поля порожніми або введіть щонайменше 5 однакових символів.</string>
+    <string name="ForkSecureBackupPasswordHint">Введіть надійний пароль або пароля-фразу щонайменше з 12 символів. Файл містить вашу приватну ідентичність Fork-Secure — нікому його не надсилайте.</string>
+    <string name="ForkSecureBackupPasswordInvalid">Введіть однакові паролі щонайменше з 12 нетривіальних символів.</string>
     <string name="ForkSecureBackupWithoutPassword">Копія без пароля</string>
     <string name="ForkSecureBackupWithoutPasswordWarning">Кожен, хто отримає цей файл, зможе відновити вашу приватну ідентичність Fork-Secure, а з архіву історії — також копії захищених повідомлень і ключі вкладень. Продовжуйте лише якщо файл зберігатиметься у сховищі під вашим контролем.</string>
     <string name="ForkSecureBackupWithoutPasswordImportWarning">Ця резервна копія не захищена паролем. Продовжуйте лише якщо довіряєте джерелу файла та знаєте, хто мав до нього доступ.</string>

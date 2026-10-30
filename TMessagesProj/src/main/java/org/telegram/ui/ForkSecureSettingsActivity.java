@@ -753,11 +753,11 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
         dialog.setOnCancelListener(ignored -> cancelOnce.run());
         dialog.setOnShowListener(ignored -> dialog.getButton(
                 DialogInterface.BUTTON_POSITIVE).setOnClickListener(view -> {
-            char[] password = first.getText().toString().toCharArray();
+            char[] password = extractPasswordChars(first.getText());
             char[] repeated = confirmation == null
                     ? null
-                    : confirmation.getText().toString().toCharArray();
-            boolean valid = password.length >= 5
+                    : extractPasswordChars(confirmation.getText());
+            boolean valid = org.telegram.secureoverlay.SecureIdentityBackupCodec.isStrongPassword(password)
                     && (repeated == null || Arrays.equals(password, repeated));
             if (repeated != null) {
                 Arrays.fill(repeated, '\0');
@@ -776,6 +776,34 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             callback.onPassword(password);
         }));
         showDialog(dialog, ignored -> clearActivePasswordDialogState(dialog));
+    }
+
+    private static char[] extractPasswordChars(Editable editable) {
+        if (editable == null) {
+            return new char[0];
+        }
+        int length = editable.length();
+        char[] chars = new char[length];
+        if (length > 0) {
+            editable.getChars(0, length, chars, 0);
+        }
+        return chars;
+    }
+
+    private static boolean editableEquals(Editable left, Editable right) {
+        if (left == right) {
+            return true;
+        }
+        if (left == null || right == null || left.length() != right.length()) {
+            return false;
+        }
+        int length = left.length();
+        for (int i = 0; i < length; i++) {
+            if (left.charAt(i) != right.charAt(i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private PasswordField createPasswordField(String hint) {
@@ -842,7 +870,7 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             matchStatus.setVisibility(View.GONE);
             return;
         }
-        boolean matches = TextUtils.equals(first.getText(), second.getText());
+        boolean matches = editableEquals(first.getText(), second.getText());
         matchStatus.setText(getString(matches
                 ? R.string.ForkSecureBackupPasswordsMatch
                 : R.string.ForkSecureBackupPasswordsDoNotMatch));
