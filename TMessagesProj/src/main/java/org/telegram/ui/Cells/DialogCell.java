@@ -3012,11 +3012,15 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         }
     }
 
-    private static CharSequence formatForkSecureDialogPreview(SecureChatEngine.DialogPreview preview) {
+    private static CharSequence formatForkSecureDialogPreview(
+            Context context, SecureChatEngine.DialogPreview preview) {
         if (preview == null) {
             return null;
         }
         if (preview.kind == SecureChatEngine.DialogPreview.Kind.PLAINTEXT) {
+            if (context != null && org.telegram.secureoverlay.SecureContentSettings.isScreenProtectionEnabled(context)) {
+                return LocaleController.getString(R.string.ForkSecureReplyPreview);
+            }
             return LocaleController.formatString(
                     R.string.ForkSecureTextPreview, preview.plaintext);
         } else if (preview.kind == SecureChatEngine.DialogPreview.Kind.PAIRING_ACK) {
@@ -3082,7 +3086,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         if (carrier == null || !carrier.startsWith(SecureCarrierCodec.PREFIX)) {
             return;
         }
-        String cacheKey = currentAccount + "_" + currentDialogId + "_" + carrier;
+        final boolean screenProtected =
+                org.telegram.secureoverlay.SecureContentSettings.isScreenProtectionEnabled(getContext());
+        String cacheKey = currentAccount + "_" + currentDialogId + "_" + screenProtected + "_" + carrier;
         CharSequence cached = forkSecurePreviewCache.get(cacheKey);
         if (cached != null) {
             message.applyNewText(cached);
@@ -3107,49 +3113,17 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                         new SecureChatEngine(getContext(), currentAccount, currentDialogId);
                 securePreviewPeerId = currentDialogId;
             }
-            // Use cacheOnly=true so list scrolling never blocks on Libsignal ratchet decryption.
+            // Keep dialog list previews strictly cacheOnly=true so the main chat list never
+            // advances the Libsignal ratchet in the background or exposes uncached plaintext (SA-34).
             SecureChatEngine.DialogPreview preview = securePreviewEngine.resolveDialogPreview(
                     carrier, message.isOutOwner(), message.getFromChatId(), true);
             if (preview != null) {
-                CharSequence previewText = formatForkSecureDialogPreview(preview);
+                CharSequence previewText = formatForkSecureDialogPreview(getContext(), preview);
                 if (preview.kind == SecureChatEngine.DialogPreview.Kind.CONTROL_DELETE) {
                     message.deleted = true;
                 }
                 forkSecurePreviewCache.put(cacheKey, previewText);
                 message.applyNewText(previewText);
-                return;
-            }
-            // Not in cache yet: resolve in background thread so UI thread never skips frames.
-            synchronized (forkSecurePreviewsInFlight) {
-                if (!forkSecurePreviewsInFlight.contains(cacheKey)) {
-                    forkSecurePreviewsInFlight.add(cacheKey);
-                    final int account = currentAccount;
-                    final long dialogId = currentDialogId;
-                    final long senderId = message.getFromChatId();
-                    final boolean isOut = message.isOutOwner();
-                    final Context appContext = getContext().getApplicationContext();
-                    Utilities.globalQueue.postRunnable(() -> {
-                        try {
-                            SecureChatEngine bgEngine = new SecureChatEngine(appContext, account, dialogId);
-                            SecureChatEngine.DialogPreview bgPreview = bgEngine.resolveDialogPreview(carrier, isOut, senderId, false);
-                            if (bgPreview != null) {
-                                CharSequence text = formatForkSecureDialogPreview(bgPreview);
-                                AndroidUtilities.runOnUIThread(() -> {
-                                    forkSecurePreviewCache.put(cacheKey, text);
-                                    NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_MESSAGE_TEXT);
-                                });
-                            }
-                        } catch (Throwable e) {
-                            if (BuildVars.LOGS_ENABLED) {
-                                FileLog.e(e);
-                            }
-                        } finally {
-                            synchronized (forkSecurePreviewsInFlight) {
-                                forkSecurePreviewsInFlight.remove(cacheKey);
-                            }
-                        }
-                    });
-                }
             }
         } catch (RuntimeException error) {
             CharSequence failedText = getString(R.string.ForkSecureMessageFailed);

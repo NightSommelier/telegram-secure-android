@@ -40245,6 +40245,11 @@ public class ChatActivity extends BaseFragment implements
         }
         final boolean isProtected = isForkSecureContentProtected()
                 || (cell != null && cell.getMessageObject() != null && cell.getMessageObject().isForkSecureCarrier());
+        if (isProtected) {
+            // Never allow Instant View / getWebPage RPCs or url-auth requests on links inside
+            // protected Fork-Secure chats (SA-31).
+            forceNoIV = true;
+        }
         final SecureLinkGuard.Analysis analysis = SecureLinkGuard.analyze(url);
 
         if (analysis.isSuspicious) {
@@ -40257,14 +40262,16 @@ public class ChatActivity extends BaseFragment implements
             return;
         }
 
-        try {
-            String host = AndroidUtilities.getHostAuthority(url);
-            if ((currentEncryptedChat == null || getMessagesController().secretWebpagePreview == 1) && getMessagesController().authDomains.contains(host)) {
-                getSendMessagesHelper().requestUrlAuth(url, this, type == 0 || type == 2);
-                return;
+        if (!isProtected) {
+            try {
+                String host = AndroidUtilities.getHostAuthority(url);
+                if ((currentEncryptedChat == null || getMessagesController().secretWebpagePreview == 1) && getMessagesController().authDomains.contains(host)) {
+                    getSendMessagesHelper().requestUrlAuth(url, this, type == 0 || type == 2);
+                    return;
+                }
+            } catch (Exception e) {
+                FileLog.e(e);
             }
-        } catch (Exception e) {
-            FileLog.e(e);
         }
         if (forceAlert || AndroidUtilities.shouldShowUrlInAlert(url)) {
             if (type == 0 || type == 2) {
@@ -40317,9 +40324,7 @@ public class ChatActivity extends BaseFragment implements
         builder.setNeutralButton(
                 LocaleController.getString(R.string.ForkSecureCopySafeLink),
                 (dialog, which) -> {
-                    String copyUrl = analysis.punycodeHost != null && !analysis.punycodeHost.isEmpty() && !analysis.host.isEmpty()
-                            ? analysis.originalUrl.replace(analysis.host, analysis.punycodeHost)
-                            : analysis.originalUrl;
+                    String copyUrl = SecureLinkGuard.toSafeCopyUrl(analysis);
                     AndroidUtilities.addToClipboard(copyUrl);
                     createUndoView();
                     if (undoView != null) {

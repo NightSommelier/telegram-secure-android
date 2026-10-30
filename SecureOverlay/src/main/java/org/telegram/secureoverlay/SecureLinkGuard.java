@@ -26,7 +26,13 @@ import java.util.regex.Pattern;
 public final class SecureLinkGuard {
 
     private static final Pattern USER_INFO_PATTERN = Pattern.compile(
-            "^[a-zA-Z][a-zA-Z0-9+.-]*://[^/@?#]+@[^/?#]+.*");
+            "^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#\\\\]*@[^/?#\\\\]+.*");
+
+    private static final Pattern ENCODED_USER_INFO_PATTERN = Pattern.compile(
+            "(?i)%40");
+
+    private static final Pattern PATH_EMBEDDED_DOMAIN_AT_PATTERN = Pattern.compile(
+            "@([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}");
 
     private static final Pattern IP_V4_PATTERN = Pattern.compile(
             "^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$");
@@ -136,44 +142,99 @@ public final class SecureLinkGuard {
 
         final String cleanUrl = url.trim();
         final boolean hasInvisibleChars = containsInvisibleOrControlChars(cleanUrl);
-        final boolean hasUserInfoSpoofing = USER_INFO_PATTERN.matcher(cleanUrl).matches();
 
-        String rawHost = "";
-        String temp = cleanUrl;
-        int schemeIdx = temp.indexOf("://");
+        String afterScheme = cleanUrl;
+        int schemeIdx = cleanUrl.indexOf("://");
+        int authorityStart = 0;
         if (schemeIdx != -1) {
-            temp = temp.substring(schemeIdx + 3);
+            authorityStart = schemeIdx + 3;
+            afterScheme = cleanUrl.substring(authorityStart);
         }
-        int atIdx = temp.indexOf('@');
-        if (atIdx != -1) {
-            temp = temp.substring(atIdx + 1);
-        }
-        int slashIdx = temp.indexOf('/');
-        if (slashIdx != -1) {
-            temp = temp.substring(0, slashIdx);
-        }
-        int questionIdx = temp.indexOf('?');
-        if (questionIdx != -1) {
-            temp = temp.substring(0, questionIdx);
-        }
-        int hashIdx = temp.indexOf('#');
-        if (hashIdx != -1) {
-            temp = temp.substring(0, hashIdx);
-        }
-        int colonIdx = temp.indexOf(':');
-        if (colonIdx != -1) {
-            temp = temp.substring(0, colonIdx);
-        }
-        rawHost = temp;
 
-        if (rawHost != null) {
-            rawHost = rawHost.toLowerCase(Locale.US).trim();
-            while (rawHost.endsWith(".")) {
-                rawHost = rawHost.substring(0, rawHost.length() - 1);
+        int authorityEndInAfterScheme = afterScheme.length();
+        for (int i = 0; i < afterScheme.length(); i++) {
+            char c = afterScheme.charAt(i);
+            if (c == '/' || c == '\\' || c == '?' || c == '#') {
+                authorityEndInAfterScheme = i;
+                break;
+            }
+        }
+        String rawAuthority = afterScheme.substring(0, authorityEndInAfterScheme);
+        String remainderAfterAuthority = afterScheme.substring(authorityEndInAfterScheme);
+
+        int queryOrHashIdx = afterScheme.length();
+        for (int i = 0; i < afterScheme.length(); i++) {
+            char c = afterScheme.charAt(i);
+            if (c == '?' || c == '#') {
+                queryOrHashIdx = i;
+                break;
+            }
+        }
+        boolean hasBackslashDelimiter = afterScheme.substring(0, queryOrHashIdx).indexOf('\\') != -1;
+        boolean hasAuthorityAt = rawAuthority.indexOf('@') != -1
+                || ENCODED_USER_INFO_PATTERN.matcher(rawAuthority).find();
+        boolean hasPathPseudoUserInfo =
+                PATH_EMBEDDED_DOMAIN_AT_PATTERN.matcher(remainderAfterAuthority).find();
+
+        String hostPort = rawAuthority;
+        int hostStartInAuthority = 0;
+        int lastAtInAuthority = rawAuthority.lastIndexOf('@');
+        if (lastAtInAuthority != -1) {
+            hostStartInAuthority = lastAtInAuthority + 1;
+            hostPort = rawAuthority.substring(hostStartInAuthority);
+        }
+
+        String extractedHost;
+        int hostEndInAuthority;
+        if (hostPort.startsWith("[")) {
+            int closeBracket = hostPort.indexOf(']');
+            if (closeBracket != -1) {
+                extractedHost = hostPort.substring(0, closeBracket + 1);
+                hostEndInAuthority = hostStartInAuthority + closeBracket + 1;
+            } else {
+                extractedHost = hostPort;
+                hostEndInAuthority = rawAuthority.length();
             }
         } else {
-            rawHost = "";
+            int colonIdx = hostPort.indexOf(':');
+            if (colonIdx != -1) {
+                extractedHost = hostPort.substring(0, colonIdx);
+                hostEndInAuthority = hostStartInAuthority + colonIdx;
+            } else {
+                extractedHost = hostPort;
+                hostEndInAuthority = rawAuthority.length();
+            }
         }
+
+        String rawHost = extractedHost != null
+                ? extractedHost.toLowerCase(Locale.US).trim()
+                : "";
+        while (rawHost.endsWith(".")) {
+            rawHost = rawHost.substring(0, rawHost.length() - 1);
+        }
+
+        boolean uriHostMismatch = false;
+        try {
+            URI parsedUri = new URI(cleanUrl);
+            String uriHost = parsedUri.getHost();
+            if (uriHost != null) {
+                String normalizedUriHost = uriHost.toLowerCase(Locale.US).trim();
+                while (normalizedUriHost.endsWith(".")) {
+                    normalizedUriHost = normalizedUriHost.substring(0, normalizedUriHost.length() - 1);
+                }
+                if (!normalizedUriHost.equals(rawHost)) {
+                    uriHostMismatch = true;
+                }
+            }
+        } catch (URISyntaxException ignored) {
+            // Non-RFC chars or backslashes are handled by the explicit checks above.
+        }
+
+        final boolean hasUserInfoSpoofing = USER_INFO_PATTERN.matcher(cleanUrl).matches()
+                || hasAuthorityAt
+                || hasBackslashDelimiter
+                || hasPathPseudoUserInfo
+                || uriHostMismatch;
 
         String unicodeHost = "";
         String punycodeHost = "";
@@ -245,9 +306,17 @@ public final class SecureLinkGuard {
 
         String warningReason = warningBuilder.length() > 0 ? warningBuilder.toString().trim() : null;
 
+        int absHostStart = authorityStart + hostStartInAuthority;
+        int absHostEnd = authorityStart + hostEndInAuthority;
         String canonicalDisplayUrl;
-        if (hasPunycode && !unicodeHost.equalsIgnoreCase(punycodeHost)) {
-            canonicalDisplayUrl = cleanUrl.replace(rawHost, unicodeHost + " [" + punycodeHost + "]");
+        if (hasPunycode
+                && !unicodeHost.equalsIgnoreCase(punycodeHost)
+                && absHostStart >= 0
+                && absHostEnd <= cleanUrl.length()
+                && absHostStart < absHostEnd) {
+            canonicalDisplayUrl = cleanUrl.substring(0, absHostStart)
+                    + unicodeHost + " [" + punycodeHost + "]"
+                    + cleanUrl.substring(absHostEnd);
         } else {
             canonicalDisplayUrl = cleanUrl;
         }
@@ -268,6 +337,46 @@ public final class SecureLinkGuard {
                 targetSpoofedDomain,
                 warningReason
         );
+    }
+
+    /**
+     * Returns a copy-safe URL with the authority host normalized to ASCII/Punycode, without
+     * mutating path, query, or fragment characters.
+     */
+    public static String toSafeCopyUrl(Analysis analysis) {
+        if (analysis == null || analysis.originalUrl == null) {
+            return "";
+        }
+        String url = analysis.originalUrl.trim();
+        if (analysis.punycodeHost == null || analysis.punycodeHost.isEmpty()) {
+            return url;
+        }
+        int schemeIdx = url.indexOf("://");
+        int authorityStart = schemeIdx != -1 ? schemeIdx + 3 : 0;
+        String afterScheme = url.substring(authorityStart);
+        int authorityEnd = afterScheme.length();
+        for (int i = 0; i < afterScheme.length(); i++) {
+            char c = afterScheme.charAt(i);
+            if (c == '/' || c == '\\' || c == '?' || c == '#') {
+                authorityEnd = i;
+                break;
+            }
+        }
+        String rawAuthority = afterScheme.substring(0, authorityEnd);
+        int lastAt = rawAuthority.lastIndexOf('@');
+        int hostStart = lastAt != -1 ? lastAt + 1 : 0;
+        String hostPort = rawAuthority.substring(hostStart);
+        int hostEnd;
+        if (hostPort.startsWith("[")) {
+            int closeBracket = hostPort.indexOf(']');
+            hostEnd = closeBracket != -1 ? hostStart + closeBracket + 1 : rawAuthority.length();
+        } else {
+            int colonIdx = hostPort.indexOf(':');
+            hostEnd = colonIdx != -1 ? hostStart + colonIdx : rawAuthority.length();
+        }
+        return url.substring(0, authorityStart + hostStart)
+                + analysis.punycodeHost
+                + url.substring(authorityStart + hostEnd);
     }
 
     /**
