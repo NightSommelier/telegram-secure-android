@@ -93,6 +93,7 @@ public final class SecureChatEngine {
         OFF,
         WAITING,
         PAUSED,
+        INITIAL_PAIRING_PENDING,
         IDENTITY_CHANGED,
         RECOVERY_CHANGED,
         PROTECTED
@@ -100,6 +101,7 @@ public final class SecureChatEngine {
 
     public enum PairingOfferResult {
         ACCEPTED_INITIAL,
+        INITIAL_OFFER_PENDING,
         SAME_IDENTITY,
         IDENTITY_CHANGE_PENDING,
         RECOVERY_CHANGE_PENDING,
@@ -182,15 +184,22 @@ public final class SecureChatEngine {
 
     /** Creates a public pairing offer to send as a normal Telegram text message. */
     public String createPairingOffer() {
+        return createPairingOffer(0);
+    }
+
+    public String createPairingOffer(long ownerUserId) {
         synchronized (SESSION_LOCK) {
             requireCurrentIdentity();
             if (state.isIdentityPending(account, peerUserId)) {
                 throw new SecureChatException("new contact identity requires verification", null);
             }
+            if (ownerUserId > 0 && peerUserId > 0 && ownerUserId == peerUserId) {
+                throw new IllegalArgumentException("pairing offer owner cannot equal peer");
+            }
             String carrier = SecureCarrierCodec.encode(
                     SecureCarrierCodec.TYPE_PREKEY_BUNDLE,
                     SecurePreKeyBundleCodec.encodeRecoveryOffer(
-                        store, recoveryStore.getLocalIdentity()));
+                        store, recoveryStore.getLocalIdentity(), ownerUserId, peerUserId));
             state.markWaiting(account, peerUserId);
             return carrier;
         }
@@ -284,27 +293,38 @@ public final class SecureChatEngine {
     /**
      * Validates and classifies a received pairing offer.
      *
-     * <p>An initial offer may be accepted automatically only while secure mode is off. A changed
-     * identity is persisted as pending and secure sending remains blocked until the user compares
-     * fingerprints and explicitly approves it.</p>
+     * <p>An initial offer is persisted as pending and requires explicit user verification before a
+     * session is established. A changed identity is similarly persisted as pending and secure
+     * sending remains blocked until the user compares fingerprints and explicitly approves it.</p>
      */
     public PairingOfferResult receivePairingOffer(String carrier, int messageId) {
+        return receivePairingOffer(carrier, messageId, 0, 0);
+    }
+
+    public PairingOfferResult receivePairingOffer(
+            String carrier, int messageId, long senderUserId, long localUserId) {
         synchronized (SESSION_LOCK) {
             requireCurrentIdentity();
             if (messageId <= 0) {
                 throw new IllegalArgumentException("pairing message id must be positive");
             }
+            requireValidInboundSender(peerUserId, senderUserId);
             SecureCarrierCodec.Decoded decoded = requireCarrier(carrier, SecureCarrierCodec.TYPE_PREKEY_BUNDLE);
             SecurePreKeyBundleCodec.DecodedOffer offer =
                     SecurePreKeyBundleCodec.decodeOffer(decoded.payload);
+            requireValidOfferBinding(peerUserId, senderUserId, localUserId, offer);
             PreKeyBundle remote = offer.preKeyBundle;
             if (state.isIdentityPending(account, peerUserId)
                     && state.getPendingMessageId(account, peerUserId) == messageId
                     && carrier.equals(state.getPendingCarrier(account, peerUserId))) {
-                return state.getPendingKind(account, peerUserId)
-                                == SecureChatState.PendingKind.RECOVERY_ADVANCE
-                        ? PairingOfferResult.RECOVERY_CHANGE_PENDING
-                        : PairingOfferResult.IDENTITY_CHANGE_PENDING;
+                SecureChatState.PendingKind pendingKind = state.getPendingKind(account, peerUserId);
+                if (pendingKind == SecureChatState.PendingKind.RECOVERY_ADVANCE) {
+                    return PairingOfferResult.RECOVERY_CHANGE_PENDING;
+                }
+                if (pendingKind == SecureChatState.PendingKind.INITIAL_OFFER) {
+                    return PairingOfferResult.INITIAL_OFFER_PENDING;
+                }
+                return PairingOfferResult.IDENTITY_CHANGE_PENDING;
             }
             IdentityKey trusted = store.getIdentity(peerAddress);
             boolean sameIdentity = trusted != null && Arrays.equals(
@@ -388,31 +408,41 @@ public final class SecureChatEngine {
                         SecureChatState.PendingKind.IDENTITY_CHANGE);
                 return PairingOfferResult.IDENTITY_CHANGE_PENDING;
             }
-            if (!canAutoAcceptPairingOffer()) {
+            if (!canStageInitialPairingOffer()) {
                 return PairingOfferResult.STALE;
             }
-            SecureRecoveryGenerationStore.Record previousRecovery =
-                    recoveryStore.getVerifiedPeer(account, peerUserId);
-            try {
-                recoveryStore.replaceVerifiedPeerAfterIdentityChange(
-                        account, peerUserId, offer.recovery);
-                store.saveIdentity(peerAddress, remote.getIdentityKey());
-                sessions.establish(peerAddress, remote);
-                state.markPaired(account, peerUserId);
-                state.recordPairingMessage(account, peerUserId, messageId);
-                return PairingOfferResult.ACCEPTED_INITIAL;
-            } catch (Exception e) {
-                // A new peer normally has no prior record, but restore it if this peer ID was seen
-                // before under a separately verified identity.
-                try {
-                    store.deleteSession(peerAddress);
-                    store.deleteIdentity(peerAddress);
-                    recoveryStore.restoreVerifiedPeer(
-                            account, peerUserId, previousRecovery);
-                } catch (RuntimeException rollbackError) {
-                    e.addSuppressed(rollbackError);
-                }
-                throw new SecureChatException("cannot establish secure chat", e);
+            state.markIdentityPending(
+                    account,
+                    peerUserId,
+                    carrier,
+                    messageId,
+                    SecureChatState.PendingKind.INITIAL_OFFER);
+            return PairingOfferResult.INITIAL_OFFER_PENDING;
+        }
+    }
+
+    static void requireValidOfferBinding(
+            long peerUserId,
+            long senderUserId,
+            long localUserId,
+            SecurePreKeyBundleCodec.DecodedOffer offer) {
+        if (offer == null) {
+            throw new IllegalArgumentException("pairing offer is required");
+        }
+        if (offer.ownerUserId > 0) {
+            if (peerUserId > 0 && offer.ownerUserId != peerUserId) {
+                throw new IllegalArgumentException("pairing offer owner does not match peer");
+            }
+            if (senderUserId > 0 && offer.ownerUserId != senderUserId) {
+                throw new IllegalArgumentException("pairing offer owner does not match sender");
+            }
+        }
+        if (offer.recipientUserId > 0) {
+            if (localUserId > 0 && offer.recipientUserId != localUserId) {
+                throw new IllegalArgumentException("pairing offer recipient does not match local user");
+            }
+            if (peerUserId > 0 && offer.recipientUserId == peerUserId) {
+                throw new IllegalArgumentException("pairing offer recipient cannot equal peer");
             }
         }
     }
@@ -423,10 +453,14 @@ public final class SecureChatEngine {
 
     public Mode getMode() {
         if (state.isIdentityPending(account, peerUserId)) {
-            return state.getPendingKind(account, peerUserId)
-                            == SecureChatState.PendingKind.RECOVERY_ADVANCE
-                    ? Mode.RECOVERY_CHANGED
-                    : Mode.IDENTITY_CHANGED;
+            SecureChatState.PendingKind pendingKind = state.getPendingKind(account, peerUserId);
+            if (pendingKind == SecureChatState.PendingKind.RECOVERY_ADVANCE) {
+                return Mode.RECOVERY_CHANGED;
+            }
+            if (pendingKind == SecureChatState.PendingKind.INITIAL_OFFER) {
+                return Mode.INITIAL_PAIRING_PENDING;
+            }
+            return Mode.IDENTITY_CHANGED;
         }
         if (isPaired()) {
             return Mode.PROTECTED;
@@ -440,9 +474,14 @@ public final class SecureChatEngine {
         return Mode.OFF;
     }
 
-    /** A locally paused chat never silently accepts a remote pairing offer. */
+    /** Initial pairing offers always require explicit user verification (SA-03). */
     public boolean canAutoAcceptPairingOffer() {
-        return getMode() == Mode.OFF;
+        return false;
+    }
+
+    private boolean canStageInitialPairingOffer() {
+        Mode mode = getMode();
+        return mode == Mode.OFF || mode == Mode.WAITING;
     }
 
     public boolean isStale() {

@@ -7892,7 +7892,8 @@ public class ChatActivityEnterView extends FrameLayout implements
             try {
                 SecureChatEngine secureChat = getSecureChatEngine();
                 String entered = text.toString();
-                if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                if (secureChat.getMode() == SecureChatEngine.Mode.INITIAL_PAIRING_PENDING
+                        || secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
                         || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
                     if ("/secure-reject".equals(entered)
                             || "/secure-off".equals(entered)) {
@@ -7900,7 +7901,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                         secureChat.rejectPendingIdentity();
                         notify = false;
                         notifySecureModeChanged();
-                    } else {
+                    } else if (secureChat.getMode() != SecureChatEngine.Mode.INITIAL_PAIRING_PENDING) {
                         if (parentFragment != null) {
                         BulletinFactory.of(parentFragment)
                                 .createErrorBulletin(
@@ -7943,7 +7944,8 @@ public class ChatActivityEnterView extends FrameLayout implements
                         notifySecureModeChanged();
                         return true;
                     } else {
-                        text = secureChat.createPairingOffer();
+                        text = secureChat.createPairingOffer(
+                                accountInstance.getUserConfig().getClientUserId());
                         notify = false;
                         notifySecureModeChanged();
                     }

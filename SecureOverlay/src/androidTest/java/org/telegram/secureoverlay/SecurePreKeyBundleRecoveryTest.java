@@ -17,7 +17,7 @@ import org.signal.libsignal.protocol.kem.KEMKeyType;
 @RunWith(AndroidJUnit4.class)
 public final class SecurePreKeyBundleRecoveryTest {
     @Test
-    public void recoveryOfferRoundTripsAndLegacyBundleRemainsReadable() {
+    public void recoveryOfferRoundTripsAndRejectsLegacyV1Bundle() {
         Fixture fixture = fixture();
         SecureRecoveryGenerationStore.Record recovery =
                 new SecureRecoveryGenerationStore.Record(7, UUID.randomUUID());
@@ -31,11 +31,33 @@ public final class SecurePreKeyBundleRecoveryTest {
                 fixture.identity.getPublicKey().serialize(),
                 decoded.preKeyBundle.getIdentityKey().serialize());
 
-        SecurePreKeyBundleCodec.DecodedOffer legacy =
-                SecurePreKeyBundleCodec.decodeOffer(
-                        SecurePreKeyBundleCodec.encode(fixture.bundle));
-        assertNull(legacy.recovery);
-        assertNotNull(legacy.preKeyBundle);
+        assertMalformed(SecurePreKeyBundleCodec.encode(fixture.bundle));
+    }
+
+    @Test
+    public void participantBoundV3OfferRoundTripsAndDetectsTampering() {
+        Fixture fixture = fixture();
+        SecureRecoveryGenerationStore.Record recovery =
+                new SecureRecoveryGenerationStore.Record(3, UUID.randomUUID());
+        byte[] encoded = SecurePreKeyBundleCodec.encodeRecoveryOffer(
+                fixture.bundle,
+                recovery,
+                fixture.identity,
+                1001L,
+                2002L,
+                1700000000L,
+                99887766L);
+
+        SecurePreKeyBundleCodec.DecodedOffer decoded =
+                SecurePreKeyBundleCodec.decodeOffer(encoded);
+        assertEquals(recovery, decoded.recovery);
+        assertEquals(1001L, decoded.ownerUserId);
+        assertEquals(2002L, decoded.recipientUserId);
+        assertEquals(1700000000L, decoded.issuedAtEpochSeconds);
+        assertEquals(99887766L, decoded.offerNonce);
+
+        assertTampered(encoded, encoded.length - 80);
+        assertTampered(encoded, encoded.length - 72);
     }
 
     @Test

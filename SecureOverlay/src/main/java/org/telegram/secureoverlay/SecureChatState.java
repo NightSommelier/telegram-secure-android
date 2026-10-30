@@ -44,7 +44,8 @@ public final class SecureChatState {
     public enum PendingKind {
         NONE(0),
         IDENTITY_CHANGE(1),
-        RECOVERY_ADVANCE(2);
+        RECOVERY_ADVANCE(2),
+        INITIAL_OFFER(3);
 
         final int value;
 

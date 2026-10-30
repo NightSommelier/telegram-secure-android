@@ -278,6 +278,10 @@
     <string name="RemindDayYearAt">\'Нагадати\' d MMM yyyy\',\' HH:mm</string>
     <string name="ForkSecurePairingOfferSent">🔐 Пропозицію захищеного з’єднання надіслано.</string>
     <string name="ForkSecurePairingOfferReceived">🔐 Отримано пропозицію захищеного з’єднання.</string>
+    <string name="ForkSecureInitialOfferPendingMessage">🔐 Отримано пропозицію захищеного з’єднання. Натисніть щит, щоб перевірити відбиток контакту та прийняти.</string>
+    <string name="ForkSecureInitialOfferPendingDescription">Пропозиція спарювання Fork-Secure потребує перевірки. Натисніть для перегляду</string>
+    <string name="ForkSecureInitialOfferTitle">Перевірка спарювання Fork-Secure</string>
+    <string name="ForkSecureInitialOfferBody">Порівняйте ваш відбиток і відбиток контакту через інший довірений канал перед увімкненням захищеного листування.\n\nВаш відбиток:\n%1$s\n\nВідбиток контакту:\n%2$s</string>
     <string name="ForkSecurePairingCompletedConfirming">🔐 Захищене з’єднання створено. Надсилається зашифроване підтвердження…</string>
     <string name="ForkSecurePairingConfirmed">🔐 Захищене з’єднання підтверджено.</string>
     <string name="ForkSecurePairingReady">🔐 Захищене з’єднання готове.</string>

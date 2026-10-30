@@ -21311,11 +21311,18 @@ public class ChatActivity extends BaseFragment implements
                     } else {
                         SecureChatEngine.PairingOfferResult result =
                                 receiveForkSecurePairingOffer(
-                                        secureChat, carrier, message.getId());
+                                        secureChat,
+                                        carrier,
+                                        message.getId(),
+                                        message.getFromChatId());
                         if (result == SecureChatEngine.PairingOfferResult.ACCEPTED_INITIAL) {
                             message.applyNewText(getString(
                                     R.string.ForkSecurePairingCompletedConfirming));
                             shouldSendPairingAcknowledgement = true;
+                        } else if (result
+                                == SecureChatEngine.PairingOfferResult.INITIAL_OFFER_PENDING) {
+                            message.applyNewText(getString(
+                                    R.string.ForkSecureInitialOfferPendingMessage));
                         } else if (result
                                 == SecureChatEngine.PairingOfferResult.IDENTITY_CHANGE_PENDING) {
                             message.applyNewText(getString(
@@ -21477,10 +21484,14 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private SecureChatEngine.PairingOfferResult receiveForkSecurePairingOffer(
-            SecureChatEngine secureChat, String carrier, int messageId) {
+            SecureChatEngine secureChat, String carrier, int messageId, long senderUserId) {
         Trace.beginSection("ForkSecure#pairingOffer");
         try {
-            return secureChat.receivePairingOffer(carrier, messageId);
+            return secureChat.receivePairingOffer(
+                    carrier,
+                    messageId,
+                    senderUserId,
+                    getUserConfig().getClientUserId());
         } finally {
             Trace.endSection();
         }
@@ -23626,6 +23637,11 @@ public class ChatActivity extends BaseFragment implements
                 secureModeItem.setIcon(R.drawable.outline_shield_plain_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecurePausedDescription));
+            } else if (mode == SecureChatEngine.Mode.INITIAL_PAIRING_PENDING) {
+                restoreForkSecureLinkPreviewSearch();
+                secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
+                secureModeItem.setContentDescription(
+                        getString(R.string.ForkSecureInitialOfferPendingDescription));
             } else if (mode == SecureChatEngine.Mode.IDENTITY_CHANGED) {
                 suppressForkSecureLinkPreview();
                 clearForkSecureCloudDraft();
@@ -23659,6 +23675,10 @@ public class ChatActivity extends BaseFragment implements
         try {
             SecureChatEngine secureChat = getSecureChatEngine();
             SecureChatEngine.Mode mode = secureChat.getMode();
+            if (mode == SecureChatEngine.Mode.INITIAL_PAIRING_PENDING) {
+                showSecureInitialOfferDialog();
+                return;
+            }
             if (mode == SecureChatEngine.Mode.IDENTITY_CHANGED) {
                 showSecureIdentityChangeDialog();
                 return;
@@ -23706,6 +23726,63 @@ public class ChatActivity extends BaseFragment implements
                     .show();
             updateSecureModeUi();
         }
+    }
+
+    private void showSecureInitialOfferDialog() {
+        if (!isSecureModeUiEligible() || getContext() == null) {
+            return;
+        }
+        final SecureChatEngine secureChat;
+        final String ownFingerprint;
+        final String pendingFingerprint;
+        try {
+            secureChat = getSecureChatEngine();
+            if (secureChat.getMode() != SecureChatEngine.Mode.INITIAL_PAIRING_PENDING) {
+                return;
+            }
+            ownFingerprint = secureChat.getOwnFingerprint();
+            pendingFingerprint = secureChat.getPendingFingerprint();
+        } catch (RuntimeException error) {
+            FileLog.e(error);
+            BulletinFactory.of(this)
+                    .createErrorBulletin(
+                            getString(R.string.ForkSecureIdentityVerificationFailed))
+                    .show();
+            return;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(getContext(), getResourceProvider())
+                .setTitle(getString(R.string.ForkSecureInitialOfferTitle))
+                .setMessage(formatString(
+                        R.string.ForkSecureInitialOfferBody,
+                        ownFingerprint == null
+                                ? getString(R.string.ForkSecureFingerprintUnavailable)
+                                : ownFingerprint,
+                        pendingFingerprint == null
+                                ? getString(R.string.ForkSecureFingerprintUnavailable)
+                                : pendingFingerprint))
+                .setPositiveButton(getString(R.string.ForkSecureVerifyAccept), (di, which) -> {
+                    try {
+                        secureChat.acceptPendingIdentity();
+                        updateSecureModeUi();
+                        sendForkSecurePairingAcknowledgement();
+                        BulletinFactory.of(this)
+                                .createSimpleBulletin(
+                                        R.raw.chats_infotip,
+                                        getString(R.string.ForkSecureNewIdentityAccepted))
+                                .show();
+                    } catch (RuntimeException error) {
+                        FileLog.e(error);
+                        BulletinFactory.of(this)
+                                .createErrorBulletin(
+                                        getString(R.string.ForkSecureAcceptIdentityFailed))
+                                .show();
+                    }
+                })
+                .setNegativeButton(getString(R.string.Cancel), null)
+                .setNeutralButton(getString(R.string.ForkSecureRejectNewKey),
+                        (di, which) -> confirmRejectForkSecureIdentity(secureChat))
+                .create();
+        showDialog(dialog);
     }
 
     private void showSecureIdentityChangeDialog() {

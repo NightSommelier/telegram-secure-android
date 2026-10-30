@@ -21,10 +21,14 @@ import org.signal.libsignal.protocol.state.PreKeyBundle;
 public final class SecurePreKeyBundleCodec {
     private static final int LEGACY_VERSION = 1;
     private static final int RECOVERY_VERSION = 2;
+    private static final int PARTICIPANT_BOUND_VERSION = 3;
     private static final int MAX_FIELD_BYTES = 8 * 1024;
     private static final int MAX_BUNDLE_BYTES = 32 * 1024;
     private static final byte[] RECOVERY_SIGNATURE_DOMAIN =
             "Fork-Secure pairing offer v2\u0000".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] PARTICIPANT_BOUND_SIGNATURE_DOMAIN =
+            "Fork-Secure pairing offer v3\u0000".getBytes(StandardCharsets.US_ASCII);
+    private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
 
     private SecurePreKeyBundleCodec() {}
 
@@ -67,6 +71,14 @@ public final class SecurePreKeyBundleCodec {
     public static byte[] encodeRecoveryOffer(
             KeystoreSignalProtocolStore store,
             SecureRecoveryGenerationStore.Record recovery) {
+        return encodeRecoveryOffer(store, recovery, 0, 0);
+    }
+
+    public static byte[] encodeRecoveryOffer(
+            KeystoreSignalProtocolStore store,
+            SecureRecoveryGenerationStore.Record recovery,
+            long ownerUserId,
+            long recipientUserId) {
         if (store == null) {
             throw new IllegalArgumentException("signal store is required");
         }
@@ -84,7 +96,14 @@ public final class SecurePreKeyBundleCodec {
                     local.kyberPreKeyId,
                     local.kyberPreKey.getKeyPair().getPublicKey().serialize(),
                     local.kyberPreKey.getSignature());
-            return encodeRecoveryOffer(bundle, recovery, store.getIdentityKeyPair());
+            return encodeRecoveryOffer(
+                    bundle,
+                    recovery,
+                    store.getIdentityKeyPair(),
+                    ownerUserId,
+                    recipientUserId,
+                    System.currentTimeMillis() / 1000L,
+                    randomNonZeroNonce());
         } catch (Exception e) {
             throw new IllegalStateException("cannot encode recovery pairing offer", e);
         }
@@ -94,23 +113,53 @@ public final class SecurePreKeyBundleCodec {
             PublicBundle bundle,
             SecureRecoveryGenerationStore.Record recovery,
             IdentityKeyPair signer) {
+        return encodeRecoveryOffer(
+                bundle,
+                recovery,
+                signer,
+                0,
+                0,
+                0,
+                0);
+    }
+
+    static byte[] encodeRecoveryOffer(
+            PublicBundle bundle,
+            SecureRecoveryGenerationStore.Record recovery,
+            IdentityKeyPair signer,
+            long ownerUserId,
+            long recipientUserId,
+            long issuedAtEpochSeconds,
+            long offerNonce) {
         requireBundle(bundle);
         if (recovery == null || signer == null
                 || !Arrays.equals(signer.getPublicKey().serialize(), bundle.identityKey)) {
             throw new IllegalArgumentException("recovery offer signer does not match identity");
         }
+        boolean v3 = recipientUserId > 0 || ownerUserId > 0 || issuedAtEpochSeconds > 0 || offerNonce != 0;
+        if (v3) {
+            if (ownerUserId < 0 || recipientUserId <= 0 || issuedAtEpochSeconds <= 0 || offerNonce == 0) {
+                throw new IllegalArgumentException("invalid v3 pairing offer binding metadata");
+            }
+        }
         try {
             ByteArrayOutputStream bodySink = new ByteArrayOutputStream();
             DataOutputStream bodyOut = new DataOutputStream(bodySink);
-            bodyOut.writeByte(RECOVERY_VERSION);
+            bodyOut.writeByte(v3 ? PARTICIPANT_BOUND_VERSION : RECOVERY_VERSION);
             writeBundleFields(bodyOut, bundle);
             bodyOut.writeLong(recovery.generation);
             bodyOut.writeLong(recovery.recoveryId.getMostSignificantBits());
             bodyOut.writeLong(recovery.recoveryId.getLeastSignificantBits());
+            if (v3) {
+                bodyOut.writeLong(ownerUserId);
+                bodyOut.writeLong(recipientUserId);
+                bodyOut.writeLong(issuedAtEpochSeconds);
+                bodyOut.writeLong(offerNonce);
+            }
             bodyOut.flush();
             byte[] body = bodySink.toByteArray();
-            byte[] signature =
-                    signer.getPrivateKey().calculateSignature(recoverySignatureInput(body));
+            byte[] signature = signer.getPrivateKey().calculateSignature(
+                    v3 ? participantBoundSignatureInput(body) : recoverySignatureInput(body));
 
             ByteArrayOutputStream resultSink = new ByteArrayOutputStream();
             resultSink.write(body);
@@ -125,6 +174,14 @@ public final class SecurePreKeyBundleCodec {
         }
     }
 
+    private static long randomNonZeroNonce() {
+        long nonce;
+        do {
+            nonce = RANDOM.nextLong();
+        } while (nonce == 0);
+        return nonce;
+    }
+
     public static PreKeyBundle decode(byte[] encoded) {
         return decodeOffer(encoded).preKeyBundle;
     }
@@ -137,7 +194,7 @@ public final class SecurePreKeyBundleCodec {
             ByteArrayInputStream source = new ByteArrayInputStream(encoded);
             DataInputStream in = new DataInputStream(source);
             int version = in.readUnsignedByte();
-            if (version != LEGACY_VERSION && version != RECOVERY_VERSION) {
+            if (version != RECOVERY_VERSION && version != PARTICIPANT_BOUND_VERSION) {
                 throw new IllegalArgumentException("unsupported pre-key bundle version");
             }
             int registrationId = positive(in.readInt(), "registration id");
@@ -150,24 +207,34 @@ public final class SecurePreKeyBundleCodec {
             int kyberPreKeyId = nonNegative(in.readInt(), "Kyber pre-key id");
             KEMPublicKey kyberPreKey = new KEMPublicKey(field(in));
             byte[] kyberSignature = field(in);
-            SecureRecoveryGenerationStore.Record recovery = null;
-            byte[] recoverySignature = null;
-            byte[] recoverySignedBody = null;
-            if (version == RECOVERY_VERSION) {
-                recovery = new SecureRecoveryGenerationStore.Record(
-                        in.readLong(), new java.util.UUID(in.readLong(), in.readLong()));
-                int signedBodyBytes = encoded.length - source.available();
-                recoverySignedBody = Arrays.copyOf(encoded, signedBodyBytes);
-                recoverySignature = field(in);
+            SecureRecoveryGenerationStore.Record recovery =
+                    new SecureRecoveryGenerationStore.Record(
+                            in.readLong(), new java.util.UUID(in.readLong(), in.readLong()));
+            long ownerUserId = 0;
+            long recipientUserId = 0;
+            long issuedAtEpochSeconds = 0;
+            long offerNonce = 0;
+            if (version == PARTICIPANT_BOUND_VERSION) {
+                ownerUserId = in.readLong();
+                recipientUserId = in.readLong();
+                issuedAtEpochSeconds = in.readLong();
+                offerNonce = in.readLong();
+                if (ownerUserId < 0 || recipientUserId <= 0 || issuedAtEpochSeconds <= 0 || offerNonce == 0) {
+                    throw new IllegalArgumentException("invalid v3 pairing offer binding metadata");
+                }
             }
+            int signedBodyBytes = encoded.length - source.available();
+            byte[] signedBody = Arrays.copyOf(encoded, signedBodyBytes);
+            byte[] offerSignature = field(in);
             if (in.available() != 0) throw new IllegalArgumentException("trailing pre-key bundle data");
             if (!identity.getPublicKey().verifySignature(signedPreKey.serialize(), signature)
                     || !identity.getPublicKey().verifySignature(kyberPreKey.serialize(), kyberSignature)) {
                 throw new IllegalArgumentException("invalid pre-key bundle signature");
             }
-            if (version == RECOVERY_VERSION
-                    && !identity.getPublicKey().verifySignature(
-                            recoverySignatureInput(recoverySignedBody), recoverySignature)) {
+            byte[] signatureInput = version == PARTICIPANT_BOUND_VERSION
+                    ? participantBoundSignatureInput(signedBody)
+                    : recoverySignatureInput(signedBody);
+            if (!identity.getPublicKey().verifySignature(signatureInput, offerSignature)) {
                 throw new IllegalArgumentException("invalid recovery pairing signature");
             }
             PreKeyBundle preKeyBundle = new PreKeyBundle(
@@ -182,7 +249,13 @@ public final class SecurePreKeyBundleCodec {
                     kyberPreKeyId,
                     kyberPreKey,
                     kyberSignature);
-            return new DecodedOffer(preKeyBundle, recovery);
+            return new DecodedOffer(
+                    preKeyBundle,
+                    recovery,
+                    ownerUserId,
+                    recipientUserId,
+                    issuedAtEpochSeconds,
+                    offerNonce);
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
@@ -213,6 +286,23 @@ public final class SecurePreKeyBundleCodec {
                 0,
                 input,
                 RECOVERY_SIGNATURE_DOMAIN.length,
+                canonicalBody.length);
+        return input;
+    }
+
+    private static byte[] participantBoundSignatureInput(byte[] canonicalBody) {
+        byte[] input = new byte[PARTICIPANT_BOUND_SIGNATURE_DOMAIN.length + canonicalBody.length];
+        System.arraycopy(
+                PARTICIPANT_BOUND_SIGNATURE_DOMAIN,
+                0,
+                input,
+                0,
+                PARTICIPANT_BOUND_SIGNATURE_DOMAIN.length);
+        System.arraycopy(
+                canonicalBody,
+                0,
+                input,
+                PARTICIPANT_BOUND_SIGNATURE_DOMAIN.length,
                 canonicalBody.length);
         return input;
     }
@@ -250,12 +340,24 @@ public final class SecurePreKeyBundleCodec {
     public static final class DecodedOffer {
         public final PreKeyBundle preKeyBundle;
         public final SecureRecoveryGenerationStore.Record recovery;
+        public final long ownerUserId;
+        public final long recipientUserId;
+        public final long issuedAtEpochSeconds;
+        public final long offerNonce;
 
         DecodedOffer(
                 PreKeyBundle preKeyBundle,
-                SecureRecoveryGenerationStore.Record recovery) {
+                SecureRecoveryGenerationStore.Record recovery,
+                long ownerUserId,
+                long recipientUserId,
+                long issuedAtEpochSeconds,
+                long offerNonce) {
             this.preKeyBundle = preKeyBundle;
             this.recovery = recovery;
+            this.ownerUserId = ownerUserId;
+            this.recipientUserId = recipientUserId;
+            this.issuedAtEpochSeconds = issuedAtEpochSeconds;
+            this.offerNonce = offerNonce;
         }
     }
 

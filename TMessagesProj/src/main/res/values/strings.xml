@@ -11232,6 +11232,10 @@
     <string name="ArticleAIAddToPage">Add to Page</string>
     <string name="ForkSecurePairingOfferSent">🔐 Secure pairing offer sent.</string>
     <string name="ForkSecurePairingOfferReceived">🔐 Secure pairing offer received.</string>
+    <string name="ForkSecureInitialOfferPendingMessage">🔐 Secure pairing offer received. Tap the shield to verify the contact fingerprint and accept.</string>
+    <string name="ForkSecureInitialOfferPendingDescription">Fork-Secure pairing offer requires verification. Tap to review</string>
+    <string name="ForkSecureInitialOfferTitle">Verify Fork-Secure pairing</string>
+    <string name="ForkSecureInitialOfferBody">Compare your fingerprint and the contact\'s fingerprint through another trusted channel before enabling protected messaging.\n\nYour fingerprint:\n%1$s\n\nContact fingerprint:\n%2$s</string>
     <string name="ForkSecurePairingCompletedConfirming">🔐 Secure pairing completed. Sending encrypted confirmation…</string>
     <string name="ForkSecurePairingConfirmed">🔐 Secure pairing confirmed.</string>
     <string name="ForkSecurePairingReady">🔐 Secure connection is ready.</string>
