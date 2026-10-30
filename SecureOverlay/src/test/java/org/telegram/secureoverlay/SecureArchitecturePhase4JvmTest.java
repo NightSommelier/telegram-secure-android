@@ -204,4 +204,114 @@ public final class SecureArchitecturePhase4JvmTest {
             SecureSessionManager.GROUPS_ENABLED = false;
         }
     }
+
+    @Test
+    public void sa20SavedMessagesBindingAndGenerations() throws Exception {
+        byte[] rawKey = new byte[32];
+        Arrays.fill(rawKey, (byte) 0x42);
+        SecureSavedMessagesKeyStore.KeyMaterial key =
+                new SecureSavedMessagesKeyStore.KeyMaterial(1, 1, rawKey);
+
+        String note = "Secret saved note for account 1";
+        byte[] record = SecureSavedMessageCrypto.encryptText(note, key);
+        assertEquals(1, SecureSavedMessageCrypto.extractGeneration(record));
+
+        // Decryption round-trip
+        String decrypted = SecureSavedMessageCrypto.decryptText(record, key);
+        assertEquals(note, decrypted);
+
+        // Header tampering:
+        // Layout: MAGIC_V2 (4) + generation (4) + kind (1) + account (4) + recordId (8) + nonce (12) + ciphertext
+        // Tamper generation in header (bytes 4..7)
+        byte[] tamperedGen = record.clone();
+        tamperedGen[7] ^= 1;
+        try {
+            SecureSavedMessageCrypto.decryptText(tamperedGen, key);
+            fail("tampered generation must fail");
+        } catch (IllegalArgumentException expected) {
+            // Expected generation mismatch
+        }
+
+        // Tamper kind byte (byte 8)
+        byte[] tamperedKind = record.clone();
+        tamperedKind[8] ^= 1;
+        try {
+            SecureSavedMessageCrypto.decryptText(tamperedKind, key);
+            fail("tampered kind must fail authentication or kind check");
+        } catch (IllegalArgumentException expected) {
+            // Expected authentication or kind mismatch
+        }
+
+        // Tamper account (bytes 9..12)
+        byte[] tamperedAccount = record.clone();
+        tamperedAccount[12] ^= 1;
+        try {
+            SecureSavedMessageCrypto.decryptText(tamperedAccount, key);
+            fail("tampered account must fail authentication or account mismatch");
+        } catch (IllegalArgumentException expected) {
+            // Expected account mismatch or auth fail
+        }
+
+        // Tamper recordId (bytes 13..20)
+        byte[] tamperedRecordId = record.clone();
+        tamperedRecordId[20] ^= 1;
+        try {
+            SecureSavedMessageCrypto.decryptText(tamperedRecordId, key);
+            fail("tampered recordId must fail authentication");
+        } catch (IllegalArgumentException expected) {
+            // Expected auth fail because recordId is in AAD
+        }
+
+        // ContentKind distinction in encryptRecord:
+        byte[] textContent = SecureContentCodec.encodeText("my note");
+        byte[] textRecord = SecureSavedMessageCrypto.encryptRecord(textContent, key);
+        // byte 8 is kind: should be ContentKind.TEXT (ordinal 0)
+        assertEquals(SecureSavedMessagesPolicy.ContentKind.TEXT.ordinal(), textRecord[8] & 0xff);
+
+        byte[] binaryContent = new byte[] {0x00, 0x01, 0x02};
+        byte[] photoRecord = SecureSavedMessageCrypto.encryptRecord(binaryContent, key);
+        assertEquals(SecureSavedMessagesPolicy.ContentKind.PHOTO.ordinal(), photoRecord[8] & 0xff);
+    }
+
+    @Test
+    public void sa21TypedControlSentinels() {
+        // Pairing ACK control
+        byte[] ackBytes = SecureContentCodec.encodePairingAckControl();
+        SecureContentCodec.Decoded decodedAck = SecureContentCodec.decode(ackBytes);
+        assertEquals(SecureContentCodec.TYPE_CONTROL, decodedAck.type);
+        assertNotNull(decodedAck.control);
+        assertEquals(SecureContentCodec.CONTROL_ACTION_PAIRING_ACK, decodedAck.control.action);
+
+        // Pairing READY control
+        byte[] readyBytes = SecureContentCodec.encodePairingReadyControl();
+        SecureContentCodec.Decoded decodedReady = SecureContentCodec.decode(readyBytes);
+        assertEquals(SecureContentCodec.TYPE_CONTROL, decodedReady.type);
+        assertNotNull(decodedReady.control);
+        assertEquals(SecureContentCodec.CONTROL_ACTION_PAIRING_READY, decodedReady.control.action);
+
+        // Pairing REJECT control
+        byte[] rejectBytes = SecureContentCodec.encodePairingRejectControl();
+        SecureContentCodec.Decoded decodedReject = SecureContentCodec.decode(rejectBytes);
+        assertEquals(SecureContentCodec.TYPE_CONTROL, decodedReject.type);
+        assertNotNull(decodedReject.control);
+        assertEquals(SecureContentCodec.CONTROL_ACTION_PAIRING_REJECT, decodedReject.control.action);
+
+        // Delete control
+        byte[] digest = new byte[32];
+        Arrays.fill(digest, (byte) 0xAA);
+        byte[] deleteBytes = SecureContentCodec.encodeDeleteControl(Arrays.asList(digest));
+        SecureContentCodec.Decoded decodedDelete = SecureContentCodec.decode(deleteBytes);
+        assertEquals(SecureContentCodec.TYPE_CONTROL, decodedDelete.type);
+        assertNotNull(decodedDelete.control);
+        assertEquals(SecureContentCodec.CONTROL_ACTION_DELETE, decodedDelete.control.action);
+        assertEquals(1, decodedDelete.control.carrierDigests.size());
+        assertArrayEquals(digest, decodedDelete.control.carrierDigests.get(0));
+    }
+
+    @Test
+    public void sa22ScopedFailedDecryptCacheOperations() {
+        // Scoped cache clearing should execute cleanly
+        SecureChatEngine.clearFailedDecryptCache(0, 12345L);
+        SecureChatEngine.clearFailedDecryptCache();
+    }
 }

@@ -56,14 +56,27 @@ public final class SecureChatEngine {
     public static final String DUPLICATE_MESSAGE_DISPLAY =
             "\u0000fork-secure-display:duplicate-message:v1";
     private static final Object SESSION_LOCK = KeystoreSignalProtocolStore.PROTOCOL_STATE_LOCK;
+    private static final long FAILED_DECRYPT_TTL_MS = 10 * 60 * 1000L; // 10 minutes
     private static final int FAILED_DECRYPT_CACHE_LIMIT = 512;
-    private static final java.util.LinkedHashMap<String, Boolean> failedDecryptCarriers =
-            new java.util.LinkedHashMap<String, Boolean>(FAILED_DECRYPT_CACHE_LIMIT, 0.75f, true) {
+
+    private static final class FailedDecryptEntry {
+        final long timestamp;
+        FailedDecryptEntry(long timestamp) {
+            this.timestamp = timestamp;
+        }
+    }
+
+    private static final java.util.LinkedHashMap<String, FailedDecryptEntry> failedDecryptCarriers =
+            new java.util.LinkedHashMap<String, FailedDecryptEntry>(FAILED_DECRYPT_CACHE_LIMIT, 0.75f, true) {
                 @Override
-                protected boolean removeEldestEntry(java.util.Map.Entry<String, Boolean> eldest) {
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, FailedDecryptEntry> eldest) {
                     return size() > FAILED_DECRYPT_CACHE_LIMIT;
                 }
             };
+
+    private static String failedDecryptKey(int account, long peerUserId, String carrier) {
+        return account + ":" + peerUserId + ":" + (carrier != null ? carrier.hashCode() : 0);
+    }
 
     /**
      * The protocol-state key is intentionally unavailable while Android considers the device
@@ -936,7 +949,8 @@ public final class SecureChatEngine {
     /** Creates an authenticated control message that completes pairing without user-authored text. */
     public String createPairingAcknowledgement() {
         if (!isPaired()) throw new SecureChatException("secure chat is not paired", null);
-        return encryptAndRemember(PAIRING_ACK_PLAINTEXT, PAIRING_ACK_DISPLAY);
+        return encryptAndRemember(
+                sessions, SecureContentCodec.encodePairingAckControl(), PAIRING_ACK_DISPLAY);
     }
 
     /**
@@ -947,7 +961,8 @@ public final class SecureChatEngine {
         if (!isPaired()) {
             throw new SecureChatException("secure chat is not paired", null);
         }
-        return encryptAndRemember(PAIRING_READY_PLAINTEXT, PAIRING_READY_DISPLAY);
+        return encryptAndRemember(
+                sessions, SecureContentCodec.encodePairingReadyControl(), PAIRING_READY_DISPLAY);
     }
 
     public boolean shouldAcknowledgeSessionReady(
@@ -988,7 +1003,7 @@ public final class SecureChatEngine {
             temporarySessions.establish(peerAddress, remote);
             return encryptAndRemember(
                     temporarySessions,
-                    PAIRING_REJECTED_PLAINTEXT,
+                    SecureContentCodec.encodePairingRejectControl(),
                     PAIRING_REJECTED_DISPLAY);
         } catch (Exception e) {
             throw new SecureChatException("cannot create secure pairing rejection", e);
@@ -1092,6 +1107,18 @@ public final class SecureChatEngine {
         }
     }
 
+    public static void clearFailedDecryptCache(int account, long peerUserId) {
+        String prefix = account + ":" + peerUserId + ":";
+        synchronized (failedDecryptCarriers) {
+            java.util.Iterator<String> it = failedDecryptCarriers.keySet().iterator();
+            while (it.hasNext()) {
+                if (it.next().startsWith(prefix)) {
+                    it.remove();
+                }
+            }
+        }
+    }
+
     /** Decrypts a recognized message. Successful first contact activates secure mode for the recipient. */
     public String decryptText(String carrier) {
         return decryptText(carrier, 0);
@@ -1125,9 +1152,15 @@ public final class SecureChatEngine {
                     }
                     return cached;
                 }
+                String cacheKey = failedDecryptKey(account, peerUserId, carrier);
                 synchronized (failedDecryptCarriers) {
-                    if (failedDecryptCarriers.containsKey(carrier)) {
-                        throw new SecureChatException("cannot decrypt secure text (previously failed)", null);
+                    FailedDecryptEntry entry = failedDecryptCarriers.get(cacheKey);
+                    if (entry != null) {
+                        if (System.currentTimeMillis() - entry.timestamp < FAILED_DECRYPT_TTL_MS) {
+                            throw new SecureChatException("cannot decrypt secure text (previously failed)", null);
+                        } else {
+                            failedDecryptCarriers.remove(cacheKey);
+                        }
                     }
                 }
                 int libsignalType;
@@ -1154,6 +1187,9 @@ public final class SecureChatEngine {
                     SecureContentCodec.Decoded content = SecureContentCodec.decode(plain);
                     if (content.type == SecureContentCodec.TYPE_TEXT) {
                         result = content.text;
+                        if (result != null && result.startsWith("\u0000fork-secure-display:")) {
+                            result = " " + result;
+                        }
                     } else if (content.type == SecureContentCodec.TYPE_STATIC_STICKER
                             || content.type == SecureContentCodec.TYPE_ANIMATED_STICKER
                             || content.type == SecureContentCodec.TYPE_VIDEO_STICKER) {
@@ -1165,26 +1201,36 @@ public final class SecureChatEngine {
                         result = content.type == SecureContentCodec.TYPE_PHOTO
                                 ? PHOTO_DISPLAY : FILE_DISPLAY;
                     } else if (content.type == SecureContentCodec.TYPE_CONTROL) {
-                        if (content.control != null
-                                && content.control.action == SecureContentCodec.CONTROL_ACTION_DELETE) {
-                            SecureLocalMessageCache cache =
-                                    new SecureLocalMessageCache(context, account, peerUserId);
-                            SecureMediaIndex mediaIndex =
-                                    new SecureMediaIndex(context, account, peerUserId);
-                            for (byte[] digest : content.control.carrierDigests) {
-                                try {
-                                    cache.forgetByDigest(digest);
-                                } catch (Exception error) {
-                                    // Ignore individual digest cleanup failure and proceed with others
-                                }
-                                try {
-                                    mediaIndex.forgetByDigest(digest);
-                                } catch (Exception error) {
-                                }
-                            }
-                        }
                         localContent.rememberIncoming(carrier, plain);
-                        result = CONTROL_DELETE_DISPLAY;
+                        if (content.control != null) {
+                            if (content.control.action == SecureContentCodec.CONTROL_ACTION_DELETE) {
+                                SecureLocalMessageCache cache =
+                                        new SecureLocalMessageCache(context, account, peerUserId);
+                                SecureMediaIndex mediaIndex =
+                                        new SecureMediaIndex(context, account, peerUserId);
+                                for (byte[] digest : content.control.carrierDigests) {
+                                    try {
+                                        cache.forgetByDigest(digest);
+                                    } catch (Exception error) {
+                                    }
+                                    try {
+                                        mediaIndex.forgetByDigest(digest);
+                                    } catch (Exception error) {
+                                    }
+                                }
+                                result = CONTROL_DELETE_DISPLAY;
+                            } else if (content.control.action == SecureContentCodec.CONTROL_ACTION_PAIRING_ACK) {
+                                result = PAIRING_ACK_DISPLAY;
+                            } else if (content.control.action == SecureContentCodec.CONTROL_ACTION_PAIRING_READY) {
+                                result = PAIRING_READY_DISPLAY;
+                            } else if (content.control.action == SecureContentCodec.CONTROL_ACTION_PAIRING_REJECT) {
+                                result = PAIRING_REJECTED_DISPLAY;
+                            } else {
+                                throw new SecureChatException("unknown control action: " + content.control.action, null);
+                            }
+                        } else {
+                            throw new SecureChatException("missing control body", null);
+                        }
                     } else if (content.type == SecureContentCodec.TYPE_CONTACT) {
                         localContent.rememberIncoming(carrier, plain);
                         result = CONTACT_DISPLAY;
@@ -1201,22 +1247,14 @@ public final class SecureChatEngine {
                         }
                         sessions.processGroupDistributionMessage(
                                 peerAddress, content.senderKeyDistribution.distributionBytes);
-                        clearFailedDecryptCache();
+                        clearFailedDecryptCache(account, peerUserId);
                         localContent.rememberIncoming(carrier, plain);
                         result = GROUP_KEY_RECEIVED_DISPLAY;
                     } else {
                         throw new SecureChatException("unsupported secure content", null);
                     }
                 } else {
-                    // Backward compatibility for encrypted beta messages sent before FSC1.
-                    result = strictUtf8(plain);
-                }
-                if (PAIRING_ACK_PLAINTEXT.equals(result)) {
-                    result = PAIRING_ACK_DISPLAY;
-                } else if (PAIRING_READY_PLAINTEXT.equals(result)) {
-                    result = PAIRING_READY_DISPLAY;
-                } else if (PAIRING_REJECTED_PLAINTEXT.equals(result)) {
-                    result = PAIRING_REJECTED_DISPLAY;
+                    throw new SecureChatException("unsupported legacy unversioned content", null);
                 }
                 // Cache the verified plaintext before returning it to Telegram's in-memory message view.
                 // A history reload then avoids replaying the same message through the ratchet.
@@ -1236,8 +1274,13 @@ public final class SecureChatEngine {
             } catch (SecureChatException e) {
                 throw e;
             } catch (Exception e) {
-                synchronized (failedDecryptCarriers) {
-                    failedDecryptCarriers.put(carrier, Boolean.TRUE);
+                if (e instanceof org.signal.libsignal.protocol.InvalidMessageException
+                        || e instanceof org.signal.libsignal.protocol.InvalidKeyIdException
+                        || e instanceof org.signal.libsignal.protocol.UntrustedIdentityException) {
+                    String cacheKey = failedDecryptKey(account, peerUserId, carrier);
+                    synchronized (failedDecryptCarriers) {
+                        failedDecryptCarriers.put(cacheKey, new FailedDecryptEntry(System.currentTimeMillis()));
+                    }
                 }
                 throw new SecureChatException("cannot decrypt secure text", e);
             }

@@ -58,6 +58,9 @@ public final class SecureContentCodec {
     private static final int MAX_SENDER_KEY_DISTRIBUTION_BYTES = 4096;
 
     public static final int CONTROL_ACTION_DELETE = 1;
+    public static final int CONTROL_ACTION_PAIRING_ACK = 2;
+    public static final int CONTROL_ACTION_PAIRING_READY = 3;
+    public static final int CONTROL_ACTION_PAIRING_REJECT = 4;
 
     public static final int STICKER_FORMAT_WEBP = 1;
     public static final int STICKER_FORMAT_TGS = 2;
@@ -312,26 +315,48 @@ public final class SecureContentCodec {
         return encode(TYPE_CONTROL, payload.array());
     }
 
+    public static byte[] encodePairingAckControl() {
+        return encode(TYPE_CONTROL, new byte[] {(byte) CONTROL_ACTION_PAIRING_ACK});
+    }
+
+    public static byte[] encodePairingReadyControl() {
+        return encode(TYPE_CONTROL, new byte[] {(byte) CONTROL_ACTION_PAIRING_READY});
+    }
+
+    public static byte[] encodePairingRejectControl() {
+        return encode(TYPE_CONTROL, new byte[] {(byte) CONTROL_ACTION_PAIRING_REJECT});
+    }
+
     private static Control decodeControl(byte[] payload) {
-        if (payload == null || payload.length < 5) {
+        if (payload == null || payload.length < 1) {
             throw new IllegalArgumentException("truncated control payload");
         }
         ByteBuffer input = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
         int action = input.get() & 0xff;
-        int count = input.getInt();
-        if (action != CONTROL_ACTION_DELETE || count <= 0 || count > 100) {
-            throw new IllegalArgumentException("invalid control payload header");
+        if (action == CONTROL_ACTION_DELETE) {
+            if (input.remaining() < 4) {
+                throw new IllegalArgumentException("truncated control delete payload");
+            }
+            int count = input.getInt();
+            if (count <= 0 || count > 100) {
+                throw new IllegalArgumentException("invalid control payload header");
+            }
+            if (input.remaining() != count * 32) {
+                throw new IllegalArgumentException("control payload size mismatch");
+            }
+            ArrayList<byte[]> digests = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                byte[] digest = new byte[32];
+                input.get(digest);
+                digests.add(digest);
+            }
+            return new Control(action, digests);
+        } else if (action == CONTROL_ACTION_PAIRING_ACK
+                || action == CONTROL_ACTION_PAIRING_READY
+                || action == CONTROL_ACTION_PAIRING_REJECT) {
+            return new Control(action, java.util.Collections.emptyList());
         }
-        if (input.remaining() != count * 32) {
-            throw new IllegalArgumentException("control payload size mismatch");
-        }
-        ArrayList<byte[]> digests = new ArrayList<>(count);
-        for (int i = 0; i < count; i++) {
-            byte[] digest = new byte[32];
-            input.get(digest);
-            digests.add(digest);
-        }
-        return new Control(action, digests);
+        throw new IllegalArgumentException("unknown control action: " + action);
     }
 
     public static byte[] encodeContact(Contact contact) {
@@ -1390,25 +1415,30 @@ public final class SecureContentCodec {
         public final List<byte[]> carrierDigests;
 
         public Control(int action, List<byte[]> carrierDigests) {
-            if (action != CONTROL_ACTION_DELETE) {
+            if (action == CONTROL_ACTION_DELETE) {
+                if (carrierDigests == null || carrierDigests.isEmpty()) {
+                    throw new IllegalArgumentException("carrier digests required");
+                }
+                if (carrierDigests.size() > 100) {
+                    throw new IllegalArgumentException(
+                            "too many carrier digests: " + carrierDigests.size());
+                }
+                ArrayList<byte[]> copies = new ArrayList<>(carrierDigests.size());
+                for (byte[] digest : carrierDigests) {
+                    if (digest == null || digest.length != 32) {
+                        throw new IllegalArgumentException("invalid carrier digest");
+                    }
+                    copies.add(digest.clone());
+                }
+                this.carrierDigests = Collections.unmodifiableList(copies);
+            } else if (action == CONTROL_ACTION_PAIRING_ACK
+                    || action == CONTROL_ACTION_PAIRING_READY
+                    || action == CONTROL_ACTION_PAIRING_REJECT) {
+                this.carrierDigests = Collections.emptyList();
+            } else {
                 throw new IllegalArgumentException("unsupported control action: " + action);
             }
-            if (carrierDigests == null || carrierDigests.isEmpty()) {
-                throw new IllegalArgumentException("carrier digests required");
-            }
-            if (carrierDigests.size() > 100) {
-                throw new IllegalArgumentException(
-                        "too many carrier digests: " + carrierDigests.size());
-            }
-            ArrayList<byte[]> copies = new ArrayList<>(carrierDigests.size());
-            for (byte[] digest : carrierDigests) {
-                if (digest == null || digest.length != 32) {
-                    throw new IllegalArgumentException("invalid carrier digest");
-                }
-                copies.add(digest.clone());
-            }
             this.action = action;
-            this.carrierDigests = Collections.unmodifiableList(copies);
         }
     }
 
