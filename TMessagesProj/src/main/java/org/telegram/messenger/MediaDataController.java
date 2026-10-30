@@ -4232,7 +4232,6 @@ public class MediaDataController extends BaseController {
                 state.bindInteger(4, type);
                 state.bindByteBuffer(5, data);
                 state.step();
-                FileLog.d("ForkLinks: indexForkSecureMedia saved mid=" + messageId + " uid=" + dialogId + " type=" + type);
             } catch (Exception e) {
                 FileLog.e(e);
             } finally {
@@ -4544,7 +4543,6 @@ public class MediaDataController extends BaseController {
                 if (dbUrlCount > 0) {
                     putMediaCountDatabase(dialogId, topicId, MEDIA_URL, result[MEDIA_URL]);
                 }
-                FileLog.d("ForkLinks: adjustForkSecureMediaCounts dialogId=" + dialogId + " dbUrlCount=" + dbUrlCount + " finalUrlCount=" + result[MEDIA_URL]);
             }
         } catch (RuntimeException e) {
             FileLog.e(e);
@@ -4686,9 +4684,6 @@ public class MediaDataController extends BaseController {
                         }
                     }
                     msgCursor.dispose();
-                    if (syncedUrls > 0) {
-                        FileLog.d("ForkLinks: syncForkSecureMediaDatabase synced " + syncedUrls + " URL messages for dialogId=" + dialogId);
-                    }
                 } catch (Throwable e) {
                     FileLog.e(e);
                 }
@@ -4952,12 +4947,10 @@ public class MediaDataController extends BaseController {
                                 if (entities != null && !entities.isEmpty()) {
                                     message.message = plaintext;
                                     message.entities = entities;
-                                    FileLog.d("ForkLinks: processLoadedMedia decrypted and extracted " + entities.size() + " URLs for mid=" + message.id);
                                 } else {
                                     continue;
                                 }
                             } else {
-                                FileLog.w("ForkLinks: processLoadedMedia could not resolve plaintext for carrier mid=" + message.id);
                                 continue;
                             }
                         } else {

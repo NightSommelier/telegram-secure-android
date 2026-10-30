@@ -1058,9 +1058,6 @@ public class ContextLinkCell extends FrameLayout implements DownloadController.F
                 }
             }
             radialProgress.setIcon(getIconForCurrentState(), ifSame, animated);
-            if (isSecureReady) {
-                FileLog.d("ForkAnimations: ContextLinkCell updateButtonState isSecureReady=" + isSecureReady + " buttonState=" + buttonState + " fileName=" + fileName);
-            }
             invalidate();
         }
     }

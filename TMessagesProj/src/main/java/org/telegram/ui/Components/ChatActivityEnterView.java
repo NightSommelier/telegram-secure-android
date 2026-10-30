@@ -5684,6 +5684,19 @@ public class ChatActivityEnterView extends FrameLayout implements
         return keyboardName == null || !keyboardName.startsWith("com.samsung");
     }
 
+    public void updateSecureImeOptions() {
+        if (messageEditText == null) {
+            return;
+        }
+        TLRPC.EncryptedChat encryptedChat = parentFragment != null ? parentFragment.getCurrentEncryptedChat() : null;
+        boolean forkSecureProtected = parentFragment != null && parentFragment.isForkSecureContentProtected();
+        int flags = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
+        if ((encryptedChat != null && isKeyboardSupportIncognitoMode()) || forkSecureProtected) {
+            flags |= EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING;
+        }
+        messageEditText.setImeOptions(flags);
+    }
+
     private View mCustomWindowView;
 
     public void setCustomWindowView(View v) {
@@ -5804,14 +5817,9 @@ public class ChatActivityEnterView extends FrameLayout implements
         } else {
             messageEditText.setWindowView(parentActivity.getWindow().getDecorView());
         }
-        TLRPC.EncryptedChat encryptedChat = parentFragment != null ? parentFragment.getCurrentEncryptedChat() : null;
         messageEditText.setAllowTextEntitiesIntersection(supportsSendingNewEntities());
-        int flags = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
-        if (isKeyboardSupportIncognitoMode() && encryptedChat != null) {
-            flags |= EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING;
-        }
         messageEditText.setIncludeFontPadding(false);
-        messageEditText.setImeOptions(flags);
+        updateSecureImeOptions();
         messageEditText.setInputType(commonInputType = (messageEditText.getInputType() | EditorInfo.TYPE_TEXT_FLAG_CAP_SENTENCES | EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE));
         updateFieldHint(false);
         messageEditText.setSingleLine(false);

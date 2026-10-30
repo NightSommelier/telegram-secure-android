@@ -3805,7 +3805,6 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             } else {
                                 indexKind = SecureMediaIndex.KIND_FILE;
                             }
-                            FileLog.d("ForkPresentation: outgoing index entry dialog=" + dialogId + " file=" + resolved.fileName + " mime=" + mimeType + " indexKind=" + indexKind + " presentation=" + presentation.kind);
                             SecureMediaIndex secureMediaIndex = new SecureMediaIndex(
                                     ApplicationLoader.applicationContext,
                                     accountInstance.getCurrentAccount(),

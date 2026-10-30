@@ -1886,48 +1886,20 @@ public class NotificationsController extends BaseController implements Notificat
                         : R.string.ForkSecurePairingOfferReceived);
             } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
                 result = LocaleController.getString(R.string.ForkSecureMessageFailed);
+            } else if (decoded.type == SecureCarrierCodec.TYPE_SAVED_MESSAGE) {
+                result = LocaleController.getString(R.string.ForkSecureReplyPreview);
             } else {
+                // Never advance the Signal ratchet, process group distributions, or expose
+                // decrypted plaintext from background notifications (SA-11).
                 SecureChatEngine secureChat = new SecureChatEngine(
                         ApplicationLoader.applicationContext, currentAccount, peerId);
-                result = messageObject.isOutOwner()
+                String cached = messageObject.isOutOwner()
                         ? secureChat.getOutgoingText(messageObject.messageOwner.message)
-                        : secureChat.decryptText(messageObject.messageOwner.message, messageObject.getFromChatId());
-                if (result == null) {
-                    result = LocaleController.getString(
-                            R.string.ForkSecureOutgoingUnavailable);
-                } else if (SecureChatEngine.isControlDeleteDisplay(result)) {
-                    List<byte[]> digests = secureChat.getDeleteControlDigests(messageObject.messageOwner.message);
-                    MessagesController.getInstance(currentAccount).applyForkSecureControlDelete(
-                            peerId, messageObject.getId(), digests);
+                        : secureChat.getIncomingText(messageObject.messageOwner.message);
+                if (SecureChatEngine.isControlDeleteDisplay(cached)) {
                     return null;
-                } else if (SecureChatEngine.isDuplicateMessageDisplay(result)) {
-                    result = LocaleController.getString(
-                            R.string.ForkSecureDuplicateMessage);
-                } else if (SecureChatEngine.isPairingAcknowledgementDisplay(result)) {
-                    result = LocaleController.getString(
-                            R.string.ForkSecurePairingConfirmed);
-                } else if (SecureChatEngine.isPairingRejectionDisplay(result)) {
-                    result = LocaleController.getString(
-                            R.string.ForkSecurePairingRejected);
-                } else if (SecureChatEngine.isGroupKeyDistributedDisplay(result)) {
-                    result = LocaleController.getString(
-                            R.string.ForkSecureGroupKeyDistributed);
-                } else if (SecureChatEngine.isGroupKeyReceivedDisplay(result)) {
-                    result = LocaleController.getString(
-                            R.string.ForkSecureGroupKeyReceived);
-                } else if (SecureChatEngine.isStaticStickerDisplay(result)) {
-                    result = LocaleController.getString(
-                            R.string.ForkSecureEncryptedSticker);
-                } else if (SecureChatEngine.isPhotoDisplay(result)) {
-                    result = LocaleController.getString(
-                            R.string.ForkSecureEncryptedPhoto);
-                } else if (SecureChatEngine.isFileDisplay(result)) {
-                    result = LocaleController.getString(
-                            R.string.ForkSecureEncryptedFile);
-                } else {
-                    result = LocaleController.formatString(
-                            R.string.ForkSecureTextPreview, result);
                 }
+                result = LocaleController.getString(R.string.ForkSecureReplyPreview);
             }
         } catch (RuntimeException error) {
             if (SecureChatEngine.isStateTemporarilyUnavailable(

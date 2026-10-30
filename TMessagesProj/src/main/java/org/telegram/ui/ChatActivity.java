@@ -22424,8 +22424,6 @@ public class ChatActivity extends BaseFragment implements
                 ciphertext == null ? null : ciphertext.getAbsolutePath();
         // Keep Telegram's original opaque Document unchanged so FileLoader can locate and
         // re-download ciphertext after Android purges either cache.
-        FileLog.d("ForkSecure sticker UI ready message=" + message.getId()
-                + " format=" + manifest.format + " bytes=" + manifest.plaintextSize);
     }
 
     private void applyPreparedSecureAttachment(
@@ -22552,7 +22550,6 @@ public class ChatActivity extends BaseFragment implements
                     String caption = SecureContentCodec.displayCaption(secureMediaCaption);
                     ArrayList<TLRPC.MessageEntity> entities = MediaDataController.extractUrlEntities(caption);
                     if (entities != null && !entities.isEmpty()) {
-                        FileLog.d("ForkLinks: ChatActivity indexing URL mid=" + messageId + " count=" + entities.size());
                         MediaDataController.getInstance(currentAcc).indexForkSecureMedia(messageOwner, MediaDataController.MEDIA_URL);
                     }
                 }
@@ -22568,7 +22565,6 @@ public class ChatActivity extends BaseFragment implements
         }
         ArrayList<TLRPC.MessageEntity> entities = MediaDataController.extractUrlEntities(text);
         if (entities != null && !entities.isEmpty()) {
-            FileLog.d("ForkLinks: ChatActivity indexing URL mid=" + message.getId() + " count=" + entities.size());
             getMediaDataController().indexForkSecureMedia(message.messageOwner, MediaDataController.MEDIA_URL);
         }
     }
@@ -23505,6 +23501,9 @@ public class ChatActivity extends BaseFragment implements
         } else {
             restoreForkSecureLinkPreviewSearch();
         }
+        if (chatActivityEnterView != null) {
+            chatActivityEnterView.updateSecureImeOptions();
+        }
         secureModeItem.setIcon(
                 enabled ? R.drawable.outline_header_lock_24 : R.drawable.outline_shield_plain_24,
                 true);
@@ -23613,6 +23612,9 @@ public class ChatActivity extends BaseFragment implements
 
     public void updateSecureModeUi() {
         updateTitleIcons();
+        if (chatActivityEnterView != null) {
+            chatActivityEnterView.updateSecureImeOptions();
+        }
         if (secureModeItem == null) {
             return;
         }
@@ -32311,7 +32313,7 @@ public class ChatActivity extends BaseFragment implements
                         pinnedText = pinnedMessageObject.replaceAnimatedEmoji(pinnedText, messageTextView.getPaint().getFontMetricsInt());
                     }
                 } else if (pinnedMessageObject.isForkSecureCarrier() && (pinnedText = getForkSecureReplyLabel(pinnedMessageObject)) != null) {
-                    FileLog.d("ForkPinned: resolved secure label for pinned message: " + pinnedText);
+                    // Never write decrypted pinned text or media labels to FileLog (SA-13).
                 } else if (pinnedMessageObject.isForkSecureCarrier() && !pinnedMessageObject.forkSecureVerified) {
                     pinnedText = getString(R.string.ForkSecureReplyPreview);
                 } else if (pinnedMessageObject.messageText != null) {
