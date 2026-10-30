@@ -34,6 +34,30 @@ public final class SecureMediaCrypto {
 
     private SecureMediaCrypto() {}
 
+    /**
+     * Computes the padded length using the Padmé (PURB) padding algorithm.
+     * Hides exact payload lengths with at most 12% space overhead for small payloads,
+     * dropping below 6% for larger files.
+     */
+    public static int padmeSize(int length) {
+        if (length <= 0) {
+            throw new IllegalArgumentException("invalid length: " + length);
+        }
+        final int minSize = 256;
+        if (length <= minSize) {
+            return minSize;
+        }
+        int e = 31 - Integer.numberOfLeadingZeros(length);
+        int s = 31 - Integer.numberOfLeadingZeros(e) + 1;
+        int lastBits = e - s;
+        long mask = (1L << lastBits) - 1L;
+        long padded = ((long) length + mask) & ~mask;
+        if (padded > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("padded size exceeds integer max");
+        }
+        return (int) padded;
+    }
+
     public static EncryptedStaticSticker encryptStaticSticker(
             byte[] webp, int width, int height, String emoji) {
         return encryptSticker(
@@ -377,6 +401,8 @@ public final class SecureMediaCrypto {
         if (sourceSize <= 0 || sourceSize > MAX_ATTACHMENT_BYTES) {
             throw new IllegalArgumentException("secure attachment size is invalid");
         }
+        int targetPaddedPlaintextSize = padmeSize((int) sourceSize);
+        int expectedCiphertextSize = targetPaddedPlaintextSize + GCM_TAG_BYTES;
         byte[] mediaId = randomBytes(16);
         byte[] key = randomBytes(KEY_BYTES);
         byte[] nonce = randomBytes(NONCE_BYTES);
@@ -386,7 +412,7 @@ public final class SecureMediaCrypto {
                 nonce,
                 new byte[32],
                 (int) sourceSize,
-                (int) sourceSize + GCM_TAG_BYTES,
+                expectedCiphertextSize,
                 fileName,
                 mimeType,
                 caption,
@@ -422,6 +448,24 @@ public final class SecureMediaCrypto {
                     ciphertextBytes += encrypted.length;
                 }
             }
+            if (plaintextBytes != sourceSize) {
+                throw new SecureMediaException("secure attachment size changed while reading", null);
+            }
+            long paddingNeeded = targetPaddedPlaintextSize - plaintextBytes;
+            if (paddingNeeded > 0) {
+                byte[] zeroBuffer = new byte[Math.min((int) paddingNeeded, 64 * 1024)];
+                long remainingPadding = paddingNeeded;
+                while (remainingPadding > 0) {
+                    int toWrite = (int) Math.min(remainingPadding, zeroBuffer.length);
+                    byte[] encrypted = cipher.update(zeroBuffer, 0, toWrite);
+                    if (encrypted != null && encrypted.length != 0) {
+                        output.write(encrypted);
+                        digest.update(encrypted);
+                        ciphertextBytes += encrypted.length;
+                    }
+                    remainingPadding -= toWrite;
+                }
+            }
             byte[] finalBytes = cipher.doFinal();
             output.write(finalBytes);
             digest.update(finalBytes);
@@ -435,7 +479,7 @@ public final class SecureMediaCrypto {
             throw new SecureMediaException("cannot encrypt secure attachment", e);
         }
         if (plaintextBytes != sourceSize
-                || ciphertextBytes != plaintextBytes + GCM_TAG_BYTES
+                || ciphertextBytes != expectedCiphertextSize
                 || plaintextBytes > Integer.MAX_VALUE
                 || ciphertextBytes > Integer.MAX_VALUE) {
             temporary.delete();
@@ -476,6 +520,9 @@ public final class SecureMediaCrypto {
         ciphertextFile = requireSafeFile(ciphertextFile, "ciphertextFile");
         destination = requireSafeFile(destination, "destination");
         if (manifest == null
+                || manifest.plaintextSize <= 0
+                || manifest.plaintextSize > MAX_ATTACHMENT_BYTES
+                || manifest.ciphertextSize < manifest.plaintextSize + GCM_TAG_BYTES
                 || !ciphertextFile.isFile()
                 || ciphertextFile.length() != manifest.ciphertextSize
                 || !MessageDigest.isEqual(
@@ -486,8 +533,16 @@ public final class SecureMediaCrypto {
             throw new IllegalArgumentException(
                     "secure attachment ciphertext does not match manifest");
         }
+        int paddedPlaintextSize = manifest.ciphertextSize - GCM_TAG_BYTES;
+        int expectedPaddedPlaintextSize = padmeSize(manifest.plaintextSize);
+        boolean validCiphertextSize = manifest.ciphertextSize == manifest.plaintextSize + GCM_TAG_BYTES
+                || manifest.ciphertextSize == expectedPaddedPlaintextSize + GCM_TAG_BYTES;
+        if (!validCiphertextSize) {
+            throw new IllegalArgumentException("invalid secure attachment ciphertext size");
+        }
         File temporary = createSafeTemporaryFile(destination);
-        long plaintextBytes = 0;
+        long writtenPlaintextBytes = 0;
+        long totalDecryptedBytes = 0;
         try (FileInputStream input = new FileInputStream(ciphertextFile);
                 FileOutputStream output = new FileOutputStream(temporary, false)) {
             Cipher cipher = createAttachmentCipher(
@@ -497,17 +552,25 @@ public final class SecureMediaCrypto {
             while ((count = input.read(buffer)) != -1) {
                 byte[] decrypted = cipher.update(buffer, 0, count);
                 if (decrypted != null && decrypted.length != 0) {
-                    output.write(decrypted);
-                    plaintextBytes += decrypted.length;
-                    if (plaintextBytes > manifest.plaintextSize) {
-                        throw new IllegalArgumentException(
-                                "secure attachment plaintext exceeds manifest");
-                    }
+                    processDecryptedChunk(
+                            decrypted,
+                            output,
+                            manifest.plaintextSize,
+                            writtenPlaintextBytes);
+                    totalDecryptedBytes += decrypted.length;
+                    writtenPlaintextBytes = Math.min(totalDecryptedBytes, manifest.plaintextSize);
                 }
             }
             byte[] finalBytes = cipher.doFinal();
-            output.write(finalBytes);
-            plaintextBytes += finalBytes.length;
+            if (finalBytes != null && finalBytes.length != 0) {
+                processDecryptedChunk(
+                        finalBytes,
+                        output,
+                        manifest.plaintextSize,
+                        writtenPlaintextBytes);
+                totalDecryptedBytes += finalBytes.length;
+                writtenPlaintextBytes = Math.min(totalDecryptedBytes, manifest.plaintextSize);
+            }
             output.getFD().sync();
         } catch (AEADBadTagException e) {
             temporary.delete();
@@ -520,7 +583,8 @@ public final class SecureMediaCrypto {
             temporary.delete();
             throw new SecureMediaException("cannot decrypt secure attachment", e);
         }
-        if (plaintextBytes != manifest.plaintextSize) {
+        if (writtenPlaintextBytes != manifest.plaintextSize
+                || totalDecryptedBytes != paddedPlaintextSize) {
             temporary.delete();
             throw new IllegalArgumentException("secure attachment plaintext size is invalid");
         }
@@ -531,6 +595,29 @@ public final class SecureMediaCrypto {
         if (!temporary.renameTo(destination)) {
             temporary.delete();
             throw new SecureMediaException("cannot finalize decrypted attachment", null);
+        }
+    }
+
+    private static void processDecryptedChunk(
+            byte[] chunk,
+            FileOutputStream output,
+            int maxPlaintextSize,
+            long currentWritten) throws IOException {
+        long payloadBytesLeft = maxPlaintextSize - currentWritten;
+        if (payloadBytesLeft > 0) {
+            int toWrite = (int) Math.min((long) chunk.length, payloadBytesLeft);
+            output.write(chunk, 0, toWrite);
+            for (int i = toWrite; i < chunk.length; i++) {
+                if (chunk[i] != 0) {
+                    throw new IllegalArgumentException("invalid secure attachment padding byte");
+                }
+            }
+        } else {
+            for (int i = 0; i < chunk.length; i++) {
+                if (chunk[i] != 0) {
+                    throw new IllegalArgumentException("invalid secure attachment padding byte");
+                }
+            }
         }
     }
 

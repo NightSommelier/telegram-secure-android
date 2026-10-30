@@ -25,6 +25,9 @@ public final class SecureContentCodec {
     private static final byte[] MAGIC = new byte[] {'F', 'S', 'C', '1'};
     private static final int HEADER_BYTES = MAGIC.length + 1 + 4;
     private static final int MAX_CONTENT_BYTES = 16 * 1024;
+    private static final int PADDING_BLOCK_SIZE = 160;
+    private static final byte PADDING_DELIMITER = (byte) 0x80;
+    private static final byte PADDING_ZERO = (byte) 0x00;
     private static final byte[] ATTACHMENT_PRESENTATION_MAGIC =
             new byte[] {'F', 'S', 'M', '1'};
     private static final byte[] ATTACHMENT_PRESENTATION_MAGIC_V2 =
@@ -473,11 +476,24 @@ public final class SecureContentCodec {
         if (!isKnownType(type)
                 || size <= 0
                 || size > MAX_CONTENT_BYTES
-                || size != input.remaining()) {
+                || size > input.remaining()) {
             throw new IllegalArgumentException("invalid secure content fields");
         }
         byte[] payload = new byte[size];
         input.get(payload);
+        if (input.hasRemaining()) {
+            if (encoded.length % PADDING_BLOCK_SIZE != 0) {
+                throw new IllegalArgumentException("invalid secure content padding length");
+            }
+            if (input.get() != PADDING_DELIMITER) {
+                throw new IllegalArgumentException("invalid secure content padding delimiter");
+            }
+            while (input.hasRemaining()) {
+                if (input.get() != PADDING_ZERO) {
+                    throw new IllegalArgumentException("invalid secure content padding byte");
+                }
+            }
+        }
         if (type == TYPE_TEXT) {
             return Decoded.text(strictUtf8(payload));
         }
@@ -515,12 +531,18 @@ public final class SecureContentCodec {
                 || payload.length > MAX_CONTENT_BYTES) {
             throw new IllegalArgumentException("invalid secure content payload");
         }
-        ByteBuffer output = ByteBuffer.allocate(HEADER_BYTES + payload.length)
+        int unpaddedLength = HEADER_BYTES + payload.length;
+        int paddedLength = ((unpaddedLength + 1 + PADDING_BLOCK_SIZE - 1) / PADDING_BLOCK_SIZE) * PADDING_BLOCK_SIZE;
+        ByteBuffer output = ByteBuffer.allocate(paddedLength)
                 .order(ByteOrder.BIG_ENDIAN);
         output.put(MAGIC);
         output.put((byte) type);
         output.putInt(payload.length);
         output.put(payload);
+        output.put(PADDING_DELIMITER);
+        while (output.hasRemaining()) {
+            output.put(PADDING_ZERO);
+        }
         return output.array();
     }
 
@@ -913,6 +935,9 @@ public final class SecureContentCodec {
                 ? width <= 0 || width > 16384 || height <= 0 || height > 16384
                 : dimensionsPresent && (!visualDocument
                         || width <= 0 || width > 16384 || height <= 0 || height > 16384);
+        int paddedPlaintextSize = SecureMediaCrypto.padmeSize(plaintextSize);
+        boolean validCiphertextSize = ciphertextSize == plaintextSize + SecureMediaCrypto.GCM_TAG_BYTES
+                || ciphertextSize == paddedPlaintextSize + SecureMediaCrypto.GCM_TAG_BYTES;
         if (mediaId == null
                 || mediaId.length != 16
                 || key == null
@@ -923,7 +948,7 @@ public final class SecureContentCodec {
                 || digest.length != 32
                 || plaintextSize <= 0
                 || plaintextSize > SecureMediaCrypto.MAX_ATTACHMENT_BYTES
-                || ciphertextSize != plaintextSize + SecureMediaCrypto.GCM_TAG_BYTES
+                || !validCiphertextSize
                 || fileName == null
                 || fileName.length == 0
                 || fileName.length > 128
