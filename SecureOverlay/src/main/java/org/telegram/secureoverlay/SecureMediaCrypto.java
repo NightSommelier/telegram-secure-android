@@ -754,7 +754,7 @@ public final class SecureMediaCrypto {
         }
     }
 
-    private static File requireSafeFile(File file, String label) {
+    public static File requireSafeFile(File file, File allowedRoot, String label) {
         if (file == null) {
             throw new IllegalArgumentException(label + " is null");
         }
@@ -764,18 +764,52 @@ public final class SecureMediaCrypto {
             if (name.contains("..") || name.contains("/") || name.contains("\\")) {
                 throw new IllegalArgumentException(label + " contains path traversal sequences");
             }
-            File parent = canonical.getParentFile();
-            if (parent != null) {
-                String parentCanonicalPath = parent.getCanonicalPath();
+            if (allowedRoot != null) {
+                File rootCanonical = allowedRoot.getCanonicalFile();
+                String rootPath = rootCanonical.getPath();
                 String canonicalPath = canonical.getPath();
-                if (!canonicalPath.startsWith(parentCanonicalPath + File.separator)
-                        && !canonicalPath.equals(parentCanonicalPath)) {
-                    throw new IllegalArgumentException(label + " escapes parent directory");
+                if (!canonicalPath.startsWith(rootPath + File.separator)
+                        && !canonicalPath.equals(rootPath)) {
+                    throw new IllegalArgumentException(label + " escapes allowed root directory");
+                }
+            } else {
+                File parent = canonical.getParentFile();
+                if (parent != null) {
+                    String parentCanonicalPath = parent.getCanonicalPath();
+                    String canonicalPath = canonical.getPath();
+                    if (!canonicalPath.startsWith(parentCanonicalPath + File.separator)
+                            && !canonicalPath.equals(parentCanonicalPath)) {
+                        throw new IllegalArgumentException(label + " escapes parent directory");
+                    }
                 }
             }
             return canonical;
         } catch (IOException e) {
             throw new IllegalArgumentException("cannot resolve safe path for " + label, e);
+        }
+    }
+
+    public static File requireSafeFile(File file, String label) {
+        return requireSafeFile(file, null, label);
+    }
+
+    public static void purgeTemporaryFiles(File directory) {
+        if (directory == null || !directory.isDirectory()) {
+            return;
+        }
+        File[] files = directory.listFiles();
+        if (files == null) {
+            return;
+        }
+        for (File file : files) {
+            if (file == null) {
+                continue;
+            }
+            if (file.isDirectory()) {
+                purgeTemporaryFiles(file);
+            } else if (file.getName().endsWith(".tmp")) {
+                file.delete();
+            }
         }
     }
 

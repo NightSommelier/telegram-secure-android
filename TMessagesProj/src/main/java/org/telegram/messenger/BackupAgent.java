@@ -14,6 +14,11 @@ public class BackupAgent extends BackupAgentHelper {
         addHelper("prefs", helper);
     }
 
+    @Override
+    public void onFullBackup(android.app.backup.FullBackupDataOutput data) throws java.io.IOException {
+        // SA-24: Prohibit full backup from dumping unmanaged filesystem data to ADB or device transfers.
+    }
+
     public static void requestBackup() {
         if (backupManager == null) {
             backupManager = new BackupManager(ApplicationLoader.applicationContext);

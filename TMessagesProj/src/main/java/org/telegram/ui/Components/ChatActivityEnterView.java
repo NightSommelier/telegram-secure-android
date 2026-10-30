@@ -7878,6 +7878,7 @@ public class ChatActivityEnterView extends FrameLayout implements
         if (!hasOnlyEmoji) {
             text = AndroidUtilities.getTrimmedString(text);
         }
+        boolean forkSecureOrigin = false;
         if (parentFragment instanceof ChatActivity
                 && ((ChatActivity) parentFragment).isSavedMessagesSecureModeEnabled()
                 && text.length() != 0) {
@@ -7886,6 +7887,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                         new SecureSavedMessagesKeyStore(getContext())
                                 .getOrCreate(currentAccount);
                 text = SecureSavedMessageCrypto.encryptTextCarrier(text.toString(), key);
+                forkSecureOrigin = true;
                 notify = false;
             } catch (Exception error) {
                 FileLog.e(error);
@@ -7906,6 +7908,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                     if ("/secure-reject".equals(entered)
                             || "/secure-off".equals(entered)) {
                         text = secureChat.createPairingRejection();
+                        forkSecureOrigin = true;
                         secureChat.rejectPendingIdentity();
                         notify = false;
                         notifySecureModeChanged();
@@ -7924,6 +7927,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                         return false;
                     }
                     text = secureChat.createPairingAcknowledgement();
+                    forkSecureOrigin = true;
                     notify = false;
                     notifySecureModeChanged();
                 } else if ("/secure-ready".equals(entered)) {
@@ -7931,6 +7935,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                         return false;
                     }
                     text = secureChat.createSessionReadyAcknowledgement();
+                    forkSecureOrigin = true;
                     notify = false;
                     notifySecureModeChanged();
                 } else if ("/secure-start".equals(entered)) {
@@ -7954,6 +7959,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                     } else {
                         text = secureChat.createPairingOffer(
                                 accountInstance.getUserConfig().getClientUserId());
+                        forkSecureOrigin = true;
                         notify = false;
                         notifySecureModeChanged();
                     }
@@ -7986,6 +7992,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                         }
                     }
                     text = secureChat.encryptText(entered);
+                    forkSecureOrigin = true;
                 }
             } catch (RuntimeException error) {
                 // Do not log message text or key material; the stack trace is enough for diagnosis.
@@ -8077,7 +8084,8 @@ public class ChatActivityEnterView extends FrameLayout implements
                     replyToTopMsg = replyingTopMessage;
                 }
                 SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(message[0].toString(), dialog_id, replyingMessageObject, replyToTopMsg, messageWebPage, messageWebPageSearch, entities, null, null, notify, scheduleDate, scheduleRepeatPeriod, sendAnimationData, updateStickersOrder);
-                boolean forkSecureCarrier = SecureCarrierCodec.isMarked(message[0].toString());
+                params.forkSecureProvenance = forkSecureOrigin;
+                boolean forkSecureCarrier = forkSecureOrigin;
                 if (forkSecureCarrier) {
                     params.webPage = null;
                     params.mediaWebPage = null;

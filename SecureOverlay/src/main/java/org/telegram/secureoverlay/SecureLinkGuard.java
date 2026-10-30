@@ -257,7 +257,8 @@ public final class SecureLinkGuard {
         boolean hasConfusableTarget = false;
         String skeleton = toConfusableSkeleton(unicodeHost);
         for (String target : HIGH_VALUE_DOMAINS) {
-            if (skeleton.equals(target) && !unicodeHost.equals(target) && !punycodeHost.equals(target)) {
+            boolean matches = skeleton.equals(target) || isIcuSpoof(unicodeHost, target);
+            if (matches && !unicodeHost.equals(target) && !punycodeHost.equals(target)) {
                 hasConfusableTarget = true;
                 targetSpoofedDomain = target;
                 break;
@@ -470,6 +471,13 @@ public final class SecureLinkGuard {
             case '\u03BD': case '\u039D': return 'v'; // Nu
             case '\u03C7': case '\u03A7': return 'x'; // Chi
 
+            // Armenian lookalikes
+            case '\u0570': return 'h'; // Armenian ho
+            case '\u0585': return 'o'; // Armenian oh
+            case '\u0578': return 'n'; // Armenian vo
+            case '\u0563': return 'q'; // Armenian gim
+            case '\u057D': return 's'; // Armenian se
+
             default:
                 // Fullwidth Latin characters \uFF21-\uFF3A (A-Z) and \uFF41-\uFF5A (a-z)
                 if (c >= '\uFF21' && c <= '\uFF3A') {
@@ -480,5 +488,23 @@ public final class SecureLinkGuard {
                 }
                 return Character.toLowerCase(c);
         }
+    }
+
+    private static boolean isIcuSpoof(String text1, String text2) {
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            try {
+                Class<?> spoofCheckerClass = Class.forName("android.icu.text.SpoofChecker");
+                Class<?> builderClass = Class.forName("android.icu.text.SpoofChecker$Builder");
+                Object builder = builderClass.getDeclaredConstructor().newInstance();
+                Object checker = builderClass.getMethod("build").invoke(builder);
+                Object result = spoofCheckerClass.getMethod("areConfusable", CharSequence.class, CharSequence.class)
+                        .invoke(checker, text1, text2);
+                if (result instanceof Number) {
+                    return ((Number) result).intValue() != 0;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
     }
 }

@@ -1,6 +1,7 @@
 package org.telegram.secureoverlay;
 
 import android.content.Context;
+import java.io.File;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -52,6 +53,24 @@ public final class SecureSessionManager {
                 return;
             }
             if (appContext != null) {
+                // SA-23: File hygiene - purge temporary plaintext remnants on startup
+                File cacheDir = appContext.getCacheDir();
+                if (cacheDir != null) {
+                    SecureMediaCrypto.purgeTemporaryFiles(new File(cacheDir, "fork-secure-attachments-in"));
+                    SecureMediaCrypto.purgeTemporaryFiles(new File(cacheDir, "fork-secure-media-in"));
+                    SecureMediaCrypto.purgeTemporaryFiles(new File(cacheDir, "fork-secure-media-out"));
+                    SecureMediaCrypto.purgeTemporaryFiles(new File(cacheDir, "fork-secure-decrypted-media"));
+                }
+                File noBackupDir = appContext.getNoBackupFilesDir();
+                if (noBackupDir != null) {
+                    SecureMediaCrypto.purgeTemporaryFiles(new File(noBackupDir, "fork-secure-attachments-in"));
+                    SecureMediaCrypto.purgeTemporaryFiles(new File(noBackupDir, "fork-secure-media-in"));
+                }
+                File externalCache = appContext.getExternalCacheDir();
+                if (externalCache != null) {
+                    SecureMediaCrypto.purgeTemporaryFiles(new File(externalCache, "fork-secure-media-out"));
+                }
+
                 SecureHistoryBackupManager.resumeInterruptedRestore(appContext);
                 SecureIdentityBackupManager.resumeInterruptedImport(appContext);
                 SecureChatState state = new SecureChatState(appContext);

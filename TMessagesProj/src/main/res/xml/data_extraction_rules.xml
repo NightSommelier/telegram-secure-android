@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="telegram_secure_overlay_state.xml" />
+        <exclude domain="sharedpref" path="telegram_secure_chat_state_v1.xml" />
+        <exclude domain="sharedpref" path="telegram_secure_chat_state.xml" />
+        <exclude domain="database" path="telegram_secure_database.db" />
+        <exclude domain="database" path="telegram_secure_database.db-wal" />
+        <exclude domain="database" path="telegram_secure_database.db-shm" />
+        <exclude domain="file" path="fork-secure-attachments-in" />
+        <exclude domain="file" path="fork-secure-media-in" />
+        <exclude domain="file" path="fork-secure-media-out" />
+        <exclude domain="file" path="fork-secure-decrypted-media" />
+        <exclude domain="file" path="telegram_secure" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="telegram_secure_overlay_state.xml" />
+        <exclude domain="sharedpref" path="telegram_secure_chat_state_v1.xml" />
+        <exclude domain="sharedpref" path="telegram_secure_chat_state.xml" />
+        <exclude domain="database" path="telegram_secure_database.db" />
+        <exclude domain="database" path="telegram_secure_database.db-wal" />
+        <exclude domain="database" path="telegram_secure_database.db-shm" />
+        <exclude domain="file" path="fork-secure-attachments-in" />
+        <exclude domain="file" path="fork-secure-media-in" />
+        <exclude domain="file" path="fork-secure-media-out" />
+        <exclude domain="file" path="fork-secure-decrypted-media" />
+        <exclude domain="file" path="telegram_secure" />
+    </device-transfer>
+</data-extraction-rules>

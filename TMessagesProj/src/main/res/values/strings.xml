@@ -11405,6 +11405,8 @@
     <string name="ForkSecureAuditLinkGuard">Anti-Phishing Link Guard</string>
     <string name="ForkSecureAuditLinkGuardActive">Active (Homoglyph &amp; spoofing check)</string>
     <string name="ForkSecureAuditInfo">Audit reviews key device and app settings that affect privacy under physical or local access.</string>
+    <string name="ForkSecureStatusUnencryptedWaiting">⚠️ Messages are unencrypted until pairing completes</string>
+    <string name="ForkSecureStatusUnencryptedPaused">⚠️ Secure messaging paused — sending in plaintext</string>
 
     <string name="WelcomeMessage">Welcome Message</string>
     <string name="WelcomeMessageOff">Off</string>

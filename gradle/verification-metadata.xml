@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<verification-metadata xmlns="https://schema.gradle.org/dependency-verification" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://schema.gradle.org/dependency-verification https://schema.gradle.org/dependency-verification/dependency-verification-1.3.xsd">
+   <configuration>
+      <verify-metadata>false</verify-metadata>
+      <verify-signatures>false</verify-signatures>
+      <trusted-artifacts>
+         <trust group="^(?!org\.signal($|\b)).*$" regex="true" reason="SA-25: Pin third-party org.signal dependencies while trusting standard Android/Google repo dependencies"/>
+      </trusted-artifacts>
+   </configuration>
+   <components>
+      <component group="org.signal" name="libsignal-android" version="0.86.6">
+         <artifact name="libsignal-android-0.86.6.aar">
+            <sha256 value="4528ea6373cf15dba008effa33e24ee1006e358ab83e8fc2678734e44e6987db" origin="Upstream Signal build-artifacts"/>
+         </artifact>
+         <artifact name="libsignal-android-0.86.6.pom">
+            <sha256 value="f0fc5dc52e25c0187dc1584ec238df28cb3aac1f1db162bfa0013c8c93aef230" origin="Upstream Signal build-artifacts"/>
+         </artifact>
+         <artifact name="libsignal-android-0.86.6.module">
+            <sha256 value="944c7b8eda64a98c418713ed846ea539c6510e689239627ab4e7e75bceb6da7e" origin="Upstream Signal build-artifacts"/>
+         </artifact>
+      </component>
+      <component group="org.signal" name="libsignal-client" version="0.86.6">
+         <artifact name="libsignal-client-0.86.6.jar">
+            <sha256 value="2124c5215f71209ec6ac3508f43ef6f3af74718911baa1d6185b9930d21ed5b7" origin="Upstream Signal build-artifacts"/>
+         </artifact>
+         <artifact name="libsignal-client-0.86.6.pom">
+            <sha256 value="8df9aaf913b45bdc9b70b613fd779ec8e814b94900deb21fe6aaeb36b5020076" origin="Upstream Signal build-artifacts"/>
+         </artifact>
+         <artifact name="libsignal-client-0.86.6.module">
+            <sha256 value="03cc60c8bbf9b114bfed8bf97aba68158d0e0ffc3cba8ec6f0af7c8c1e151bb1" origin="Upstream Signal build-artifacts"/>
+         </artifact>
+      </component>
+   </components>
+</verification-metadata>

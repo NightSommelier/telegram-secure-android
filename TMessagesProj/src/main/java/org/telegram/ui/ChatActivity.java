@@ -23621,6 +23621,9 @@ public class ChatActivity extends BaseFragment implements
         try {
             SecureChatEngine.Mode mode = getSecureChatEngine().getMode();
             if (mode == SecureChatEngine.Mode.PROTECTED) {
+                if (chatActivityEnterView != null) {
+                    chatActivityEnterView.setOverrideHint(null, true);
+                }
                 suppressForkSecureLinkPreview();
                 clearForkSecureCloudDraft();
                 secureModeItem.setIcon(R.drawable.outline_shield_check, true);
@@ -23629,33 +23632,51 @@ public class ChatActivity extends BaseFragment implements
                                 ? R.string.ForkSecureGroupProtectedDescription
                                 : R.string.ForkSecureProtectedDescription));
             } else if (mode == SecureChatEngine.Mode.WAITING) {
+                if (chatActivityEnterView != null) {
+                    chatActivityEnterView.setOverrideHint(getString(R.string.ForkSecureStatusUnencryptedWaiting), true);
+                }
                 restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecureWaitingDescription));
             } else if (mode == SecureChatEngine.Mode.PAUSED) {
+                if (chatActivityEnterView != null) {
+                    chatActivityEnterView.setOverrideHint(getString(R.string.ForkSecureStatusUnencryptedPaused), true);
+                }
                 restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_shield_plain_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecurePausedDescription));
             } else if (mode == SecureChatEngine.Mode.INITIAL_PAIRING_PENDING) {
+                if (chatActivityEnterView != null) {
+                    chatActivityEnterView.setOverrideHint(null, true);
+                }
                 restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecureInitialOfferPendingDescription));
             } else if (mode == SecureChatEngine.Mode.IDENTITY_CHANGED) {
+                if (chatActivityEnterView != null) {
+                    chatActivityEnterView.setOverrideHint(null, true);
+                }
                 suppressForkSecureLinkPreview();
                 clearForkSecureCloudDraft();
                 secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecureIdentityChangedDescription));
             } else if (mode == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                if (chatActivityEnterView != null) {
+                    chatActivityEnterView.setOverrideHint(null, true);
+                }
                 suppressForkSecureLinkPreview();
                 clearForkSecureCloudDraft();
                 secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
                 secureModeItem.setContentDescription(
                         getString(R.string.ForkSecureRecoveryChangedDescription));
             } else {
+                if (chatActivityEnterView != null) {
+                    chatActivityEnterView.setOverrideHint(null, true);
+                }
                 restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_shield_plain_24, true);
                 secureModeItem.setContentDescription(

@@ -3566,7 +3566,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         memberEngine.createGroupSenderKeyDistributionCarrier(groupDialogId);
                 if (distCarrier != null) {
                     AndroidUtilities.runOnUIThread(() -> {
-                        sendMessage(SendMessageParams.of(distCarrier, memberUserId));
+                        SendMessageParams distParams = SendMessageParams.of(distCarrier, memberUserId);
+                        distParams.forkSecureProvenance = true;
+                        sendMessage(distParams);
                     });
                     distributedCount++;
                 }
@@ -4474,6 +4476,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
                 return 0;
             }
+        }
+        if (isForkSecureProtectedPeer(peer)) {
+            showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+            return 0;
         }
         int sendResult = 0;
         long myId = getUserConfig().getClientUserId();
@@ -6790,8 +6796,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 caption = retryMessageObject.messageOwner.message;
             }
         }
-        final boolean forkSecureCarrier =
-                SecureCarrierCodec.isMarked(message) || SecureCarrierCodec.isMarked(caption);
+        final boolean forkSecureCarrier = sendMessageParams.forkSecureProvenance
+                || (retryMessageObject != null && retryMessageObject.isForkSecureCarrier());
         if (forkSecureCarrier) {
             String carrierCandidate = SecureCarrierCodec.isMarked(message) ? message : caption;
             SecureCarrierCodec.Decoded decodedCarrier =
@@ -6877,6 +6883,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     }
                     sendMessageParams.user = null;
                     sendMessageParams.message = carrier;
+                    sendMessageParams.forkSecureProvenance = true;
                     sendMessage(sendMessageParams);
                     return;
                 } catch (Exception error) {
@@ -6917,6 +6924,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     }
                     sendMessageParams.location = null;
                     sendMessageParams.message = carrier;
+                    sendMessageParams.forkSecureProvenance = true;
                     sendMessage(sendMessageParams);
                     return;
                 } catch (Exception error) {
@@ -6946,6 +6954,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         carrier = secureChat.encryptText(message);
                     }
                     sendMessageParams.message = carrier;
+                    sendMessageParams.forkSecureProvenance = true;
                     sendMessage(sendMessageParams);
                     return;
                 } catch (Exception error) {
@@ -12222,6 +12231,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 accountInstance.getSendMessagesHelper().editMessage(editingMessageObject, null, null, documentFinal, pathFinal, null, params, false, false, parentFinal);
             } else {
                 SendMessageParams sendMessageParams = SendMessagesHelper.SendMessageParams.of(documentFinal, null, pathFinal, dialogId, replyToMsg, replyToTopMsg, captionFinal, entities, null, params, notify, scheduleDate, scheduleRepeatPeriod, ttl, parentFinal, null, false);
+                if (FORK_SECURE_TRANSPORT_MIME.equals(mime)) {
+                    sendMessageParams.forkSecureProvenance = true;
+                }
                 sendMessageParams.replyToStoryItem = storyItem;
                 sendMessageParams.replyQuote = quote;
                 sendMessageParams.sendMessageChatArguments = sendMessageChatArguments;
@@ -14833,6 +14845,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     public static class SendMessageParams {
+        public boolean forkSecureProvenance;
         public String message;
         public String caption;
         public TLRPC.MessageMedia location;

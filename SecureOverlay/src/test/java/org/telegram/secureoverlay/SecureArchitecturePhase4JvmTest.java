@@ -314,4 +314,104 @@ public final class SecureArchitecturePhase4JvmTest {
         SecureChatEngine.clearFailedDecryptCache(0, 12345L);
         SecureChatEngine.clearFailedDecryptCache();
     }
+
+    @Test
+    public void sa23FileHygieneConfinementAndPurge() throws Exception {
+        File rootDir = temporaryFolder.newFolder("allowed_root");
+        File subDir = new File(rootDir, "sub");
+        subDir.mkdirs();
+        File validFile = new File(subDir, "payload.bin");
+        validFile.createNewFile();
+
+        // Valid confinement check
+        File safe = SecureMediaCrypto.requireSafeFile(validFile, rootDir, "valid");
+        assertEquals(validFile.getCanonicalPath(), safe.getCanonicalPath());
+
+        // Traversal escaping root must fail closed
+        File outsideDir = temporaryFolder.newFolder("outside_root");
+        File outsideFile = new File(outsideDir, "escape.bin");
+        outsideFile.createNewFile();
+        try {
+            SecureMediaCrypto.requireSafeFile(outsideFile, rootDir, "outside");
+            fail("requireSafeFile must reject file outside allowed root");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("escapes allowed root"));
+        }
+
+        // Path traversal sequence must fail
+        File traversalFile = new File(rootDir, "../secret.txt");
+        try {
+            SecureMediaCrypto.requireSafeFile(traversalFile, rootDir, "traversal");
+            fail("requireSafeFile must reject path traversal");
+        } catch (IllegalArgumentException expected) {
+            // Expected
+        }
+
+        // Purge temporary files
+        File tmp1 = new File(subDir, "media1.tmp");
+        tmp1.createNewFile();
+        File tmp2 = new File(rootDir, "media2.tmp");
+        tmp2.createNewFile();
+        File keep = new File(rootDir, "media3.keep");
+        keep.createNewFile();
+
+        assertTrue(tmp1.exists());
+        assertTrue(tmp2.exists());
+        assertTrue(keep.exists());
+
+        SecureMediaCrypto.purgeTemporaryFiles(rootDir);
+
+        assertFalse(tmp1.exists());
+        assertFalse(tmp2.exists());
+        assertTrue(keep.exists());
+    }
+
+    @Test
+    public void sa25VerificationMetadataSignalPinned() throws Exception {
+        File metaFile = new File("../gradle/verification-metadata.xml");
+        if (!metaFile.exists()) {
+            metaFile = new File("gradle/verification-metadata.xml");
+        }
+        assertTrue("gradle/verification-metadata.xml must exist", metaFile.isFile());
+
+        byte[] bytes = new byte[(int) metaFile.length()];
+        try (FileInputStream in = new FileInputStream(metaFile)) {
+            in.read(bytes);
+        }
+        String content = new String(bytes, StandardCharsets.UTF_8);
+
+        assertTrue(content.contains("libsignal-android"));
+        assertTrue(content.contains("libsignal-client"));
+        assertTrue(content.contains("4528ea6373cf15dba008effa33e24ee1006e358ab83e8fc2678734e44e6987db"));
+        assertTrue(content.contains("2124c5215f71209ec6ac3508f43ef6f3af74718911baa1d6185b9930d21ed5b7"));
+    }
+
+    @Test
+    public void sa33LinkGuardExtendedConfusableAndIpv6() {
+        // IPv6 bracketed address parsing
+        String ipv6Url = "http://[::1]:8080/secure/api?query=1";
+        SecureLinkGuard.Analysis analysisIpv6 = SecureLinkGuard.analyze(ipv6Url);
+        assertEquals("[::1]", analysisIpv6.host);
+        assertEquals(ipv6Url, SecureLinkGuard.toSafeCopyUrl(analysisIpv6));
+
+        // Mixed-case host preservation without case-sensitive replace bug
+        String mixedCaseUrl = "https://Paypal.com/signin";
+        SecureLinkGuard.Analysis analysisMixed = SecureLinkGuard.analyze(mixedCaseUrl);
+        assertEquals("paypal.com", analysisMixed.host);
+        assertEquals("https://paypal.com/signin", SecureLinkGuard.toSafeCopyUrl(analysisMixed));
+
+        // Confusable Cyrillic 'a' (U+0430) spoofing paypal.com
+        String spoofedUrl = "https://p\u0430yp\u0430l.com/login";
+        SecureLinkGuard.Analysis analysisSpoofed = SecureLinkGuard.analyze(spoofedUrl);
+        assertTrue(analysisSpoofed.isSuspicious);
+        assertTrue(analysisSpoofed.hasConfusableTarget);
+        assertEquals("paypal.com", analysisSpoofed.targetSpoofedDomain);
+
+        // Confusable Armenian 'o' (U+0585) spoofing google.com
+        String armenianSpoof = "https://g\u0585\u0585gle.com";
+        SecureLinkGuard.Analysis analysisArmenian = SecureLinkGuard.analyze(armenianSpoof);
+        assertTrue(analysisArmenian.isSuspicious);
+        assertTrue(analysisArmenian.hasConfusableTarget);
+        assertEquals("google.com", analysisArmenian.targetSpoofedDomain);
+    }
 }
