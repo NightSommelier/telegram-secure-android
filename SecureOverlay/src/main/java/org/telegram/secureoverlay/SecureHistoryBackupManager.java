@@ -93,10 +93,10 @@ public final class SecureHistoryBackupManager {
             }
             SecureChatState chatState = new SecureChatState(appContext);
             SecureRecoveryGenerationStore.Record recovery =
-                    new SecureRecoveryGenerationStore(appContext).ensureLocalIdentity(
-                            generationForEpoch(chatState.getIdentityEpoch()));
+                    new SecureRecoveryGenerationStore(appContext, account).ensureLocalIdentity(
+                            generationForEpoch(chatState.getIdentityEpoch(account)));
             KeystoreSignalProtocolStore protocol =
-                    new KeystoreSignalProtocolStore(appContext);
+                    new KeystoreSignalProtocolStore(appContext, account);
             List<SecureHistoryBackupCodec.CacheRecord> records =
                     snapshotHistory(appContext, account);
             List<SecureHistoryBackupCodec.PeerRecord> peers =
@@ -146,23 +146,32 @@ public final class SecureHistoryBackupManager {
             KeystoreEncryptedBlobStore blobs =
                     new KeystoreEncryptedBlobStore(appContext);
             SecureRecoveryGenerationStore recoveryStore =
-                    new SecureRecoveryGenerationStore(appContext);
+                    new SecureRecoveryGenerationStore(appContext, targetAccount);
             SecureRecoveryGenerationStore.Record current =
                     recoveryStore.ensureLocalIdentity(
-                            generationForEpoch(chatState.getIdentityEpoch()));
+                            generationForEpoch(chatState.getIdentityEpoch(targetAccount)));
             long restoredGeneration =
                     nextGeneration(payload.generation, current.generation);
             SecureRecoveryGenerationStore.Record restoredRecovery =
                     new SecureRecoveryGenerationStore.Record(
                             restoredGeneration, nonZeroUuid());
             Map<String, byte[]> replacements = new LinkedHashMap<>();
-            replacements.put("identity", payload.serializedIdentity);
+            replacements.put("account/" + targetAccount + "/identity", payload.serializedIdentity);
             replacements.put(
-                    "registration",
+                    "account/" + targetAccount + "/registration",
                     ByteBuffer.allocate(4).putInt(payload.registrationId).array());
             replacements.put(
-                    "recovery-generation-v1/local",
+                    "recovery-generation-v1/account/" + targetAccount + "/local",
                     SecureRecoveryGenerationStore.encodeRecord(restoredRecovery));
+            if (targetAccount == 0) {
+                replacements.put("identity", payload.serializedIdentity);
+                replacements.put(
+                        "registration",
+                        ByteBuffer.allocate(4).putInt(payload.registrationId).array());
+                replacements.put(
+                        "recovery-generation-v1/local",
+                        SecureRecoveryGenerationStore.encodeRecord(restoredRecovery));
+            }
             for (SecureHistoryBackupCodec.CacheRecord record : payload.cacheRecords) {
                 if (record.kind != SecureHistoryBackupCodec.KIND_SAVED_MESSAGES_KEY) {
                     replacements.put(historyName(targetAccount, record), record.value);
@@ -182,11 +191,18 @@ public final class SecureHistoryBackupManager {
                             restoredMessages,
                             payload.peers,
                             payload.serializedIdentity));
+            String[] targetRoots = targetAccount == 0
+                    ? new String[] { "account/0", "identity", "registration", "counter", "current", "prekey", "signed", "kyber", "index", "kyber-used", "session", "sender", "recovery-generation-v1/local", "recovery-generation-v1/account/0" }
+                    : new String[] { "account/" + targetAccount, "recovery-generation-v1/account/" + targetAccount };
+            String[] scopedHistoryPrefixes = new String[HISTORY_PREFIXES.length];
+            for (int i = 0; i < HISTORY_PREFIXES.length; i++) {
+                scopedHistoryPrefixes[i] = HISTORY_PREFIXES[i] + targetAccount + '.';
+            }
             try {
                 blobs.replaceSelected(
                         replacements,
-                        PROTOCOL_ROOTS,
-                        HISTORY_PREFIXES,
+                        targetRoots,
+                        scopedHistoryPrefixes,
                         MARKER);
             } catch (KeystoreEncryptedBlobStore.StateStoreException error) {
                 throw new IllegalStateException(
@@ -237,8 +253,12 @@ public final class SecureHistoryBackupManager {
             RestoreMarker marker = decodeMarker(encoded);
             new SecureChatState(context).restorePausedPeers(
                     marker.account, marker.generation, marker.peers);
-            new KeystoreSignalProtocolStore(context).ensureLocalPreKeyMaterial();
-            SecureLocalTextStore.evictDisplayPrefixes(HISTORY_PREFIXES);
+            new KeystoreSignalProtocolStore(context, marker.account).ensureLocalPreKeyMaterial();
+            String[] scopedHistoryPrefixes = new String[HISTORY_PREFIXES.length];
+            for (int i = 0; i < HISTORY_PREFIXES.length; i++) {
+                scopedHistoryPrefixes[i] = HISTORY_PREFIXES[i] + marker.account + '.';
+            }
+            SecureLocalTextStore.evictDisplayPrefixes(scopedHistoryPrefixes);
             SecureChatEngine.clearFailedDecryptCache();
             blobs.delete(MARKER);
             return new RestoreResult(

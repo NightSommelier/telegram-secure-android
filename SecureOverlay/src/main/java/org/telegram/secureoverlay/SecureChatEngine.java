@@ -172,16 +172,16 @@ public final class SecureChatEngine {
         SecureHistoryBackupManager.resumeInterruptedRestore(appContext);
         SecureIdentityBackupManager.resumeInterruptedImport(appContext);
         state = new SecureChatState(appContext);
-        recoveryStore = new SecureRecoveryGenerationStore(appContext);
-        recoveryStore.ensureLocalIdentity(generationForEpoch(state.getIdentityEpoch()));
-        store = new KeystoreSignalProtocolStore(appContext);
+        recoveryStore = new SecureRecoveryGenerationStore(appContext, account);
+        recoveryStore.ensureLocalIdentity(generationForEpoch(state.getIdentityEpoch(account)));
+        store = new KeystoreSignalProtocolStore(appContext, account);
         peerAddress = new SignalProtocolAddress("telegram-user-" + peerUserId, 1);
         localAddress = new SignalProtocolAddress("local-account-" + account, 1);
         sessions = new LibsignalSessionAdapter(store, localAddress);
         localText = new SecureLocalTextStore(appContext, account, peerUserId);
         localContent =
                 new SecureLocalContentStore(appContext, account, peerUserId);
-        identityEpoch = state.getIdentityEpoch();
+        identityEpoch = state.getIdentityEpoch(account);
     }
 
     /** Creates a public pairing offer to send as a normal Telegram text message. */
@@ -1651,15 +1651,19 @@ public final class SecureChatEngine {
      * Telegram account data and Keystore-encrypted local display copies are not modified.
      */
     public static String resetOwnIdentity(Context context) {
+        return resetOwnIdentity(context, 0);
+    }
+
+    public static String resetOwnIdentity(Context context, int account) {
         synchronized (SESSION_LOCK) {
             Context appContext = context.getApplicationContext();
-            KeystoreSignalProtocolStore.resetProtocolState(appContext);
+            KeystoreSignalProtocolStore.resetProtocolState(appContext, account);
             SecureChatState chatState = new SecureChatState(appContext);
-            chatState.resetForNewIdentity();
+            chatState.resetForNewIdentity(account);
             clearFailedDecryptCache();
-            new SecureRecoveryGenerationStore(appContext)
-                    .advanceLocalIdentity(generationForEpoch(chatState.getIdentityEpoch()));
-            return fingerprint(new KeystoreSignalProtocolStore(appContext)
+            new SecureRecoveryGenerationStore(appContext, account)
+                    .advanceLocalIdentity(generationForEpoch(chatState.getIdentityEpoch(account)));
+            return fingerprint(new KeystoreSignalProtocolStore(appContext, account)
                     .getIdentityKeyPair().getPublicKey().serialize());
         }
     }

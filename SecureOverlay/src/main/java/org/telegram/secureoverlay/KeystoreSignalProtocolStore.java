@@ -44,8 +44,13 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     private static final String REGISTRATION = "registration";
     private final Context appContext;
     private final EncryptedStateStorage blobs;
+    private final int account;
+    private final String prefix;
     private final IdentityKeyPair identity;
     private final int registrationId;
+
+    public int getAccount() { return account; }
+    private String k(String name) { return prefix + name; }
 
     interface EncryptedStateStorage {
         byte[] get(String name) throws Exception;
@@ -57,24 +62,52 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     }
 
     public KeystoreSignalProtocolStore(Context context) {
-        this(context, new KeystoreEncryptedBlobStore(context));
+        this(context, 0);
+    }
+
+    public KeystoreSignalProtocolStore(Context context, int account) {
+        this(context, account, new KeystoreEncryptedBlobStore(context));
     }
 
     KeystoreSignalProtocolStore(Context context, EncryptedStateStorage storage) {
+        this(context, 0, storage);
+    }
+
+    KeystoreSignalProtocolStore(Context context, int account, EncryptedStateStorage storage) {
         synchronized (PROTOCOL_STATE_LOCK) {
+            if (account < 0) {
+                throw new IllegalArgumentException("account must not be negative");
+            }
             appContext = context != null ? context.getApplicationContext() : null;
             blobs = storage;
+            this.account = account;
+            this.prefix = "account/" + account + "/";
             try {
-                byte[] savedIdentity = blobs.get(IDENTITY);
-                byte[] savedRegistration = blobs.get(REGISTRATION);
+                byte[] savedIdentity = blobs.get(k(IDENTITY));
+                byte[] savedRegistration = blobs.get(k(REGISTRATION));
+                if (account == 0 && savedIdentity == null && blobs.get(IDENTITY) != null) {
+                    savedIdentity = blobs.get(IDENTITY);
+                    savedRegistration = blobs.get(REGISTRATION);
+                    blobs.put(k(IDENTITY), savedIdentity);
+                    blobs.put(k(REGISTRATION), savedRegistration);
+                    for (String sub : new String[] {
+                            "counter/prekey", "counter/signed_prekey", "counter/kyber_prekey",
+                            "current/signed_prekey_id", "current/kyber_prekey_id",
+                            "index/prekey", "index/prekey_pool", "index/signed", "index/kyber"}) {
+                        byte[] v = blobs.get(sub);
+                        if (v != null) {
+                            blobs.put(k(sub), v);
+                        }
+                    }
+                }
                 if ((savedIdentity == null) != (savedRegistration == null)) {
                     throw new StateFailure("incomplete local identity state", null);
                 }
                 if (savedIdentity == null) {
                     identity = IdentityKeyPair.generate();
                     registrationId = KeyHelper.generateRegistrationId(false);
-                    blobs.put(IDENTITY, identity.serialize());
-                    blobs.put(REGISTRATION, ByteBuffer.allocate(4).putInt(registrationId).array());
+                    blobs.put(k(IDENTITY), identity.serialize());
+                    blobs.put(k(REGISTRATION), ByteBuffer.allocate(4).putInt(registrationId).array());
                 } else {
                     identity = new IdentityKeyPair(savedIdentity);
                     if (savedRegistration.length != 4) throw new StateFailure("invalid registration state", null);
@@ -98,7 +131,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
 
     private int getNextPreKeyId() {
         try {
-            byte[] b = blobs.get("counter/prekey");
+            byte[] b = blobs.get(k("counter/prekey"));
             int current = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 0;
             if (current == 0 && containsPreKey(1)) {
                 current = 1;
@@ -107,7 +140,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
             if (next >= 0xFFFFFF || next <= 0) {
                 next = 1;
             }
-            blobs.put("counter/prekey", ByteBuffer.allocate(4).putInt(next).array());
+            blobs.put(k("counter/prekey"), ByteBuffer.allocate(4).putInt(next).array());
             return next;
         } catch (Exception e) {
             throw failure(e);
@@ -116,13 +149,13 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
 
     private int getNextSignedPreKeyId() {
         try {
-            byte[] b = blobs.get("counter/signed_prekey");
+            byte[] b = blobs.get(k("counter/signed_prekey"));
             int current = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 1;
             int next = current + 1;
             if (next >= 0xFFFFFF || next <= 0) {
                 next = 1;
             }
-            blobs.put("counter/signed_prekey", ByteBuffer.allocate(4).putInt(next).array());
+            blobs.put(k("counter/signed_prekey"), ByteBuffer.allocate(4).putInt(next).array());
             return next;
         } catch (Exception e) {
             throw failure(e);
@@ -131,13 +164,13 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
 
     private int getNextKyberPreKeyId() {
         try {
-            byte[] b = blobs.get("counter/kyber_prekey");
+            byte[] b = blobs.get(k("counter/kyber_prekey"));
             int current = (b != null && b.length == 4) ? ByteBuffer.wrap(b).getInt() : 2;
             int next = current + 1;
             if (next >= 0xFFFFFF || next <= 0) {
                 next = 1;
             }
-            blobs.put("counter/kyber_prekey", ByteBuffer.allocate(4).putInt(next).array());
+            blobs.put(k("counter/kyber_prekey"), ByteBuffer.allocate(4).putInt(next).array());
             return next;
         } catch (Exception e) {
             throw failure(e);
@@ -147,18 +180,18 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     public int getActiveSignedPreKeyId() {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
-                byte[] b = blobs.get("current/signed_prekey_id");
+                byte[] b = blobs.get(k("current/signed_prekey_id"));
                 if (b != null && b.length == 4) {
                     return ByteBuffer.wrap(b).getInt();
                 }
                 if (containsSignedPreKey(2)) {
-                    blobs.put("current/signed_prekey_id", ByteBuffer.allocate(4).putInt(2).array());
+                    blobs.put(k("current/signed_prekey_id"), ByteBuffer.allocate(4).putInt(2).array());
                     return 2;
                 }
                 List<Integer> ids = index("signed");
                 if (!ids.isEmpty()) {
                     int last = ids.get(ids.size() - 1);
-                    blobs.put("current/signed_prekey_id", ByteBuffer.allocate(4).putInt(last).array());
+                    blobs.put(k("current/signed_prekey_id"), ByteBuffer.allocate(4).putInt(last).array());
                     return last;
                 }
                 return -1;
@@ -171,18 +204,18 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     public int getActiveKyberPreKeyId() {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
-                byte[] b = blobs.get("current/kyber_prekey_id");
+                byte[] b = blobs.get(k("current/kyber_prekey_id"));
                 if (b != null && b.length == 4) {
                     return ByteBuffer.wrap(b).getInt();
                 }
                 if (containsKyberPreKey(3)) {
-                    blobs.put("current/kyber_prekey_id", ByteBuffer.allocate(4).putInt(3).array());
+                    blobs.put(k("current/kyber_prekey_id"), ByteBuffer.allocate(4).putInt(3).array());
                     return 3;
                 }
                 List<Integer> ids = index("kyber");
                 if (!ids.isEmpty()) {
                     int last = ids.get(ids.size() - 1);
-                    blobs.put("current/kyber_prekey_id", ByteBuffer.allocate(4).putInt(last).array());
+                    blobs.put(k("current/kyber_prekey_id"), ByteBuffer.allocate(4).putInt(last).array());
                     return last;
                 }
                 return -1;
@@ -196,7 +229,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
                 List<Integer> pool = index("prekey_pool");
-                if (blobs.get("index/prekey_pool") == null) {
+                if (blobs.get(k("index/prekey_pool")) == null) {
                     List<Integer> existing = index("prekey");
                     for (int id : existing) {
                         if (containsPreKey(id) && !pool.contains(id)) {
@@ -260,7 +293,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
                 byte[] signature = identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize());
                 SignedPreKeyRecord record = new SignedPreKeyRecord(newId, now, pair, signature);
                 storeSignedPreKey(newId, record);
-                blobs.put("current/signed_prekey_id", ByteBuffer.allocate(4).putInt(newId).array());
+                blobs.put(k("current/signed_prekey_id"), ByteBuffer.allocate(4).putInt(newId).array());
                 return true;
             } catch (Exception e) {
                 throw failure(e);
@@ -292,7 +325,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
                 byte[] signature = identity.getPrivateKey().calculateSignature(pair.getPublicKey().serialize());
                 KyberPreKeyRecord record = new KyberPreKeyRecord(newId, now, pair, signature);
                 storeKyberPreKey(newId, record);
-                blobs.put("current/kyber_prekey_id", ByteBuffer.allocate(4).putInt(newId).array());
+                blobs.put(k("current/kyber_prekey_id"), ByteBuffer.allocate(4).putInt(newId).array());
                 return true;
             } catch (Exception e) {
                 throw failure(e);
@@ -371,9 +404,9 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     @Override public IdentityChange saveIdentity(SignalProtocolAddress address, IdentityKey key) {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
-                byte[] old = blobs.get(key("identity", address));
+                byte[] old = blobs.get(k(key("identity", address)));
                 byte[] next = key.serialize();
-                blobs.put(key("identity", address), next);
+                blobs.put(k(key("identity", address)), next);
                 return old != null && !Arrays.equals(old, next)
                         ? IdentityChange.REPLACED_EXISTING : IdentityChange.NEW_OR_UNCHANGED;
             } catch (Exception e) { throw failure(e); }
@@ -383,7 +416,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     @Override public boolean isTrustedIdentity(SignalProtocolAddress address, IdentityKey key, Direction direction) {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
-                byte[] current = blobs.get(key("identity", address));
+                byte[] current = blobs.get(k(key("identity", address)));
                 if (current != null) {
                     return Arrays.equals(current, key.serialize());
                 }
@@ -412,7 +445,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     @Override public IdentityKey getIdentity(SignalProtocolAddress address) {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
-                byte[] saved = blobs.get(key("identity", address));
+                byte[] saved = blobs.get(k(key("identity", address)));
                 return saved == null ? null : new IdentityKey(saved);
             } catch (Exception e) { throw failure(e); }
         }
@@ -429,11 +462,20 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
      * Device-local display copies use different roots and are deliberately preserved.
      */
     public static void resetProtocolState(Context context) {
+        resetProtocolState(context, 0);
+    }
+
+    public static void resetProtocolState(Context context, int account) {
         synchronized (PROTOCOL_STATE_LOCK) {
             try {
-                new KeystoreEncryptedBlobStore(context.getApplicationContext()).deleteRoots(
-                        IDENTITY, REGISTRATION, "counter", "current", "prekey", "signed", "kyber", "index",
-                        "kyber-used", "session", "sender");
+                KeystoreEncryptedBlobStore store =
+                        new KeystoreEncryptedBlobStore(context.getApplicationContext());
+                store.deletePrefixes("account/" + account + "/");
+                if (account == 0) {
+                    store.deleteRoots(
+                            IDENTITY, REGISTRATION, "counter", "current", "prekey", "signed", "kyber", "index",
+                            "kyber-used", "session", "sender");
+                }
             } catch (Exception e) {
                 throw failure(e);
             }
@@ -441,14 +483,30 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     }
 
     static boolean hasRemoteProtocolState(Context context) {
+        return hasRemoteProtocolState(context, 0);
+    }
+
+    static boolean hasRemoteProtocolState(Context context, int account) {
         synchronized (PROTOCOL_STATE_LOCK) {
+            String p = "account/" + account + "/";
             return new KeystoreEncryptedBlobStore(context.getApplicationContext())
-                    .hasNameStartingWith("identity/", "session/", "sender/", "kyber-used/");
+                    .hasNameStartingWith(
+                            p + "identity/", p + "session/", p + "sender/", p + "kyber-used/",
+                            "identity/", "session/", "sender/", "kyber-used/");
         }
     }
 
     static void replaceIdentityForRecovery(
             Context context,
+            byte[] serializedIdentity,
+            int registrationId,
+            Map<String, byte[]> transactionRecords) {
+        replaceIdentityForRecovery(context, 0, serializedIdentity, registrationId, transactionRecords);
+    }
+
+    static void replaceIdentityForRecovery(
+            Context context,
+            int account,
             byte[] serializedIdentity,
             int registrationId,
             Map<String, byte[]> transactionRecords) {
@@ -458,32 +516,37 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
                 if (registrationId <= 0 || registrationId > 16_380) {
                     throw new IllegalArgumentException("invalid recovered registration id");
                 }
+                String p = "account/" + account + "/";
                 Map<String, byte[]> replacements = new LinkedHashMap<>();
-                replacements.put(IDENTITY, restored.serialize());
+                replacements.put(p + IDENTITY, restored.serialize());
                 replacements.put(
-                        REGISTRATION,
+                        p + REGISTRATION,
                         ByteBuffer.allocate(4).putInt(registrationId).array());
                 if (transactionRecords != null) {
                     if (transactionRecords.containsKey(IDENTITY)
-                            || transactionRecords.containsKey(REGISTRATION)) {
+                            || transactionRecords.containsKey(REGISTRATION)
+                            || transactionRecords.containsKey(p + IDENTITY)
+                            || transactionRecords.containsKey(p + REGISTRATION)) {
                         throw new IllegalArgumentException(
                                 "recovery transaction cannot override local identity records");
                     }
-                    replacements.putAll(transactionRecords);
+                    for (Map.Entry<String, byte[]> entry : transactionRecords.entrySet()) {
+                        String key = entry.getKey();
+                        if (!key.startsWith("account/")) {
+                            key = p + key;
+                        }
+                        replacements.put(key, entry.getValue());
+                    }
                 }
-                new KeystoreEncryptedBlobStore(context.getApplicationContext()).replaceRoots(
-                        replacements,
-                        IDENTITY,
-                        REGISTRATION,
-                        "counter",
-                        "current",
-                        "prekey",
-                        "signed",
-                        "kyber",
-                        "index",
-                        "kyber-used",
-                        "session",
-                        "sender");
+                KeystoreEncryptedBlobStore store =
+                        new KeystoreEncryptedBlobStore(context.getApplicationContext());
+                store.deletePrefixes(p);
+                if (account == 0) {
+                    store.deleteRoots(
+                            IDENTITY, REGISTRATION, "counter", "current", "prekey", "signed", "kyber", "index",
+                            "kyber-used", "session", "sender");
+                }
+                store.putAll(replacements);
             } catch (Exception error) {
                 throw failure(error);
             }
@@ -494,7 +557,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
         synchronized (PROTOCOL_STATE_LOCK) {
             requireDevice(address);
             try {
-                byte[] saved = blobs.get(key("session", address));
+                byte[] saved = blobs.get(k(key("session", address)));
                 return saved == null ? new SessionRecord() : new SessionRecord(saved);
             } catch (Exception e) { throw failure(e); }
         }
@@ -623,7 +686,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
     }
     @Override public SenderKeyRecord loadSenderKey(SignalProtocolAddress sender, UUID distribution) {
         synchronized (PROTOCOL_STATE_LOCK) {
-            try { byte[] b = blobs.get(key("sender/" + distribution, sender)); return b == null ? null : new SenderKeyRecord(b); }
+            try { byte[] b = blobs.get(k(key("sender/" + distribution, sender))); return b == null ? null : new SenderKeyRecord(b); }
             catch (Exception e) { throw failure(e); }
         }
     }
@@ -633,13 +696,13 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
         }
     }
 
-    private boolean has(String name) { try { return blobs.get(name) != null; } catch (Exception e) { throw failure(e); } }
-    private byte[] get(String kind, int id) { try { return blobs.get(kind + "/" + id); } catch (Exception e) { throw failure(e); } }
-    private void put(String name, byte[] data) { try { blobs.put(name, data); } catch (Exception e) { throw failure(e); } }
-    private void remove(String name) { try { blobs.delete(name); } catch (Exception e) { throw failure(e); } }
+    private boolean has(String name) { try { return blobs.get(k(name)) != null; } catch (Exception e) { throw failure(e); } }
+    private byte[] get(String kind, int id) { try { return blobs.get(k(kind + "/" + id)); } catch (Exception e) { throw failure(e); } }
+    private void put(String name, byte[] data) { try { blobs.put(k(name), data); } catch (Exception e) { throw failure(e); } }
+    private void remove(String name) { try { blobs.delete(k(name)); } catch (Exception e) { throw failure(e); } }
     private void putIndexed(String kind, int id, byte[] data) { put(kind + "/" + id, data); List<Integer> ids = index(kind); if (!ids.contains(id)) { ids.add(id); saveIndex(kind, ids); } }
     private void removeIndexed(String kind, int id) { remove(kind + "/" + id); List<Integer> ids = index(kind); ids.remove((Integer) id); saveIndex(kind, ids); }
-    private List<Integer> index(String kind) { try { byte[] b = blobs.get("index/" + kind); if (b == null) return new ArrayList<>(); String s = new String(b, StandardCharsets.US_ASCII); List<Integer> r = new ArrayList<>(); for (String p : s.split(",")) if (!p.isEmpty()) r.add(Integer.parseInt(p)); return r; } catch (Exception e) { throw failure(e); } }
+    private List<Integer> index(String kind) { try { byte[] b = blobs.get(k("index/" + kind)); if (b == null) return new ArrayList<>(); String s = new String(b, StandardCharsets.US_ASCII); List<Integer> r = new ArrayList<>(); for (String p : s.split(",")) if (!p.isEmpty()) r.add(Integer.parseInt(p)); return r; } catch (Exception e) { throw failure(e); } }
     private void saveIndex(String kind, List<Integer> ids) { StringBuilder b = new StringBuilder(); for (int id : ids) { if (b.length() > 0) b.append(','); b.append(id); } put("index/" + kind, b.toString().getBytes(StandardCharsets.US_ASCII)); }
     @SuppressWarnings("unchecked") private <T> List<T> records(String kind, Class<T> type) { try { List<T> out = new ArrayList<>(); for (int id : index(kind)) { byte[] b = get(kind, id); if (b == null) continue; if (type == SignedPreKeyRecord.class) out.add((T) new SignedPreKeyRecord(b)); else out.add((T) new KyberPreKeyRecord(b)); } return out; } catch (Exception e) { throw failure(e); } }
     private static void requireDevice(SignalProtocolAddress address) { if (address.getDeviceId() != ONLY_DEVICE_ID) throw new IllegalArgumentException("only one secure device is supported"); }

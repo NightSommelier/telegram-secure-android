@@ -67,17 +67,27 @@ public final class SecureRecoveryGenerationStore {
 
     private final KeystoreEncryptedBlobStore blobs;
     private final String root;
+    private final int account;
 
     public SecureRecoveryGenerationStore(Context context) {
-        this(context, DEFAULT_ROOT);
+        this(context, 0);
+    }
+
+    public SecureRecoveryGenerationStore(Context context, int account) {
+        this(context, DEFAULT_ROOT, account);
     }
 
     SecureRecoveryGenerationStore(Context context, String root) {
-        if (context == null || root == null || root.isEmpty() || root.length() > 80) {
+        this(context, root, 0);
+    }
+
+    SecureRecoveryGenerationStore(Context context, String root, int account) {
+        if (context == null || root == null || root.isEmpty() || root.length() > 80 || account < 0) {
             throw new IllegalArgumentException("invalid recovery store");
         }
         blobs = new KeystoreEncryptedBlobStore(context.getApplicationContext());
         this.root = root;
+        this.account = account;
     }
 
     /**
@@ -87,7 +97,7 @@ public final class SecureRecoveryGenerationStore {
     public Record ensureLocalIdentity(long minimumGeneration) {
         requireGeneration(minimumGeneration);
         synchronized (LOCK) {
-            Record current = read(localName());
+            Record current = readLocal();
             if (current != null && current.generation >= minimumGeneration) {
                 return current;
             }
@@ -103,7 +113,7 @@ public final class SecureRecoveryGenerationStore {
     public Record advanceLocalIdentity(long minimumGeneration) {
         requireGeneration(minimumGeneration);
         synchronized (LOCK) {
-            Record current = read(localName());
+            Record current = readLocal();
             long nextGeneration = minimumGeneration;
             if (current != null) {
                 if (current.generation == Long.MAX_VALUE) {
@@ -119,7 +129,7 @@ public final class SecureRecoveryGenerationStore {
 
     public Record getLocalIdentity() {
         synchronized (LOCK) {
-            return read(localName());
+            return readLocal();
         }
     }
 
@@ -265,8 +275,19 @@ public final class SecureRecoveryGenerationStore {
         }
     }
 
+    private Record readLocal() {
+        Record current = read(localName());
+        if (current == null && account == 0) {
+            current = read(root + '/' + LOCAL);
+            if (current != null) {
+                write(localName(), current);
+            }
+        }
+        return current;
+    }
+
     private String localName() {
-        return root + '/' + LOCAL;
+        return root + "/account/" + account + '/' + LOCAL;
     }
 
     private String peerName(int account, long peerUserId) {

@@ -174,12 +174,22 @@ public final class SecureChatState {
     }
 
     public long getIdentityEpoch() {
-        return preferences.getLong(IDENTITY_EPOCH, 0);
+        return getIdentityEpoch(0);
+    }
+
+    public long getIdentityEpoch(int account) {
+        return preferences.getLong(IDENTITY_EPOCH + "." + account,
+                account == 0 ? preferences.getLong(IDENTITY_EPOCH, 0L) : 0L);
     }
 
     public boolean hasAnySecureConversationState() {
+        return hasAnySecureConversationState(0);
+    }
+
+    public boolean hasAnySecureConversationState(int account) {
+        String accountSuffix = "." + account + ".";
         for (String name : preferences.getAll().keySet()) {
-            if (!IDENTITY_EPOCH.equals(name)) {
+            if (name.contains(accountSuffix)) {
                 return true;
             }
         }
@@ -247,8 +257,17 @@ public final class SecureChatState {
         if (account < 0 || generation <= 0 || peers == null) {
             throw new IllegalArgumentException("invalid secure history chat state");
         }
-        SharedPreferences.Editor editor = preferences.edit().clear()
-                .putLong(IDENTITY_EPOCH, generation - 1);
+        SharedPreferences.Editor editor = preferences.edit();
+        String accountSuffix = "." + account + ".";
+        for (String key : preferences.getAll().keySet()) {
+            if (key.contains(accountSuffix)) {
+                editor.remove(key);
+            }
+        }
+        editor.putLong(IDENTITY_EPOCH + "." + account, generation - 1);
+        if (account == 0) {
+            editor.putLong(IDENTITY_EPOCH, generation - 1);
+        }
         boolean hasPrevious = false;
         long previousPeer = 0;
         for (SecureHistoryBackupCodec.PeerRecord peer : peers) {
@@ -387,18 +406,48 @@ public final class SecureChatState {
     }
 
     public void resetForNewIdentity() {
-        long nextEpoch = getIdentityEpoch() + 1;
-        if (!preferences.edit().clear().putLong(IDENTITY_EPOCH, nextEpoch).commit()) {
+        resetForNewIdentity(0);
+    }
+
+    public void resetForNewIdentity(int account) {
+        long nextEpoch = getIdentityEpoch(account) + 1;
+        SharedPreferences.Editor editor = preferences.edit();
+        String accountSuffix = "." + account + ".";
+        for (String key : preferences.getAll().keySet()) {
+            if (key.contains(accountSuffix)) {
+                editor.remove(key);
+            }
+        }
+        editor.putLong(IDENTITY_EPOCH + "." + account, nextEpoch);
+        if (account == 0) {
+            editor.putLong(IDENTITY_EPOCH, nextEpoch);
+        }
+        if (!editor.commit()) {
             throw new IllegalStateException("failed to reset secure chat states");
         }
     }
 
     void resetForRecoveredIdentity(long generation) {
+        resetForRecoveredIdentity(0, generation);
+    }
+
+    void resetForRecoveredIdentity(int account, long generation) {
         if (generation <= 0) {
             throw new IllegalArgumentException("recovered generation must be positive");
         }
         long epoch = generation - 1;
-        if (!preferences.edit().clear().putLong(IDENTITY_EPOCH, epoch).commit()) {
+        SharedPreferences.Editor editor = preferences.edit();
+        String accountSuffix = "." + account + ".";
+        for (String key : preferences.getAll().keySet()) {
+            if (key.contains(accountSuffix)) {
+                editor.remove(key);
+            }
+        }
+        editor.putLong(IDENTITY_EPOCH + "." + account, epoch);
+        if (account == 0) {
+            editor.putLong(IDENTITY_EPOCH, epoch);
+        }
+        if (!editor.commit()) {
             throw new IllegalStateException("failed to reset recovered secure chat states");
         }
     }

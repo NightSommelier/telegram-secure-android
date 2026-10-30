@@ -23979,7 +23979,7 @@ public class ChatActivity extends BaseFragment implements
                 .setPositiveButton(getString(R.string.ForkSecureResetAndCreate), (di, which) -> {
                     try {
                         String newFingerprint =
-                                SecureChatEngine.resetOwnIdentity(getContext());
+                                SecureChatEngine.resetOwnIdentity(getContext(), currentAccount);
                         secureChatEngine = null;
                         boolean sent = chatActivityEnterView != null
                                 && chatActivityEnterView.processSendingText(

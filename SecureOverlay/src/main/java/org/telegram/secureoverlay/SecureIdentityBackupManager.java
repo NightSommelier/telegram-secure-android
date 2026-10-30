@@ -67,6 +67,10 @@ public final class SecureIdentityBackupManager {
     }
 
     public static IdentityInfo getIdentityInfo(Context context) {
+        return getIdentityInfo(context, 0);
+    }
+
+    public static IdentityInfo getIdentityInfo(Context context, int account) {
         if (context == null) {
             throw new IllegalArgumentException("context is required");
         }
@@ -75,9 +79,9 @@ public final class SecureIdentityBackupManager {
             resumeInterruptedImport(appContext);
             SecureChatState chatState = new SecureChatState(appContext);
             SecureRecoveryGenerationStore.Record recovery =
-                    new SecureRecoveryGenerationStore(appContext).ensureLocalIdentity(
-                            generationForEpoch(chatState.getIdentityEpoch()));
-            byte[] serializedIdentity = new KeystoreSignalProtocolStore(appContext)
+                    new SecureRecoveryGenerationStore(appContext, account).ensureLocalIdentity(
+                            generationForEpoch(chatState.getIdentityEpoch(account)));
+            byte[] serializedIdentity = new KeystoreSignalProtocolStore(appContext, account)
                     .getIdentityKeyPair()
                     .serialize();
             try {
@@ -91,6 +95,11 @@ public final class SecureIdentityBackupManager {
 
     public static byte[] exportArchive(
             Context context, long ownerUserId, char[] password) {
+        return exportArchive(context, 0, ownerUserId, password);
+    }
+
+    public static byte[] exportArchive(
+            Context context, int account, long ownerUserId, char[] password) {
         if (context == null || ownerUserId <= 0) {
             throw new IllegalArgumentException("backup export requires a Telegram owner");
         }
@@ -100,11 +109,11 @@ public final class SecureIdentityBackupManager {
             ensureNoPreparedImport(appContext);
             SecureChatState chatState = new SecureChatState(appContext);
             SecureRecoveryGenerationStore recovery =
-                    new SecureRecoveryGenerationStore(appContext);
+                    new SecureRecoveryGenerationStore(appContext, account);
             SecureRecoveryGenerationStore.Record local = recovery.ensureLocalIdentity(
-                    generationForEpoch(chatState.getIdentityEpoch()));
+                    generationForEpoch(chatState.getIdentityEpoch(account)));
             KeystoreSignalProtocolStore protocol =
-                    new KeystoreSignalProtocolStore(appContext);
+                    new KeystoreSignalProtocolStore(appContext, account);
             SecureIdentityBackupCodec.Payload payload =
                     new SecureIdentityBackupCodec.Payload(
                             nonZeroUuid(),
@@ -201,6 +210,10 @@ public final class SecureIdentityBackupManager {
     }
 
     public static PreparedImport commitPreparedImport(Context context) {
+        return commitPreparedImport(context, 0);
+    }
+
+    public static PreparedImport commitPreparedImport(Context context, int account) {
         if (context == null) {
             throw new IllegalArgumentException("context is required");
         }
@@ -208,15 +221,16 @@ public final class SecureIdentityBackupManager {
         synchronized (LOCK) {
             ImportStage stage = requireStage(appContext, PREPARED);
             boolean replacedExistingState = hasExistingSecureState(
-                    appContext, new SecureChatState(appContext));
+                    appContext, new SecureChatState(appContext), account);
             Map<String, byte[]> transaction = new LinkedHashMap<>();
             transaction.put(MARKER, marker(COMMITTING));
             KeystoreSignalProtocolStore.replaceIdentityForRecovery(
                     appContext,
+                    account,
                     stage.payload.serializedIdentity,
                     stage.payload.registrationId,
                     transaction);
-            completeCommittingImport(appContext, stage);
+            completeCommittingImport(appContext, account, stage);
             return new PreparedImport(
                     stage.payload, stage.recovery, replacedExistingState);
         }
@@ -237,18 +251,18 @@ public final class SecureIdentityBackupManager {
                 return false;
             }
             ImportStage stage = requireStage(appContext, COMMITTING);
-            completeCommittingImport(appContext, stage);
+            completeCommittingImport(appContext, 0, stage);
             return true;
         }
     }
 
     private static void completeCommittingImport(
-            Context context, ImportStage stage) {
+            Context context, int account, ImportStage stage) {
         new SecureChatState(context)
-                .resetForRecoveredIdentity(stage.recovery.generation);
-        new SecureRecoveryGenerationStore(context)
+                .resetForRecoveredIdentity(account, stage.recovery.generation);
+        new SecureRecoveryGenerationStore(context, account)
                 .replaceLocalAfterRecovery(stage.recovery);
-        new KeystoreSignalProtocolStore(context).ensureLocalPreKeyMaterial();
+        new KeystoreSignalProtocolStore(context, account).ensureLocalPreKeyMaterial();
         SecureChatEngine.clearFailedDecryptCache();
         try {
             new KeystoreEncryptedBlobStore(context).deleteAll(MARKER, STAGED);
@@ -265,8 +279,13 @@ public final class SecureIdentityBackupManager {
 
     private static boolean hasExistingSecureState(
             Context context, SecureChatState chatState) {
-        return chatState.hasAnySecureConversationState()
-                || KeystoreSignalProtocolStore.hasRemoteProtocolState(context);
+        return hasExistingSecureState(context, chatState, 0);
+    }
+
+    private static boolean hasExistingSecureState(
+            Context context, SecureChatState chatState, int account) {
+        return chatState.hasAnySecureConversationState(account)
+                || KeystoreSignalProtocolStore.hasRemoteProtocolState(context, account);
     }
 
     private static ImportStage requireStage(Context context, byte expectedPhase) {

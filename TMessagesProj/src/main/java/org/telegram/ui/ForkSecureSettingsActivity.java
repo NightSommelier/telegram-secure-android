@@ -441,7 +441,7 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
         }
         try {
             SecureIdentityBackupManager.IdentityInfo identity =
-                    SecureIdentityBackupManager.getIdentityInfo(context);
+                    SecureIdentityBackupManager.getIdentityInfo(context, currentAccount);
             fingerprintCell.setValue(identity.fingerprint);
             generationCell.setTextAndValue(
                     getString(R.string.ForkSecureRecoveryGeneration),
@@ -579,7 +579,7 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                 RuntimeException failure = null;
                 try {
                     archive = SecureIdentityBackupManager.exportArchive(
-                            context, ownerUserId, password);
+                            context, currentAccount, ownerUserId, password);
                 } catch (RuntimeException error) {
                     failure = error;
                 } finally {
@@ -1179,7 +1179,7 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             SecureIdentityBackupManager.PreparedImport restored = null;
             RuntimeException failure = null;
             try {
-                restored = SecureIdentityBackupManager.commitPreparedImport(context);
+                restored = SecureIdentityBackupManager.commitPreparedImport(context, currentAccount);
             } catch (RuntimeException error) {
                 failure = error;
             }
@@ -1299,7 +1299,7 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             return;
         }
         try {
-            String fingerprint = SecureChatEngine.resetOwnIdentity(context);
+            String fingerprint = SecureChatEngine.resetOwnIdentity(context, currentAccount);
             DialogCell.clearForkSecurePreviewCache();
             getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
             refreshState();
