@@ -59,18 +59,37 @@ public final class SecureLocalMessageCache {
             return false;
         }
         String hex = hex(carrierDigest);
-        String outgoingText = SecureLocalTextStore.OUTGOING_PREFIX + account + '.' + peerUserId + '.' + hex;
-        String incomingText = SecureLocalTextStore.INCOMING_PREFIX + account + '.' + peerUserId + '.' + hex;
-        String outgoingContent = SecureLocalContentStore.OUTGOING_PREFIX + account + '.' + peerUserId + '.' + hex;
-        String incomingContent = SecureLocalContentStore.INCOMING_PREFIX + account + '.' + peerUserId + '.' + hex;
+        String outgoingText = SecureLocalTextStore.keyByDigest(
+                SecureLocalTextStore.OUTGOING_PREFIX, account, peerUserId, hex);
+        String incomingText = SecureLocalTextStore.keyByDigest(
+                SecureLocalTextStore.INCOMING_PREFIX, account, peerUserId, hex);
+        String outgoingContent = SecureLocalContentStore.keyByDigest(
+                SecureLocalContentStore.OUTGOING_PREFIX, account, peerUserId, hex);
+        String incomingContent = SecureLocalContentStore.keyByDigest(
+                SecureLocalContentStore.INCOMING_PREFIX, account, peerUserId, hex);
+
+        String legacyOutgoingText = SecureLocalTextStore.legacyKeyByDigest(
+                SecureLocalTextStore.OUTGOING_PREFIX, account, peerUserId, hex);
+        String legacyIncomingText = SecureLocalTextStore.legacyKeyByDigest(
+                SecureLocalTextStore.INCOMING_PREFIX, account, peerUserId, hex);
+        String legacyOutgoingContent = SecureLocalContentStore.legacyKeyByDigest(
+                SecureLocalContentStore.OUTGOING_PREFIX, account, peerUserId, hex);
+        String legacyIncomingContent = SecureLocalContentStore.legacyKeyByDigest(
+                SecureLocalContentStore.INCOMING_PREFIX, account, peerUserId, hex);
+
         blobs.deleteAll(
                 outgoingText,
                 incomingText,
                 outgoingContent,
-                incomingContent);
+                incomingContent,
+                legacyOutgoingText,
+                legacyIncomingText,
+                legacyOutgoingContent,
+                legacyIncomingContent);
         new SecureMediaIndex(context, account, peerUserId)
                 .forgetByDigest(carrierDigest);
-        SecureLocalTextStore.evictDisplayCopies(outgoingText, incomingText);
+        SecureLocalTextStore.evictDisplayCopies(
+                outgoingText, incomingText, legacyOutgoingText, legacyIncomingText);
         return true;
     }
 
@@ -86,19 +105,33 @@ public final class SecureLocalMessageCache {
     /** Removes all local message copies for this account and peer, but preserves protocol state. */
     public void forgetPeer()
             throws KeystoreEncryptedBlobStore.StateStoreException {
-        String outgoingText = scopedPrefix(SecureLocalTextStore.OUTGOING_PREFIX);
-        String incomingText = scopedPrefix(SecureLocalTextStore.INCOMING_PREFIX);
+        byte[] maskKey = SecureNameMask.getOrGenerateKey(blobs);
+        String peerMask = SecureNameMask.maskPeer(maskKey, account, peerUserId);
+        String outgoingText = scopedPrefix(SecureLocalTextStore.OUTGOING_PREFIX, peerMask);
+        String incomingText = scopedPrefix(SecureLocalTextStore.INCOMING_PREFIX, peerMask);
+        String legacyOutgoingText = legacyScopedPrefix(SecureLocalTextStore.OUTGOING_PREFIX);
+        String legacyIncomingText = legacyScopedPrefix(SecureLocalTextStore.INCOMING_PREFIX);
+
         blobs.deletePrefixes(
                 outgoingText,
                 incomingText,
-                scopedPrefix(SecureLocalContentStore.OUTGOING_PREFIX),
-                scopedPrefix(SecureLocalContentStore.INCOMING_PREFIX));
+                scopedPrefix(SecureLocalContentStore.OUTGOING_PREFIX, peerMask),
+                scopedPrefix(SecureLocalContentStore.INCOMING_PREFIX, peerMask),
+                legacyOutgoingText,
+                legacyIncomingText,
+                legacyScopedPrefix(SecureLocalContentStore.OUTGOING_PREFIX),
+                legacyScopedPrefix(SecureLocalContentStore.INCOMING_PREFIX));
         new SecureMediaIndex(context, account, peerUserId)
                 .forgetPeer();
-        SecureLocalTextStore.evictDisplayPrefixes(outgoingText, incomingText);
+        SecureLocalTextStore.evictDisplayPrefixes(
+                outgoingText, incomingText, legacyOutgoingText, legacyIncomingText);
     }
 
-    private String scopedPrefix(String recordPrefix) {
+    private String scopedPrefix(String recordPrefix, String peerMask) {
+        return recordPrefix + account + '.' + peerMask + '.';
+    }
+
+    private String legacyScopedPrefix(String recordPrefix) {
         return recordPrefix + account + '.' + peerUserId + '.';
     }
 }

@@ -75,6 +75,20 @@ public final class SecureAccountIsolationJvmTest {
             return false;
         }
 
+        @Override
+        public synchronized Map<String, byte[]> snapshotPrefixes(String... prefixes) {
+            Map<String, byte[]> result = new LinkedHashMap<>();
+            for (Map.Entry<String, byte[]> entry : map.entrySet()) {
+                for (String p : prefixes) {
+                    if (entry.getKey().startsWith(p)) {
+                        result.put(entry.getKey(), entry.getValue() != null ? entry.getValue().clone() : null);
+                        break;
+                    }
+                }
+            }
+            return result;
+        }
+
         public synchronized void deletePrefixes(String... prefixes) {
             List<String> toRemove = new ArrayList<>();
             for (String k : map.keySet()) {

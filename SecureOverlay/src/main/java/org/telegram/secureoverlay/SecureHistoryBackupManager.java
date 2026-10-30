@@ -174,7 +174,11 @@ public final class SecureHistoryBackupManager {
             }
             for (SecureHistoryBackupCodec.CacheRecord record : payload.cacheRecords) {
                 if (record.kind != SecureHistoryBackupCodec.KIND_SAVED_MESSAGES_KEY) {
-                    replacements.put(historyName(targetAccount, record), record.value);
+                    byte[] encoded = (record.kind == SecureHistoryBackupCodec.KIND_OUTGOING_CONTENT
+                            || record.kind == SecureHistoryBackupCodec.KIND_INCOMING_CONTENT)
+                            ? SecureLocalContentStore.encodeRecord(record.peerUserId, record.carrierDigest, record.value)
+                            : SecureLocalTextStore.encodeRecord(record.peerUserId, record.carrierDigest, record.value);
+                    replacements.put(historyName(targetAccount, record), encoded);
                 }
             }
             int restoredMessages = 0;
@@ -313,22 +317,38 @@ public final class SecureHistoryBackupManager {
                 throw new IllegalStateException(
                         "unexpected secure history record");
             }
-            String suffix = entry.getKey().substring(scopedPrefix.length());
-            int separator = suffix.indexOf('.');
-            if (separator <= 0 || separator == suffix.length() - 1) {
-                throw new IllegalStateException(
-                        "invalid secure history record name");
-            }
+            byte[] value = entry.getValue();
             long peerUserId;
-            try {
-                peerUserId = Long.parseLong(suffix.substring(0, separator));
-            } catch (NumberFormatException error) {
-                throw new IllegalStateException(
-                        "invalid secure history peer", error);
+            byte[] digest;
+            byte[] payload;
+            if (SecureLocalTextStore.isEncodedRecord(value)) {
+                SecureLocalTextStore.RecordHeader header = SecureLocalTextStore.decodeHeader(value);
+                peerUserId = header.peerUserId;
+                digest = header.carrierDigest;
+                payload = header.payload;
+            } else if (SecureLocalContentStore.isEncodedRecord(value)) {
+                SecureLocalTextStore.RecordHeader header = SecureLocalTextStore.decodeHeader(value);
+                peerUserId = header.peerUserId;
+                digest = header.carrierDigest;
+                payload = header.payload;
+            } else {
+                String suffix = entry.getKey().substring(scopedPrefix.length());
+                int separator = suffix.indexOf('.');
+                if (separator <= 0 || separator == suffix.length() - 1) {
+                    throw new IllegalStateException(
+                            "invalid secure history record name");
+                }
+                try {
+                    peerUserId = Long.parseLong(suffix.substring(0, separator));
+                } catch (NumberFormatException error) {
+                    throw new IllegalStateException(
+                            "invalid secure history peer", error);
+                }
+                digest = decodeHex(suffix.substring(separator + 1));
+                payload = value;
             }
-            byte[] digest = decodeHex(suffix.substring(separator + 1));
             records.add(new SecureHistoryBackupCodec.CacheRecord(
-                    kind, peerUserId, digest, entry.getValue()));
+                    kind, peerUserId, digest, payload));
         }
         return records;
     }
@@ -356,12 +376,11 @@ public final class SecureHistoryBackupManager {
 
     private static String historyName(
             int account, SecureHistoryBackupCodec.CacheRecord record) {
-        return HISTORY_PREFIXES[record.kind - 1]
-                + account
-                + '.'
-                + record.peerUserId
-                + '.'
-                + hex(record.carrierDigest);
+        return SecureLocalTextStore.keyByDigest(
+                HISTORY_PREFIXES[record.kind - 1],
+                account,
+                record.peerUserId,
+                hex(record.carrierDigest));
     }
 
     private static boolean hasLocalHistory(KeystoreEncryptedBlobStore blobs) {

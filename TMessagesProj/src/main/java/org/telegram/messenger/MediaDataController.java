@@ -4191,58 +4191,23 @@ public class MediaDataController extends BaseController {
      * changes.
      */
     public void indexForkSecureMedia(TLRPC.Message message, int type) {
-        if (message == null || message.id == 0
-                || type < MEDIA_PHOTOVIDEO || type >= MEDIA_TYPES_COUNT) {
-            throw new IllegalArgumentException("invalid Fork-Secure media index request");
-        }
-        long dialogId = MessageObject.getDialogId(message);
-        NativeByteBuffer data;
-        try {
-            data = new NativeByteBuffer(message.getObjectSize());
-            message.serializeToStream(data);
-        } catch (Exception e) {
-            FileLog.e(e);
+        if (message == null || message.id == 0) {
             return;
         }
+        long dialogId = MessageObject.getDialogId(message);
         int messageId = message.id;
-        int date = message.date;
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
-            SQLitePreparedStatement state = null;
             try {
-                if (type == MEDIA_URL) {
-                    getMessagesStorage().getDatabase().executeFast(String.format(
-                            Locale.US,
-                            "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
-                            messageId,
-                            dialogId,
-                            MEDIA_URL)).stepThis().dispose();
-                } else {
-                    getMessagesStorage().getDatabase().executeFast(String.format(
-                            Locale.US,
-                            "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type != %d",
-                            messageId,
-                            dialogId,
-                            MEDIA_URL)).stepThis().dispose();
-                }
-                state = getMessagesStorage().getDatabase().executeFast(
-                        "REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
-                state.bindInteger(1, messageId);
-                state.bindLong(2, dialogId);
-                state.bindInteger(3, date);
-                state.bindInteger(4, type);
-                state.bindByteBuffer(5, data);
-                state.step();
+                getMessagesStorage().getDatabase().executeFast(String.format(
+                        Locale.US,
+                        "DELETE FROM media_v4 WHERE mid = %d AND uid = %d",
+                        messageId,
+                        dialogId)).stepThis().dispose();
             } catch (Exception e) {
                 FileLog.e(e);
-            } finally {
-                if (state != null) {
-                    state.dispose();
-                }
-                data.reuse();
             }
         });
     }
-
 
     public void loadMedia(long dialogId, int count, int max_id, int min_id, int type, long topicId, int fromCache, int classGuid, int requestIndex, ReactionsLayoutInBubble.VisibleReaction tag, String query) {
         boolean isChannel = DialogObject.isChatDialog(dialogId) && ChatObject.isChannel(-dialogId, currentAccount);
@@ -4551,141 +4516,37 @@ public class MediaDataController extends BaseController {
     }
 
     private void syncForkSecureMediaDatabase(SecureMediaIndex index, long dialogId) {
-        if (index == null || dialogId == 0) {
+        if (dialogId == 0) {
             return;
         }
-        Runnable syncTask = () -> {
+        Runnable cleanupTask = () -> {
             try {
-                java.util.HashSet<Integer> validFileIds = new java.util.HashSet<>();
-                for (SecureMediaIndex.Entry fileEntry : index.list(SecureMediaIndex.KIND_FILE)) {
-                    if (fileEntry.messageId > 0) {
-                        validFileIds.add(fileEntry.messageId);
-                    }
-                }
-                for (int kind = SecureMediaIndex.KIND_PHOTO; kind <= SecureMediaIndex.KIND_GIF; kind++) {
-                    int targetType = mediaTypeForSecureKind(kind);
-                    if (targetType == MEDIA_FILE) {
-                        continue;
-                    }
-                    List<SecureMediaIndex.Entry> entries = index.list(kind);
-                    for (SecureMediaIndex.Entry entry : entries) {
-                        if (entry.messageId > 0) {
-                            try {
-                                org.telegram.SQLite.SQLiteCursor check = getMessagesStorage().getDatabase().queryFinalized(String.format(
-                                        Locale.US,
-                                        "SELECT 1 FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
-                                        entry.messageId, dialogId, targetType));
-                                boolean alreadyHasTarget = check.next();
-                                check.dispose();
-                                if (alreadyHasTarget) {
-                                    getMessagesStorage().getDatabase().executeFast(String.format(
-                                            Locale.US,
-                                            "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
-                                            entry.messageId, dialogId, MEDIA_FILE)).stepThis().dispose();
-                                } else {
-                                    getMessagesStorage().getDatabase().executeFast(String.format(
-                                            Locale.US,
-                                            "UPDATE media_v4 SET type = %d WHERE mid = %d AND uid = %d AND type = %d",
-                                            targetType, entry.messageId, dialogId, MEDIA_FILE)).stepThis().dispose();
-                                }
-                            } catch (Throwable ignore) {
+                org.telegram.SQLite.SQLiteCursor fileCursor = getMessagesStorage().getDatabase().queryFinalized(String.format(
+                        Locale.US,
+                        "SELECT mid, data FROM media_v4 WHERE uid = %d",
+                        dialogId));
+                java.util.ArrayList<Integer> toDelete = new java.util.ArrayList<>();
+                while (fileCursor.next()) {
+                    int mid = fileCursor.intValue(0);
+                    NativeByteBuffer data = fileCursor.byteBufferValue(1);
+                    if (data != null) {
+                        try {
+                            TLRPC.Message msg = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                            if (msg != null && SecureCarrierCodec.isMarked(msg.message)) {
+                                toDelete.add(mid);
                             }
+                        } catch (Throwable ignore) {
+                        } finally {
+                            data.reuse();
                         }
                     }
                 }
-                try {
-                    org.telegram.SQLite.SQLiteCursor fileCursor = getMessagesStorage().getDatabase().queryFinalized(String.format(
+                fileCursor.dispose();
+                for (int mid : toDelete) {
+                    getMessagesStorage().getDatabase().executeFast(String.format(
                             Locale.US,
-                            "SELECT mid, data FROM media_v4 WHERE uid = %d AND type = %d",
-                            dialogId, MEDIA_FILE));
-                    java.util.ArrayList<Integer> toDelete = new java.util.ArrayList<>();
-                    while (fileCursor.next()) {
-                        int mid = fileCursor.intValue(0);
-                        if (!validFileIds.contains(mid)) {
-                            NativeByteBuffer data = fileCursor.byteBufferValue(1);
-                            if (data != null) {
-                                try {
-                                    TLRPC.Message msg = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
-                                    if (msg != null && SecureCarrierCodec.isMarked(msg.message)) {
-                                        toDelete.add(mid);
-                                    }
-                                } catch (Throwable ignore) {
-                                } finally {
-                                    data.reuse();
-                                }
-                            }
-                        }
-                    }
-                    fileCursor.dispose();
-                    for (int mid : toDelete) {
-                        getMessagesStorage().getDatabase().executeFast(String.format(
-                                Locale.US,
-                                "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
-                                mid, dialogId, MEDIA_FILE)).stepThis().dispose();
-                    }
-                } catch (Throwable ignore) {
-                }
-                try {
-                    SecureChatEngine secureChat = new SecureChatEngine(
-                            ApplicationLoader.applicationContext,
-                            currentAccount,
-                            dialogId);
-                    org.telegram.SQLite.SQLiteCursor msgCursor = getMessagesStorage().getDatabase().queryFinalized(String.format(
-                            Locale.US,
-                            "SELECT mid, date, data FROM messages_v2 WHERE uid = %d AND (media = 0 OR media IS NULL)",
-                            dialogId));
-                    int syncedUrls = 0;
-                    while (msgCursor.next()) {
-                        int mid = msgCursor.intValue(0);
-                        int date = msgCursor.intValue(1);
-                        NativeByteBuffer data = msgCursor.byteBufferValue(2);
-                        if (data != null) {
-                            try {
-                                TLRPC.Message msg = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
-                                if (msg != null && SecureCarrierCodec.isMarked(msg.message)) {
-                                    org.telegram.SQLite.SQLiteCursor checkUrl = getMessagesStorage().getDatabase().queryFinalized(String.format(
-                                            Locale.US,
-                                            "SELECT 1 FROM media_v4 WHERE mid = %d AND uid = %d AND type = %d",
-                                            mid, dialogId, MEDIA_URL));
-                                    boolean alreadyHasUrl = checkUrl.next();
-                                    checkUrl.dispose();
-                                    if (!alreadyHasUrl) {
-                                        String text = null;
-                                        if (index != null) {
-                                            SecureMediaIndex.Entry entry = index.find(mid, msg.message);
-                                            if (entry != null && !TextUtils.isEmpty(entry.caption)) {
-                                                text = SecureContentCodec.displayCaption(entry.caption);
-                                            }
-                                        }
-                                        if (TextUtils.isEmpty(text)) {
-                                            text = msg.out
-                                                    ? secureChat.getOutgoingText(msg.message)
-                                                    : secureChat.getIncomingText(msg.message);
-                                        }
-                                        if (!TextUtils.isEmpty(text) && extractUrlEntities(text) != null) {
-                                            data.position(0);
-                                            SQLitePreparedStatement ins = getMessagesStorage().getDatabase().executeFast(
-                                                    "REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
-                                            ins.bindInteger(1, mid);
-                                            ins.bindLong(2, dialogId);
-                                            ins.bindInteger(3, date);
-                                            ins.bindInteger(4, MEDIA_URL);
-                                            ins.bindByteBuffer(5, data);
-                                            ins.step();
-                                            ins.dispose();
-                                            syncedUrls++;
-                                        }
-                                    }
-                                }
-                            } catch (Throwable ignore) {
-                            } finally {
-                                data.reuse();
-                            }
-                        }
-                    }
-                    msgCursor.dispose();
-                } catch (Throwable e) {
-                    FileLog.e(e);
+                            "DELETE FROM media_v4 WHERE mid = %d AND uid = %d",
+                            mid, dialogId)).stepThis().dispose();
                 }
             } catch (Throwable e) {
                 FileLog.e(e);
@@ -4693,12 +4554,12 @@ public class MediaDataController extends BaseController {
         };
         try {
             if (Thread.currentThread() == getMessagesStorage().getStorageQueue()) {
-                syncTask.run();
+                cleanupTask.run();
                 return;
             }
         } catch (Throwable ignore) {
         }
-        getMessagesStorage().getStorageQueue().postRunnable(syncTask);
+        getMessagesStorage().getStorageQueue().postRunnable(cleanupTask);
     }
 
     private static int mediaTypeForSecureKind(int kind) {
@@ -4712,6 +4573,25 @@ public class MediaDataController extends BaseController {
             return MEDIA_GIF;
         }
         return MEDIA_FILE;
+    }
+
+    private static int[] secureKindsForMediaType(int type) {
+        if (type == MEDIA_PHOTOVIDEO) {
+            return new int[]{SecureMediaIndex.KIND_PHOTO, SecureMediaIndex.KIND_VIDEO};
+        } else if (type == MEDIA_PHOTOS_ONLY) {
+            return new int[]{SecureMediaIndex.KIND_PHOTO};
+        } else if (type == MEDIA_VIDEOS_ONLY) {
+            return new int[]{SecureMediaIndex.KIND_VIDEO};
+        } else if (type == MEDIA_AUDIO) {
+            return new int[]{SecureMediaIndex.KIND_VOICE, SecureMediaIndex.KIND_ROUND_VIDEO};
+        } else if (type == MEDIA_MUSIC) {
+            return new int[]{SecureMediaIndex.KIND_MUSIC};
+        } else if (type == MEDIA_GIF) {
+            return new int[]{SecureMediaIndex.KIND_GIF};
+        } else if (type == MEDIA_FILE) {
+            return new int[]{SecureMediaIndex.KIND_FILE};
+        }
+        return new int[0];
     }
 
     public void getMediaCount(long dialogId, long topicId, int type, int classGuid, boolean fromCache) {
@@ -4874,6 +4754,9 @@ public class MediaDataController extends BaseController {
     }
 
     public static boolean canAddMessageToMedia(TLRPC.Message message) {
+        if (message == null || SecureCarrierCodec.isMarked(message.message)) {
+            return false;
+        }
         if (message instanceof TLRPC.TL_message_secret && (MessageObject.getMedia(message) instanceof TLRPC.TL_messageMediaPhoto || MessageObject.isVideoMessage(message) || MessageObject.isGifMessage(message)) && MessageObject.getMedia(message).ttl_seconds != 0 && MessageObject.getMedia(message).ttl_seconds <= 60) {
             return false;
         } else if (!(message instanceof TLRPC.TL_message_secret) && message instanceof TLRPC.TL_message && (MessageObject.getMedia(message) instanceof TLRPC.TL_messageMediaPhoto || MessageObject.getMedia(message) instanceof TLRPC.TL_messageMediaDocument) && MessageObject.getMedia(message).ttl_seconds != 0) {
@@ -5293,6 +5176,64 @@ public class MediaDataController extends BaseController {
                     }
                     cursor.dispose();
 
+                    if (topicId == 0 && (DialogObject.isUserDialog(uid) || DialogObject.isChatDialog(uid))) {
+                        try {
+                            SecureMediaIndex secureIndex = new SecureMediaIndex(
+                                    ApplicationLoader.applicationContext,
+                                    currentAccount,
+                                    uid);
+                            int[] matchingKinds = secureKindsForMediaType(type);
+                            if (matchingKinds.length > 0) {
+                                java.util.ArrayList<SecureMediaIndex.Entry> matchedEntries = new java.util.ArrayList<>();
+                                for (int k : matchingKinds) {
+                                    matchedEntries.addAll(secureIndex.list(k));
+                                }
+                                if (!matchedEntries.isEmpty()) {
+                                    matchedEntries.sort((a, b) -> Integer.compare(b.date, a.date));
+                                    java.util.ArrayList<Integer> midsToLoad = new java.util.ArrayList<>();
+                                    for (SecureMediaIndex.Entry entry : matchedEntries) {
+                                        if (entry.messageId <= 0) continue;
+                                        if (max_id != 0 && entry.messageId >= max_id) continue;
+                                        if (min_id != 0 && entry.messageId <= min_id) continue;
+                                        midsToLoad.add(entry.messageId);
+                                        if (midsToLoad.size() >= countToLoad) break;
+                                    }
+                                    if (!midsToLoad.isEmpty()) {
+                                        StringBuilder sb = new StringBuilder();
+                                        for (int i = 0; i < midsToLoad.size(); i++) {
+                                            if (i > 0) sb.append(',');
+                                            sb.append(midsToLoad.get(i));
+                                        }
+                                        org.telegram.SQLite.SQLiteCursor secureMsgCursor = database.queryFinalized(String.format(
+                                                Locale.US,
+                                                "SELECT data, mid FROM messages_v2 WHERE uid = %d AND mid IN (%s)",
+                                                uid, sb.toString()));
+                                        while (secureMsgCursor.next()) {
+                                            NativeByteBuffer data = secureMsgCursor.byteBufferValue(0);
+                                            if (data != null) {
+                                                try {
+                                                    TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                                                    message.readAttachPath(data, selfId);
+                                                    message.id = secureMsgCursor.intValue(1);
+                                                    message.dialog_id = uid;
+                                                    res.messages.add(message);
+                                                    MessagesStorage.addUsersAndChatsFromMessage(message, usersToLoad, chatsToLoad, null);
+                                                } catch (Throwable ignore) {
+                                                } finally {
+                                                    data.reuse();
+                                                }
+                                            }
+                                        }
+                                        secureMsgCursor.dispose();
+                                        res.messages.sort((m1, m2) -> Integer.compare(m2.id, m1.id));
+                                    }
+                                }
+                            }
+                        } catch (Throwable e) {
+                            FileLog.e(e);
+                        }
+                    }
+
                     if (tag != null && !groupsToLoad.isEmpty()) {
                         for (long grouped_id : groupsToLoad) {
                             int index = -1;
@@ -5373,36 +5314,9 @@ public class MediaDataController extends BaseController {
                 } else {
                     state2 = getMessagesStorage().getDatabase().executeFast("REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
                 }
-                SecureMediaIndex secureMediaIndex =
-                        topicId == 0 && (DialogObject.isUserDialog(uid) || DialogObject.isChatDialog(uid))
-                                ? new SecureMediaIndex(
-                                        ApplicationLoader.applicationContext,
-                                        currentAccount,
-                                        uid)
-                                : null;
 
                 for (TLRPC.Message message : messages) {
                     if (canAddMessageToMedia(message)) {
-                        int storedType = type;
-                        if (secureMediaIndex != null
-                                && SecureCarrierCodec.isMarked(message.message)) {
-                            SecureMediaIndex.Entry secureEntry =
-                                    secureMediaIndex.find(
-                                            message.id, message.message);
-                            if (secureEntry != null && type != MEDIA_URL) {
-                                storedType =
-                                        mediaTypeForSecureEntry(secureEntry);
-                                getMessagesStorage().getDatabase().executeFast(
-                                        String.format(
-                                                Locale.US,
-                                                "DELETE FROM media_v4 WHERE mid = %d AND uid = %d AND type != %d",
-                                                message.id,
-                                                uid,
-                                                MEDIA_URL))
-                                        .stepThis()
-                                        .dispose();
-                            }
-                        }
                         state2.requery();
                         MessageObject.normalizeFlags(message);
                         NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
@@ -5414,7 +5328,7 @@ public class MediaDataController extends BaseController {
                             state2.bindLong(pointer++, topicId);
                         }
                         state2.bindInteger(pointer++, message.date);
-                        state2.bindInteger(pointer++, storedType);
+                        state2.bindInteger(pointer++, type);
                         state2.bindByteBuffer(pointer++, data);
                         state2.step();
                         data.reuse();

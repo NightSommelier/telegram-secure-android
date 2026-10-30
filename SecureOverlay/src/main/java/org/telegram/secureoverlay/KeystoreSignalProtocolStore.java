@@ -59,6 +59,7 @@ public final class KeystoreSignalProtocolStore implements SignalProtocolStore {
         void deleteRoots(String... roots) throws Exception;
         void replaceRoots(Map<String, byte[]> replacements, String... roots) throws Exception;
         boolean hasNameStartingWith(String... prefixes);
+        Map<String, byte[]> snapshotPrefixes(String... prefixes) throws Exception;
     }
 
     public KeystoreSignalProtocolStore(Context context) {

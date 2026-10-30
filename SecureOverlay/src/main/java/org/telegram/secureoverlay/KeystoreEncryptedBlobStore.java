@@ -209,7 +209,7 @@ public final class KeystoreEncryptedBlobStore implements KeystoreSignalProtocolS
      * <p>Callers must use account-scoped prefixes and immediately place the result inside an
      * authenticated recovery archive.</p>
      */
-    synchronized Map<String, byte[]> snapshotPrefixes(String... prefixes)
+    public synchronized Map<String, byte[]> snapshotPrefixes(String... prefixes)
             throws StateStoreException {
         if (prefixes == null || prefixes.length == 0) {
             throw new IllegalArgumentException("secure snapshot prefixes are required");

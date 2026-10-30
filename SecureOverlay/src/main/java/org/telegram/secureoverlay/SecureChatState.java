@@ -2,14 +2,34 @@ package org.telegram.secureoverlay;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 
-/** Per-account, per-peer secure-mode gate. No message is encrypted unless paired. */
+/**
+ * Per-account, per-peer secure-mode gate. No message is encrypted unless paired.
+ *
+ * <p>State is Keystore-encrypted and record names are derived using HMAC-SHA256
+ * to protect peer IDs and pending carrier metadata at rest.</p>
+ */
 public final class SecureChatState {
     private static final String PREFS = "telegram_secure_chat_state_v1";
+    private static final String STATE_PREFIX = "chat-state.v1.";
+    private static final String EPOCH_PREFIX = "chat-epoch.v1.";
+    private static final byte MAGIC = (byte) 0xC5;
+    private static final byte FORMAT_VERSION = 1;
+
+    // Legacy SharedPreferences prefixes for migration
     private static final String PAIRED_PREFIX = "paired.";
     private static final String WAITING_PREFIX = "waiting.";
     private static final String PAUSED_PREFIX = "paused.";
@@ -21,7 +41,6 @@ public final class SecureChatState {
     private static final String LAST_READY_MESSAGE_PREFIX = "last-ready-message.";
     private static final String GROUP_KEY_NEEDS_DISTRIBUTION_PREFIX = "group-key-needs-dist.";
     private static final String IDENTITY_EPOCH = "identity-epoch";
-    private final SharedPreferences preferences;
 
     public static final class Summary {
         public final int paired;
@@ -52,10 +71,164 @@ public final class SecureChatState {
         PendingKind(int value) {
             this.value = value;
         }
+
+        public static PendingKind fromValue(int val) {
+            for (PendingKind k : values()) {
+                if (k.value == val) return k;
+            }
+            return NONE;
+        }
     }
 
+    static final int STATUS_NONE = 0;
+    static final int STATUS_PAIRED = 1;
+    static final int STATUS_WAITING = 2;
+    static final int STATUS_PAUSED = 3;
+    static final int STATUS_IDENTITY_PENDING = 4;
+
+    static final class PeerState {
+        final long peerUserId;
+        int status;
+        String pendingCarrier;
+        int pendingMessageId;
+        int pendingKind;
+        int lastPairingMessageId;
+        int lastReadyMessageId;
+        boolean groupKeyNeedsDist;
+
+        PeerState(long peerUserId) {
+            this.peerUserId = peerUserId;
+        }
+    }
+
+    private final KeystoreSignalProtocolStore.EncryptedStateStorage storage;
+    private final SharedPreferences legacyPreferences;
+    private final byte[] nameMaskKey;
+    private final Map<String, PeerState> peersCache = new ConcurrentHashMap<>();
+    private final Map<Integer, Long> epochCache = new ConcurrentHashMap<>();
+
     public SecureChatState(Context context) {
-        preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        this(new KeystoreEncryptedBlobStore(context.getApplicationContext()),
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE));
+    }
+
+    static SecureChatState forTest(KeystoreSignalProtocolStore.EncryptedStateStorage storage) {
+        return new SecureChatState(storage, null);
+    }
+
+    SecureChatState(KeystoreSignalProtocolStore.EncryptedStateStorage storage, SharedPreferences legacyPreferences) {
+        this.storage = storage;
+        this.legacyPreferences = legacyPreferences;
+        this.nameMaskKey = SecureNameMask.getOrGenerateKey(storage);
+        initAndMigrate();
+    }
+
+    private void initAndMigrate() {
+        try {
+            Map<String, byte[]> stateRecords = storage.snapshotPrefixes(STATE_PREFIX);
+            for (Map.Entry<String, byte[]> entry : stateRecords.entrySet()) {
+                PeerState p = decodePeerState(entry.getValue());
+                if (p != null) {
+                    int account = parseAccountFromKey(entry.getKey());
+                    peersCache.put(cacheKey(account, p.peerUserId), p);
+                }
+            }
+            Map<String, byte[]> epochRecords = storage.snapshotPrefixes(EPOCH_PREFIX);
+            for (Map.Entry<String, byte[]> entry : epochRecords.entrySet()) {
+                String suffix = entry.getKey().substring(EPOCH_PREFIX.length());
+                try {
+                    int account = Integer.parseInt(suffix);
+                    long epoch = ByteBuffer.wrap(entry.getValue()).getLong();
+                    epochCache.put(account, epoch);
+                } catch (Exception ignore) {
+                }
+            }
+        } catch (Exception ignore) {
+        }
+
+        if (legacyPreferences != null && !legacyPreferences.getAll().isEmpty()) {
+            migrateLegacyPreferences();
+        }
+    }
+
+    private void migrateLegacyPreferences() {
+        Map<String, ?> all = legacyPreferences.getAll();
+        Map<String, PeerState> migratedPeers = new LinkedHashMap<>();
+        Map<Integer, Long> migratedEpochs = new LinkedHashMap<>();
+
+        for (Map.Entry<String, ?> entry : all.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+
+            if (key.startsWith(IDENTITY_EPOCH)) {
+                if (key.equals(IDENTITY_EPOCH) && value instanceof Long) {
+                    migratedEpochs.putIfAbsent(0, (Long) value);
+                } else if (key.startsWith(IDENTITY_EPOCH + ".")) {
+                    try {
+                        int acc = Integer.parseInt(key.substring(IDENTITY_EPOCH.length() + 1));
+                        if (value instanceof Long) {
+                            migratedEpochs.put(acc, (Long) value);
+                        }
+                    } catch (NumberFormatException ignore) {
+                    }
+                }
+                continue;
+            }
+
+            int firstDot = key.indexOf('.');
+            if (firstDot <= 0) continue;
+            int secondDot = key.indexOf('.', firstDot + 1);
+            if (secondDot <= 0) continue;
+
+            String prefix = key.substring(0, firstDot + 1);
+            int account;
+            long peerId;
+            try {
+                account = Integer.parseInt(key.substring(firstDot + 1, secondDot));
+                peerId = Long.parseLong(key.substring(secondDot + 1));
+            } catch (NumberFormatException ignore) {
+                continue;
+            }
+
+            String ck = cacheKey(account, peerId);
+            PeerState p = migratedPeers.computeIfAbsent(ck, k -> {
+                PeerState existing = peersCache.get(k);
+                return existing != null ? existing : new PeerState(peerId);
+            });
+
+            if (prefix.equals(PAIRED_PREFIX) && Boolean.TRUE.equals(value)) {
+                p.status = STATUS_PAIRED;
+            } else if (prefix.equals(WAITING_PREFIX) && Boolean.TRUE.equals(value)) {
+                p.status = STATUS_WAITING;
+            } else if (prefix.equals(PAUSED_PREFIX) && Boolean.TRUE.equals(value)) {
+                p.status = STATUS_PAUSED;
+            } else if (prefix.equals(IDENTITY_PENDING_PREFIX) && Boolean.TRUE.equals(value)) {
+                p.status = STATUS_IDENTITY_PENDING;
+            } else if (prefix.equals(PENDING_CARRIER_PREFIX) && value instanceof String) {
+                p.pendingCarrier = (String) value;
+            } else if (prefix.equals(PENDING_MESSAGE_PREFIX) && value instanceof Integer) {
+                p.pendingMessageId = (Integer) value;
+            } else if (prefix.equals(PENDING_KIND_PREFIX) && value instanceof Integer) {
+                p.pendingKind = (Integer) value;
+            } else if (prefix.equals(LAST_PAIRING_MESSAGE_PREFIX) && value instanceof Integer) {
+                p.lastPairingMessageId = (Integer) value;
+            } else if (prefix.equals(LAST_READY_MESSAGE_PREFIX) && value instanceof Integer) {
+                p.lastReadyMessageId = (Integer) value;
+            } else if (prefix.equals(GROUP_KEY_NEEDS_DISTRIBUTION_PREFIX) && Boolean.TRUE.equals(value)) {
+                p.groupKeyNeedsDist = true;
+            }
+        }
+
+        for (Map.Entry<String, PeerState> entry : migratedPeers.entrySet()) {
+            int dot = entry.getKey().indexOf('.');
+            int acc = Integer.parseInt(entry.getKey().substring(0, dot));
+            persistPeer(acc, entry.getValue());
+        }
+        for (Map.Entry<Integer, Long> entry : migratedEpochs.entrySet()) {
+            persistEpoch(entry.getKey(), entry.getValue());
+        }
+
+        legacyPreferences.edit().clear().commit();
     }
 
     static void clearForMissingKeystore(Context context) {
@@ -78,23 +251,23 @@ public final class SecureChatState {
     }
 
     public boolean isPaired(int account, long peerUserId) {
-        return peerUserId != 0 && preferences.getBoolean(key(PAIRED_PREFIX, account, peerUserId), false);
+        if (peerUserId == 0) return false;
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        return p != null && p.status == STATUS_PAIRED;
     }
 
     public boolean isWaiting(int account, long peerUserId) {
-        return peerUserId != 0 && preferences.getBoolean(key(WAITING_PREFIX, account, peerUserId), false);
+        if (peerUserId == 0) return false;
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        return p != null && p.status == STATUS_WAITING;
     }
 
     public boolean isWaitingForAnyAccount(long peerUserId) {
         if (peerUserId <= 0) {
             return false;
         }
-        String peerSuffix = "." + peerUserId;
-        for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
-            String key = entry.getKey();
-            if (key.startsWith(WAITING_PREFIX)
-                    && key.endsWith(peerSuffix)
-                    && Boolean.TRUE.equals(entry.getValue())) {
+        for (PeerState p : peersCache.values()) {
+            if (p.peerUserId == peerUserId && p.status == STATUS_WAITING) {
                 return true;
             }
         }
@@ -102,26 +275,37 @@ public final class SecureChatState {
     }
 
     public boolean isPaused(int account, long peerUserId) {
-        return peerUserId != 0 && preferences.getBoolean(key(PAUSED_PREFIX, account, peerUserId), false);
+        if (peerUserId == 0) return false;
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        return p != null && p.status == STATUS_PAUSED;
     }
 
     public boolean isIdentityPending(int account, long peerUserId) {
-        return peerUserId != 0
-                && preferences.getBoolean(key(IDENTITY_PENDING_PREFIX, account, peerUserId), false);
+        if (peerUserId == 0) return false;
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        return p != null && p.status == STATUS_IDENTITY_PENDING;
     }
 
     public String getPendingCarrier(int account, long peerUserId) {
-        return preferences.getString(key(PENDING_CARRIER_PREFIX, account, peerUserId), null);
+        if (peerUserId == 0) return null;
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        return p != null ? p.pendingCarrier : null;
     }
 
     public int getPendingMessageId(int account, long peerUserId) {
-        return preferences.getInt(key(PENDING_MESSAGE_PREFIX, account, peerUserId), 0);
+        if (peerUserId == 0) return 0;
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        return p != null ? p.pendingMessageId : 0;
     }
 
     public PendingKind getPendingKind(int account, long peerUserId) {
-        int value = preferences.getInt(key(PENDING_KIND_PREFIX, account, peerUserId), 0);
+        if (peerUserId == 0) return PendingKind.NONE;
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        if (p == null || p.pendingKind == 0) {
+            return PendingKind.NONE;
+        }
         for (PendingKind kind : PendingKind.values()) {
-            if (kind.value == value) {
+            if (kind.value == p.pendingKind) {
                 return kind;
             }
         }
@@ -129,14 +313,17 @@ public final class SecureChatState {
     }
 
     public int getLastPairingMessageId(int account, long peerUserId) {
-        return preferences.getInt(key(LAST_PAIRING_MESSAGE_PREFIX, account, peerUserId), 0);
+        if (peerUserId == 0) return 0;
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        return p != null ? p.lastPairingMessageId : 0;
     }
 
     public boolean shouldAcknowledgeSessionReady(
             int account, long peerUserId, int messageId) {
         requirePeer(peerUserId);
-        return messageId > preferences.getInt(
-                key(LAST_READY_MESSAGE_PREFIX, account, peerUserId), 0);
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        int current = p != null ? p.lastReadyMessageId : 0;
+        return messageId > current;
     }
 
     public void recordSessionReadyAcknowledgement(
@@ -146,31 +333,26 @@ public final class SecureChatState {
             throw new IllegalArgumentException(
                     "session-ready message id must be positive");
         }
-        String stateKey = key(LAST_READY_MESSAGE_PREFIX, account, peerUserId);
-        int current = preferences.getInt(stateKey, 0);
-        if (messageId > current
-                && !preferences.edit().putInt(stateKey, messageId).commit()) {
-            throw new IllegalStateException(
-                    "failed to persist session-ready acknowledgement");
+        PeerState p = getOrCreatePeer(account, peerUserId);
+        if (messageId > p.lastReadyMessageId) {
+            p.lastReadyMessageId = messageId;
+            persistPeer(account, p);
         }
     }
 
     public boolean isGroupKeyNeedsDistribution(int account, long peerGroupId) {
-        return peerGroupId < 0 && preferences.getBoolean(key(GROUP_KEY_NEEDS_DISTRIBUTION_PREFIX, account, peerGroupId), false);
+        if (peerGroupId >= 0) return false;
+        PeerState p = peersCache.get(cacheKey(account, peerGroupId));
+        return p != null && p.groupKeyNeedsDist;
     }
 
     public void setGroupKeyNeedsDistribution(int account, long peerGroupId, boolean needed) {
         if (peerGroupId >= 0) {
             throw new IllegalArgumentException("peer dialog id must be negative for groups");
         }
-        String stateKey = key(GROUP_KEY_NEEDS_DISTRIBUTION_PREFIX, account, peerGroupId);
-        if (needed) {
-            if (!preferences.edit().putBoolean(stateKey, true).commit()) {
-                throw new IllegalStateException("failed to persist group key distribution state");
-            }
-        } else {
-            preferences.edit().remove(stateKey).commit();
-        }
+        PeerState p = getOrCreatePeer(account, peerGroupId);
+        p.groupKeyNeedsDist = needed;
+        persistPeer(account, p);
     }
 
     public long getIdentityEpoch() {
@@ -178,8 +360,8 @@ public final class SecureChatState {
     }
 
     public long getIdentityEpoch(int account) {
-        return preferences.getLong(IDENTITY_EPOCH + "." + account,
-                account == 0 ? preferences.getLong(IDENTITY_EPOCH, 0L) : 0L);
+        Long val = epochCache.get(account);
+        return val != null ? val : 0L;
     }
 
     public boolean hasAnySecureConversationState() {
@@ -187,55 +369,61 @@ public final class SecureChatState {
     }
 
     public boolean hasAnySecureConversationState(int account) {
-        String accountSuffix = "." + account + ".";
-        for (String name : preferences.getAll().keySet()) {
-            if (name.contains(accountSuffix)) {
-                return true;
+        String prefix = account + ".";
+        for (Map.Entry<String, PeerState> entry : peersCache.entrySet()) {
+            if (entry.getKey().startsWith(prefix)) {
+                PeerState p = entry.getValue();
+                if (p.status != STATUS_NONE || p.lastPairingMessageId > 0 || p.lastReadyMessageId > 0) {
+                    return true;
+                }
             }
         }
         return false;
     }
 
-    /**
-     * Returns whether this exact peer has durable secure state worth preparing before its history
-     * is rendered. This deliberately reads only regular preferences; it must not touch Keystore
-     * or a Signal session while the UI decides whether a background prewarm is useful.
-     */
     public boolean hasStateForPeer(int account, long peerUserId) {
-        return peerUserId != 0 && (isPaired(account, peerUserId)
-                || isWaiting(account, peerUserId)
-                || isPaused(account, peerUserId)
-                || isIdentityPending(account, peerUserId)
-                || getLastPairingMessageId(account, peerUserId) > 0
-                || preferences.contains(key(LAST_READY_MESSAGE_PREFIX, account, peerUserId)));
+        if (peerUserId == 0) return false;
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        return p != null && (p.status != STATUS_NONE
+                || p.lastPairingMessageId > 0
+                || p.lastReadyMessageId > 0);
     }
 
     public Summary getSummary(int account) {
         if (account < 0) {
             throw new IllegalArgumentException("account must not be negative");
         }
-        String accountSuffix = account + ".";
-        int paired = countBooleanKeys(PAIRED_PREFIX + accountSuffix);
-        int waiting = countBooleanKeys(WAITING_PREFIX + accountSuffix);
-        int paused = countBooleanKeys(PAUSED_PREFIX + accountSuffix);
-        int identityPending = countBooleanKeys(IDENTITY_PENDING_PREFIX + accountSuffix);
+        String prefix = account + ".";
+        int paired = 0;
+        int waiting = 0;
+        int paused = 0;
+        int identityPending = 0;
+        for (Map.Entry<String, PeerState> entry : peersCache.entrySet()) {
+            if (entry.getKey().startsWith(prefix)) {
+                PeerState p = entry.getValue();
+                if (p.status == STATUS_PAIRED) paired++;
+                else if (p.status == STATUS_WAITING) waiting++;
+                else if (p.status == STATUS_PAUSED) paused++;
+                else if (p.status == STATUS_IDENTITY_PENDING) identityPending++;
+            }
+        }
         return new Summary(paired, waiting, paused, identityPending);
     }
 
-    /**
-     * Returns the protected-contact roster needed to keep old pairing carriers from replaying
-     * after history recovery. Active modes are intentionally not exported.
-     */
     List<SecureHistoryBackupCodec.PeerRecord> getRecoveryPeers(int account) {
         if (account < 0) {
             throw new IllegalArgumentException("account must not be negative");
         }
+        String prefix = account + ".";
         TreeMap<Long, Integer> peers = new TreeMap<>();
-        collectPeers(peers, account, PAIRED_PREFIX);
-        collectPeers(peers, account, WAITING_PREFIX);
-        collectPeers(peers, account, PAUSED_PREFIX);
-        collectPeers(peers, account, IDENTITY_PENDING_PREFIX);
-        collectPeers(peers, account, LAST_PAIRING_MESSAGE_PREFIX);
+        for (Map.Entry<String, PeerState> entry : peersCache.entrySet()) {
+            if (entry.getKey().startsWith(prefix)) {
+                PeerState p = entry.getValue();
+                if (p.status != STATUS_NONE || p.lastPairingMessageId > 0) {
+                    peers.put(p.peerUserId, p.lastPairingMessageId);
+                }
+            }
+        }
         List<SecureHistoryBackupCodec.PeerRecord> records =
                 new ArrayList<>(peers.size());
         for (Map.Entry<Long, Integer> peer : peers.entrySet()) {
@@ -245,93 +433,73 @@ public final class SecureChatState {
         return records;
     }
 
-    /**
-     * Replaces every secure-chat gate with a paused roster in one preferences transaction.
-     *
-     * <p>No recovered contact becomes trusted or send-capable until a new pairing succeeds.</p>
-     */
-    void restorePausedPeers(
+    synchronized void restorePausedPeers(
             int account,
             long generation,
             List<SecureHistoryBackupCodec.PeerRecord> peers) {
         if (account < 0 || generation <= 0 || peers == null) {
             throw new IllegalArgumentException("invalid secure history chat state");
         }
-        SharedPreferences.Editor editor = preferences.edit();
-        String accountSuffix = "." + account + ".";
-        for (String key : preferences.getAll().keySet()) {
-            if (key.contains(accountSuffix)) {
-                editor.remove(key);
-            }
+        peersCache.keySet().removeIf(k -> k.startsWith(account + "."));
+        try {
+            storage.deleteRoots(STATE_PREFIX + account);
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to delete secure history chat states", e);
         }
-        editor.putLong(IDENTITY_EPOCH + "." + account, generation - 1);
-        if (account == 0) {
-            editor.putLong(IDENTITY_EPOCH, generation - 1);
-        }
+        long epoch = generation - 1;
+        persistEpoch(account, epoch);
+
         boolean hasPrevious = false;
         long previousPeer = 0;
+        Map<String, byte[]> replacements = new LinkedHashMap<>();
         for (SecureHistoryBackupCodec.PeerRecord peer : peers) {
             if (peer == null || (hasPrevious && peer.peerUserId <= previousPeer)) {
                 throw new IllegalArgumentException(
                         "non-canonical secure history peer state");
             }
-            editor.putBoolean(key(PAUSED_PREFIX, account, peer.peerUserId), true);
-            if (peer.lastPairingMessageId > 0) {
-                editor.putInt(
-                        key(LAST_PAIRING_MESSAGE_PREFIX, account, peer.peerUserId),
-                        peer.lastPairingMessageId);
-            }
+            PeerState state = new PeerState(peer.peerUserId);
+            state.status = STATUS_PAUSED;
+            state.lastPairingMessageId = peer.lastPairingMessageId;
+            peersCache.put(cacheKey(account, peer.peerUserId), state);
+            replacements.put(storageKey(account, peer.peerUserId), encodePeerState(state));
             previousPeer = peer.peerUserId;
             hasPrevious = true;
         }
-        if (!editor.commit()) {
-            throw new IllegalStateException("failed to restore secure history chat state");
+        try {
+            storage.replaceRoots(replacements, STATE_PREFIX + account);
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to restore secure history chat state", e);
         }
     }
 
     public void markWaiting(int account, long peerUserId) {
         requirePeer(peerUserId);
-        if (!preferences.edit()
-                .remove(key(PAIRED_PREFIX, account, peerUserId))
-                .remove(key(PAUSED_PREFIX, account, peerUserId))
-                .remove(key(IDENTITY_PENDING_PREFIX, account, peerUserId))
-                .remove(key(PENDING_CARRIER_PREFIX, account, peerUserId))
-                .remove(key(PENDING_MESSAGE_PREFIX, account, peerUserId))
-                .remove(key(PENDING_KIND_PREFIX, account, peerUserId))
-                .putBoolean(key(WAITING_PREFIX, account, peerUserId), true)
-                .commit()) {
-            throw new IllegalStateException("failed to persist secure pairing state");
-        }
+        PeerState p = getOrCreatePeer(account, peerUserId);
+        p.status = STATUS_WAITING;
+        p.pendingCarrier = null;
+        p.pendingMessageId = 0;
+        p.pendingKind = PendingKind.NONE.value;
+        persistPeer(account, p);
     }
 
     public void markPaired(int account, long peerUserId) {
         requirePeer(peerUserId);
-        if (!preferences.edit()
-                .remove(key(WAITING_PREFIX, account, peerUserId))
-                .remove(key(PAUSED_PREFIX, account, peerUserId))
-                .remove(key(IDENTITY_PENDING_PREFIX, account, peerUserId))
-                .remove(key(PENDING_CARRIER_PREFIX, account, peerUserId))
-                .remove(key(PENDING_MESSAGE_PREFIX, account, peerUserId))
-                .remove(key(PENDING_KIND_PREFIX, account, peerUserId))
-                .putBoolean(key(PAIRED_PREFIX, account, peerUserId), true)
-                .commit()) {
-            throw new IllegalStateException("failed to persist secure chat state");
-        }
+        PeerState p = getOrCreatePeer(account, peerUserId);
+        p.status = STATUS_PAIRED;
+        p.pendingCarrier = null;
+        p.pendingMessageId = 0;
+        p.pendingKind = PendingKind.NONE.value;
+        persistPeer(account, p);
     }
 
     public void pause(int account, long peerUserId) {
         requirePeer(peerUserId);
-        if (!preferences.edit()
-                .remove(key(PAIRED_PREFIX, account, peerUserId))
-                .remove(key(WAITING_PREFIX, account, peerUserId))
-                .remove(key(IDENTITY_PENDING_PREFIX, account, peerUserId))
-                .remove(key(PENDING_CARRIER_PREFIX, account, peerUserId))
-                .remove(key(PENDING_MESSAGE_PREFIX, account, peerUserId))
-                .remove(key(PENDING_KIND_PREFIX, account, peerUserId))
-                .putBoolean(key(PAUSED_PREFIX, account, peerUserId), true)
-                .commit()) {
-            throw new IllegalStateException("failed to disable secure chat state");
-        }
+        PeerState p = getOrCreatePeer(account, peerUserId);
+        p.status = STATUS_PAUSED;
+        p.pendingCarrier = null;
+        p.pendingMessageId = 0;
+        p.pendingKind = PendingKind.NONE.value;
+        persistPeer(account, p);
     }
 
     public void markIdentityPending(int account, long peerUserId, String carrier, int messageId) {
@@ -350,19 +518,13 @@ public final class SecureChatState {
                 || kind == null || kind == PendingKind.NONE) {
             throw new IllegalArgumentException("pending identity requires a carrier and message id");
         }
-        int lastMessageId = Math.max(messageId, getLastPairingMessageId(account, peerUserId));
-        if (!preferences.edit()
-                .remove(key(PAIRED_PREFIX, account, peerUserId))
-                .remove(key(WAITING_PREFIX, account, peerUserId))
-                .remove(key(PAUSED_PREFIX, account, peerUserId))
-                .putBoolean(key(IDENTITY_PENDING_PREFIX, account, peerUserId), true)
-                .putString(key(PENDING_CARRIER_PREFIX, account, peerUserId), carrier)
-                .putInt(key(PENDING_MESSAGE_PREFIX, account, peerUserId), messageId)
-                .putInt(key(PENDING_KIND_PREFIX, account, peerUserId), kind.value)
-                .putInt(key(LAST_PAIRING_MESSAGE_PREFIX, account, peerUserId), lastMessageId)
-                .commit()) {
-            throw new IllegalStateException("failed to persist pending secure identity");
-        }
+        PeerState p = getOrCreatePeer(account, peerUserId);
+        p.status = STATUS_IDENTITY_PENDING;
+        p.pendingCarrier = carrier;
+        p.pendingMessageId = messageId;
+        p.pendingKind = kind.value;
+        p.lastPairingMessageId = Math.max(messageId, p.lastPairingMessageId);
+        persistPeer(account, p);
     }
 
     public void recordPairingMessage(int account, long peerUserId, int messageId) {
@@ -370,32 +532,25 @@ public final class SecureChatState {
         if (messageId <= 0) {
             throw new IllegalArgumentException("pairing message id must be positive");
         }
-        int current = getLastPairingMessageId(account, peerUserId);
-        if (messageId > current && !preferences.edit()
-                .putInt(key(LAST_PAIRING_MESSAGE_PREFIX, account, peerUserId), messageId)
-                .commit()) {
-            throw new IllegalStateException("failed to persist pairing replay boundary");
+        PeerState p = getOrCreatePeer(account, peerUserId);
+        if (messageId > p.lastPairingMessageId) {
+            p.lastPairingMessageId = messageId;
+            persistPeer(account, p);
         }
     }
 
     public void approvePendingIdentity(int account, long peerUserId) {
-        int pendingMessageId = getPendingMessageId(account, peerUserId);
-        if (!isIdentityPending(account, peerUserId) || pendingMessageId <= 0) {
+        PeerState p = peersCache.get(cacheKey(account, peerUserId));
+        if (p == null || p.status != STATUS_IDENTITY_PENDING || p.pendingMessageId <= 0) {
             throw new IllegalStateException("no pending secure identity");
         }
-        if (!preferences.edit()
-                .remove(key(WAITING_PREFIX, account, peerUserId))
-                .remove(key(PAUSED_PREFIX, account, peerUserId))
-                .remove(key(IDENTITY_PENDING_PREFIX, account, peerUserId))
-                .remove(key(PENDING_CARRIER_PREFIX, account, peerUserId))
-                .remove(key(PENDING_MESSAGE_PREFIX, account, peerUserId))
-                .remove(key(PENDING_KIND_PREFIX, account, peerUserId))
-                .putBoolean(key(PAIRED_PREFIX, account, peerUserId), true)
-                .putInt(key(LAST_PAIRING_MESSAGE_PREFIX, account, peerUserId),
-                        Math.max(pendingMessageId, getLastPairingMessageId(account, peerUserId)))
-                .commit()) {
-            throw new IllegalStateException("failed to approve secure identity");
-        }
+        int pendingMessageId = p.pendingMessageId;
+        p.status = STATUS_PAIRED;
+        p.pendingCarrier = null;
+        p.pendingMessageId = 0;
+        p.pendingKind = PendingKind.NONE.value;
+        p.lastPairingMessageId = Math.max(pendingMessageId, p.lastPairingMessageId);
+        persistPeer(account, p);
     }
 
     public void rejectPendingIdentity(int account, long peerUserId) {
@@ -409,47 +564,33 @@ public final class SecureChatState {
         resetForNewIdentity(0);
     }
 
-    public void resetForNewIdentity(int account) {
+    public synchronized void resetForNewIdentity(int account) {
         long nextEpoch = getIdentityEpoch(account) + 1;
-        SharedPreferences.Editor editor = preferences.edit();
-        String accountSuffix = "." + account + ".";
-        for (String key : preferences.getAll().keySet()) {
-            if (key.contains(accountSuffix)) {
-                editor.remove(key);
-            }
+        peersCache.keySet().removeIf(k -> k.startsWith(account + "."));
+        try {
+            storage.deleteRoots(STATE_PREFIX + account);
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to reset secure chat states", e);
         }
-        editor.putLong(IDENTITY_EPOCH + "." + account, nextEpoch);
-        if (account == 0) {
-            editor.putLong(IDENTITY_EPOCH, nextEpoch);
-        }
-        if (!editor.commit()) {
-            throw new IllegalStateException("failed to reset secure chat states");
-        }
+        persistEpoch(account, nextEpoch);
     }
 
     void resetForRecoveredIdentity(long generation) {
         resetForRecoveredIdentity(0, generation);
     }
 
-    void resetForRecoveredIdentity(int account, long generation) {
+    synchronized void resetForRecoveredIdentity(int account, long generation) {
         if (generation <= 0) {
             throw new IllegalArgumentException("recovered generation must be positive");
         }
         long epoch = generation - 1;
-        SharedPreferences.Editor editor = preferences.edit();
-        String accountSuffix = "." + account + ".";
-        for (String key : preferences.getAll().keySet()) {
-            if (key.contains(accountSuffix)) {
-                editor.remove(key);
-            }
+        peersCache.keySet().removeIf(k -> k.startsWith(account + "."));
+        try {
+            storage.deleteRoots(STATE_PREFIX + account);
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to reset recovered secure chat states", e);
         }
-        editor.putLong(IDENTITY_EPOCH + "." + account, epoch);
-        if (account == 0) {
-            editor.putLong(IDENTITY_EPOCH, epoch);
-        }
-        if (!editor.commit()) {
-            throw new IllegalStateException("failed to reset recovered secure chat states");
-        }
+        persistEpoch(account, epoch);
     }
 
     private static void requirePeer(long peerUserId) {
@@ -458,36 +599,104 @@ public final class SecureChatState {
         }
     }
 
-    private int countBooleanKeys(String prefix) {
-        int count = 0;
-        for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
-            if (entry.getKey().startsWith(prefix) && Boolean.TRUE.equals(entry.getValue())) {
-                count++;
-            }
+    private PeerState getOrCreatePeer(int account, long peerUserId) {
+        String ck = cacheKey(account, peerUserId);
+        PeerState existing = peersCache.get(ck);
+        if (existing != null) {
+            return existing;
         }
-        return count;
+        PeerState created = new PeerState(peerUserId);
+        peersCache.put(ck, created);
+        return created;
     }
 
-    private void collectPeers(
-            TreeMap<Long, Integer> peers, int account, String recordPrefix) {
-        String prefix = recordPrefix + account + '.';
-        for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
-            if (!entry.getKey().startsWith(prefix)) {
-                continue;
+    private String cacheKey(int account, long peerUserId) {
+        return account + "." + peerUserId;
+    }
+
+    private String storageKey(int account, long peerUserId) {
+        String peerMask = SecureNameMask.maskPeer(nameMaskKey, account, peerUserId);
+        return STATE_PREFIX + account + "." + peerMask;
+    }
+
+    private static int parseAccountFromKey(String key) {
+        String sub = key.substring(STATE_PREFIX.length());
+        int dot = sub.indexOf('.');
+        return Integer.parseInt(sub.substring(0, dot));
+    }
+
+    private synchronized void persistPeer(int account, PeerState state) {
+        peersCache.put(cacheKey(account, state.peerUserId), state);
+        String key = storageKey(account, state.peerUserId);
+        try {
+            if (state.status == STATUS_NONE && state.lastPairingMessageId == 0
+                    && state.lastReadyMessageId == 0 && !state.groupKeyNeedsDist) {
+                storage.delete(key);
+                peersCache.remove(cacheKey(account, state.peerUserId));
+            } else {
+                storage.put(key, encodePeerState(state));
             }
-            String suffix = entry.getKey().substring(prefix.length());
-            try {
-                long peerUserId = Long.parseLong(suffix);
-                requirePeer(peerUserId);
-                int lastMessageId = getLastPairingMessageId(account, peerUserId);
-                peers.merge(peerUserId, lastMessageId, Math::max);
-            } catch (NumberFormatException error) {
-                throw new IllegalStateException("invalid secure chat state key", error);
-            }
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to persist secure chat state", e);
         }
     }
 
-    private static String key(String prefix, int account, long peerUserId) {
-        return prefix + account + '.' + peerUserId;
+    private synchronized void persistEpoch(int account, long epoch) {
+        epochCache.put(account, epoch);
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            new DataOutputStream(bytes).writeLong(epoch);
+            storage.put(EPOCH_PREFIX + account, bytes.toByteArray());
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to persist identity epoch", e);
+        }
+    }
+
+    private static byte[] encodePeerState(PeerState state) {
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            DataOutputStream out = new DataOutputStream(bytes);
+            out.writeByte(MAGIC);
+            out.writeByte(FORMAT_VERSION);
+            out.writeLong(state.peerUserId);
+            out.writeByte(state.status);
+            out.writeInt(state.lastPairingMessageId);
+            out.writeInt(state.lastReadyMessageId);
+            out.writeBoolean(state.groupKeyNeedsDist);
+            out.writeByte(state.pendingKind);
+            out.writeInt(state.pendingMessageId);
+            out.writeUTF(state.pendingCarrier != null ? state.pendingCarrier : "");
+            out.flush();
+            return bytes.toByteArray();
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot encode peer state", e);
+        }
+    }
+
+    private static PeerState decodePeerState(byte[] data) {
+        if (data == null || data.length < 18) {
+            return null;
+        }
+        try {
+            DataInputStream in = new DataInputStream(new ByteArrayInputStream(data));
+            byte m = in.readByte();
+            byte v = in.readByte();
+            if (m != MAGIC || v != FORMAT_VERSION) {
+                return null;
+            }
+            long peerUserId = in.readLong();
+            PeerState p = new PeerState(peerUserId);
+            p.status = in.readByte();
+            p.lastPairingMessageId = in.readInt();
+            p.lastReadyMessageId = in.readInt();
+            p.groupKeyNeedsDist = in.readBoolean();
+            p.pendingKind = in.readByte();
+            p.pendingMessageId = in.readInt();
+            String carrier = in.readUTF();
+            p.pendingCarrier = carrier.isEmpty() ? null : carrier;
+            return p;
+        } catch (IOException e) {
+            return null;
+        }
     }
 }

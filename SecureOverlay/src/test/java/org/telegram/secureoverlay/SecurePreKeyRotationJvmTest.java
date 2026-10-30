@@ -78,6 +78,20 @@ public final class SecurePreKeyRotationJvmTest {
             }
             return false;
         }
+
+        @Override
+        public synchronized Map<String, byte[]> snapshotPrefixes(String... prefixes) {
+            Map<String, byte[]> result = new LinkedHashMap<>();
+            for (Map.Entry<String, byte[]> entry : map.entrySet()) {
+                for (String p : prefixes) {
+                    if (entry.getKey().startsWith(p)) {
+                        result.put(entry.getKey(), entry.getValue() != null ? entry.getValue().clone() : null);
+                        break;
+                    }
+                }
+            }
+            return result;
+        }
     }
 
     @Test

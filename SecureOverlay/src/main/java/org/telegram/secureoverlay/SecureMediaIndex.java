@@ -54,16 +54,25 @@ public final class SecureMediaIndex {
     private static final Entry NEGATIVE_ENTRY = new Entry(
             -1, 0, new byte[DIGEST_BYTES], KIND_FILE, "", "", "", "", 0, 0);
 
+    private final int account;
+    private final long peerUserId;
     private final String scopedPrefix;
+    private final String legacyPrefix;
     private final KeystoreEncryptedBlobStore blobs;
+    private final byte[] nameMaskKey;
 
     public SecureMediaIndex(Context context, int account, long peerUserId) {
         if (context == null || account < 0 || peerUserId == 0) {
             throw new IllegalArgumentException(
                     "secure media index requires an account and user peer");
         }
-        scopedPrefix = PREFIX + account + '.' + peerUserId + '.';
+        this.account = account;
+        this.peerUserId = peerUserId;
         blobs = new KeystoreEncryptedBlobStore(context.getApplicationContext());
+        nameMaskKey = SecureNameMask.getOrGenerateKey(blobs);
+        String peerMask = SecureNameMask.maskPeer(nameMaskKey, account, peerUserId);
+        scopedPrefix = PREFIX + account + '.' + peerMask + '.';
+        legacyPrefix = PREFIX + account + '.' + peerUserId + '.';
     }
 
     public static void clearMemoryCache() {
@@ -130,6 +139,14 @@ public final class SecureMediaIndex {
         try {
             byte[] encoded = blobs.get(key);
             if (encoded == null) {
+                String legacy = legacyKey(digest);
+                encoded = blobs.get(legacy);
+                if (encoded != null) {
+                    blobs.put(key, encoded);
+                    blobs.delete(legacy);
+                }
+            }
+            if (encoded == null) {
                 synchronized (memoryCache) {
                     memoryCache.put(key, NEGATIVE_ENTRY);
                 }
@@ -172,6 +189,18 @@ public final class SecureMediaIndex {
         requireKind(kind);
         try {
             Map<String, byte[]> records = blobs.snapshotPrefixes(scopedPrefix);
+            Map<String, byte[]> legacyRecords = blobs.snapshotPrefixes(legacyPrefix);
+            if (!legacyRecords.isEmpty()) {
+                for (Map.Entry<String, byte[]> leg : legacyRecords.entrySet()) {
+                    try {
+                        Entry e = decode(leg.getValue());
+                        blobs.put(key(e.carrierDigest), leg.getValue());
+                        blobs.delete(leg.getKey());
+                        records.put(key(e.carrierDigest), leg.getValue());
+                    } catch (Exception ignore) {
+                    }
+                }
+            }
             ArrayList<Entry> result = new ArrayList<>();
             for (Map.Entry<String, byte[]> item : records.entrySet()) {
                 Entry entry = decode(item.getValue());
@@ -201,6 +230,18 @@ public final class SecureMediaIndex {
         int[] counts = new int[KIND_GIF + 1];
         try {
             Map<String, byte[]> records = blobs.snapshotPrefixes(scopedPrefix);
+            Map<String, byte[]> legacyRecords = blobs.snapshotPrefixes(legacyPrefix);
+            if (!legacyRecords.isEmpty()) {
+                for (Map.Entry<String, byte[]> leg : legacyRecords.entrySet()) {
+                    try {
+                        Entry e = decode(leg.getValue());
+                        blobs.put(key(e.carrierDigest), leg.getValue());
+                        blobs.delete(leg.getKey());
+                        records.put(key(e.carrierDigest), leg.getValue());
+                    } catch (Exception ignore) {
+                    }
+                }
+            }
             for (Map.Entry<String, byte[]> item : records.entrySet()) {
                 Entry entry = decode(item.getValue());
                 synchronized (memoryCache) {
@@ -225,11 +266,16 @@ public final class SecureMediaIndex {
             return false;
         }
         String key = key(digest);
+        String legacyKey = legacyKey(digest);
         synchronized (memoryCache) {
             memoryCache.remove(key);
+            memoryCache.remove(legacyKey);
         }
         try {
             byte[] encoded = blobs.get(key);
+            if (encoded == null) {
+                encoded = blobs.get(legacyKey);
+            }
             if (encoded == null) {
                 return false;
             }
@@ -240,7 +286,7 @@ public final class SecureMediaIndex {
                 }
             } catch (Exception ignore) {
             }
-            blobs.delete(key);
+            blobs.deleteAll(key, legacyKey);
             return true;
         } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
             throw new SecureMediaIndexException("cannot remove secure media index", e);
@@ -249,10 +295,11 @@ public final class SecureMediaIndex {
 
     public void forgetPeer() {
         synchronized (memoryCache) {
-            memoryCache.keySet().removeIf(k -> k.startsWith(scopedPrefix));
+            memoryCache.keySet().removeIf(k -> k.startsWith(scopedPrefix) || k.startsWith(legacyPrefix));
         }
         try {
             Map<String, byte[]> records = blobs.snapshotPrefixes(scopedPrefix);
+            records.putAll(blobs.snapshotPrefixes(legacyPrefix));
             for (byte[] encoded : records.values()) {
                 try {
                     Entry entry = decode(encoded);
@@ -262,7 +309,7 @@ public final class SecureMediaIndex {
                 } catch (Exception ignore) {
                 }
             }
-            blobs.deletePrefixes(scopedPrefix);
+            blobs.deletePrefixes(scopedPrefix, legacyPrefix);
         } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
             throw new SecureMediaIndexException("cannot clear secure media index", e);
         }
@@ -293,7 +340,12 @@ public final class SecureMediaIndex {
     }
 
     private String key(byte[] digest) {
-        return scopedPrefix + hex(digest);
+        String carrierMask = SecureNameMask.maskCarrier(nameMaskKey, account, peerUserId, hex(digest));
+        return scopedPrefix + carrierMask;
+    }
+
+    private String legacyKey(byte[] digest) {
+        return legacyPrefix + hex(digest);
     }
 
     private static byte[] encode(Entry entry) {
