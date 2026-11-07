@@ -3864,6 +3864,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             ArrayList<String> carriers = new ArrayList<>();
             ArrayList<String> albumIds = new ArrayList<>();
             ArrayList<Integer> ttls = new ArrayList<>();
+            ArrayList<String> overflowCaptions = new ArrayList<>();
             String currentAlbumId = null;
             for (int i = 0; i < sources.size(); i++) {
                 ForkSecureResolvedSource resolved = null;
@@ -3947,16 +3948,27 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                     ? (currentAlbumId = newForkSecureAlbumId())
                                     : currentAlbumId)
                             : null;
+                    String rawCaption = resolved.caption != null ? resolved.caption : "";
+                    String encodedCaption = SecureContentCodec.encodeCaption(
+                            rawCaption,
+                            invertMedia,
+                            itemAlbumId);
+                    String inlinePlainCaption = rawCaption;
+                    if (encodedCaption.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 256) {
+                        overflowCaptions.add(rawCaption);
+                        inlinePlainCaption = "";
+                        encodedCaption = SecureContentCodec.encodeCaption(
+                                "",
+                                invertMedia,
+                                itemAlbumId);
+                    }
                     SecureContentCodec.Attachment manifest =
                             SecureMediaCrypto.encryptAttachmentFile(
                                     resolved.file,
                                     encryptedFile,
                                     resolved.fileName,
                                     mimeType,
-                                    SecureContentCodec.encodeCaption(
-                                            resolved.caption,
-                                            invertMedia,
-                                            itemAlbumId),
+                                    encodedCaption,
                                     width,
                                     height,
                                     resolved.photo,
@@ -4041,7 +4053,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             height,
                             resolved.fileName,
                             mimeType,
-                            SecureContentCodec.displayCaption(resolved.caption),
+                            SecureContentCodec.displayCaption(inlinePlainCaption),
                             presentation.kind,
                             presentation.durationSeconds,
                             presentation.ttlSeconds,
@@ -4083,7 +4095,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                     resolved.fileName,
                                     mimeType,
                                     SecureContentCodec.encodeCaption(
-                                            SecureContentCodec.displayCaption(resolved.caption),
+                                            SecureContentCodec.displayCaption(inlinePlainCaption),
                                             invertMedia,
                                             itemAlbumId),
                                     width,
@@ -4105,12 +4117,42 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 }
             }
             if (!encryptedPaths.isEmpty()) {
-                AndroidUtilities.runOnUIThread(() -> prepareForkSecureDocumentBatch(
-                        accountInstance, encryptedPaths, opaqueOriginalPaths, carriers, albumIds, ttls,
-                        dialogId, replyToMsg, replyToTopMsg, storyItem, quote, notify,
-                        scheduleDate, scheduleRepeatPeriod, quickReplyShortcut,
-                        quickReplyShortcutId, effectId, invertMedia, payStars, monoForumPeerId,
-                        suggestionParams));
+                AndroidUtilities.runOnUIThread(() -> {
+                    prepareForkSecureDocumentBatch(
+                            accountInstance, encryptedPaths, opaqueOriginalPaths, carriers, albumIds, ttls,
+                            dialogId, replyToMsg, replyToTopMsg, storyItem, quote, notify,
+                            scheduleDate, scheduleRepeatPeriod, quickReplyShortcut,
+                            quickReplyShortcutId, effectId, invertMedia, payStars, monoForumPeerId,
+                            suggestionParams);
+                    for (int cIdx = 0; cIdx < overflowCaptions.size(); cIdx++) {
+                        String fullCaption = overflowCaptions.get(cIdx);
+                        if (TextUtils.isEmpty(fullCaption)) {
+                            continue;
+                        }
+                        int offset = 0;
+                        while (offset < fullCaption.length()) {
+                            int end = Math.min(fullCaption.length(), offset + 2500);
+                            String chunk = fullCaption.substring(offset, end);
+                            offset = end;
+                            accountInstance.getSendMessagesHelper().sendMessage(
+                                    SendMessageParams.of(
+                                            chunk,
+                                            dialogId,
+                                            replyToMsg,
+                                            replyToTopMsg,
+                                            null,
+                                            true,
+                                            null,
+                                            null,
+                                            null,
+                                            notify,
+                                            scheduleDate,
+                                            0,
+                                            null,
+                                            false));
+                        }
+                    }
+                });
             }
         });
     }
@@ -4708,6 +4750,406 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         }
     }
 
+    public String resolveForkSecureMediaPath(MessageObject sourceMessage) {
+        if (sourceMessage == null) {
+            return null;
+        }
+        if (!TextUtils.isEmpty(sourceMessage.forkSecureMediaPath)) {
+            File f = new File(sourceMessage.forkSecureMediaPath);
+            if (f.exists() && f.isFile()) {
+                return sourceMessage.forkSecureMediaPath;
+            }
+        }
+        if (sourceMessage.isForkSecureCarrier() && sourceMessage.messageOwner != null) {
+            try {
+                SecureMediaIndex secureMediaIndex = new SecureMediaIndex(
+                        ApplicationLoader.applicationContext,
+                        currentAccount,
+                        sourceMessage.getDialogId());
+                SecureMediaIndex.Entry entry = secureMediaIndex.find(
+                        sourceMessage.getId(), sourceMessage.messageOwner.message);
+                if (entry != null && !TextUtils.isEmpty(entry.plaintextPath)) {
+                    File f = new File(entry.plaintextPath);
+                    if (f.exists() && f.isFile()) {
+                        sourceMessage.applyForkSecureMediaIndex(entry);
+                        return entry.plaintextPath;
+                    }
+                }
+            } catch (Exception ignore) {
+            }
+        }
+        return null;
+    }
+
+    public File resolvePlainMessageMediaFile(MessageObject sourceMessage) {
+        if (sourceMessage == null || sourceMessage.messageOwner == null) {
+            return null;
+        }
+        File file = null;
+        if (!TextUtils.isEmpty(sourceMessage.messageOwner.attachPath)) {
+            file = new File(sourceMessage.messageOwner.attachPath);
+            if (file.exists() && file.isFile()) {
+                return file;
+            }
+        }
+        file = getFileLoader().getPathToMessage(sourceMessage.messageOwner);
+        if (file != null && file.exists() && file.isFile()) {
+            return file;
+        }
+        if (sourceMessage.getDocument() != null) {
+            file = getFileLoader().getPathToAttach(sourceMessage.getDocument(), false);
+            if (file != null && file.exists() && file.isFile()) {
+                return file;
+            }
+            file = getFileLoader().getPathToAttach(sourceMessage.getDocument(), true);
+            if (file != null && file.exists() && file.isFile()) {
+                return file;
+            }
+        }
+        if (sourceMessage.photoThumbs != null && !sourceMessage.photoThumbs.isEmpty()) {
+            TLRPC.PhotoSize size = FileLoader.getClosestPhotoSizeWithSize(sourceMessage.photoThumbs, AndroidUtilities.getPhotoSize(true));
+            if (size != null) {
+                file = getFileLoader().getPathToAttach(size, null, true);
+                if (file != null && file.exists() && file.isFile()) {
+                    return file;
+                }
+            }
+            for (int i = sourceMessage.photoThumbs.size() - 1; i >= 0; i--) {
+                TLRPC.PhotoSize thumbSize = sourceMessage.photoThumbs.get(i);
+                if (thumbSize != null) {
+                    file = getFileLoader().getPathToAttach(thumbSize, null, true);
+                    if (file != null && file.exists() && file.isFile()) {
+                        return file;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    public boolean forwardForkSecureMessages(
+            ArrayList<MessageObject> messagesToForward,
+            long targetDialogId,
+            boolean forwardFromMyName,
+            boolean hideCaption,
+            boolean notify,
+            int scheduleDate,
+            MessageObject replyToTopMsg,
+            long monoForumPeerId) {
+        if (messagesToForward == null || messagesToForward.isEmpty()) {
+            return false;
+        }
+        final boolean savedMessages = targetDialogId == getUserConfig().getClientUserId();
+        final SecureChatEngine targetChat;
+        if (savedMessages) {
+            if (!SecureSavedMessagesSettings.isSecureByDefault(
+                    ApplicationLoader.applicationContext, currentAccount)) {
+                showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+                return false;
+            }
+            targetChat = null;
+        } else {
+            if (!DialogObject.isUserDialog(targetDialogId) && !DialogObject.isChatDialog(targetDialogId)) {
+                showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+                return false;
+            }
+            try {
+                targetChat = SecureChatEngine.get(
+                        ApplicationLoader.applicationContext, currentAccount, targetDialogId);
+                if (targetChat == null || targetChat.getMode() != SecureChatEngine.Mode.PROTECTED) {
+                    if (targetChat != null && (targetChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                            || targetChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED)) {
+                        showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                    } else {
+                        showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+                    }
+                    return false;
+                }
+            } catch (RuntimeException e) {
+                FileLog.e(e);
+                showForkSecureError(R.string.ForkSecureSetupSendFailed);
+                return false;
+            }
+        }
+
+        for (int i = 0; i < messagesToForward.size(); i++) {
+            MessageObject sourceMessage = messagesToForward.get(i);
+            if (sourceMessage == null) {
+                showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+                return false;
+            }
+            if (sourceMessage.isForkSecureCarrier()) {
+                if (!DialogObject.isUserDialog(sourceMessage.getDialogId())
+                        && !DialogObject.isChatDialog(sourceMessage.getDialogId())
+                        && sourceMessage.getDialogId() != getUserConfig().getClientUserId()) {
+                    showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+                    return false;
+                }
+                String sourceCarrier = sourceMessage.messageOwner != null ? sourceMessage.messageOwner.message : null;
+                if (TextUtils.isEmpty(sourceCarrier)) {
+                    showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+                    return false;
+                }
+                SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(sourceCarrier);
+                if (decoded == null
+                        || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                        || sourceMessage.forkSecureService) {
+                    showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
+                    return false;
+                }
+                if (sourceMessage.forkSecureMediaKind != MessageObject.FORK_SECURE_MEDIA_KIND_NONE
+                        || !TextUtils.isEmpty(sourceMessage.forkSecureMediaPath)
+                        || sourceMessage.getDocument() != null) {
+                    String mediaPath = resolveForkSecureMediaPath(sourceMessage);
+                    if (TextUtils.isEmpty(mediaPath) || !new File(mediaPath).exists()) {
+                        showForkSecureError(R.string.ForkSecureForwardFailed);
+                        return false;
+                    }
+                }
+            } else {
+                if (sourceMessage.messageOwner != null && sourceMessage.messageOwner.media != null) {
+                    if (sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaPhoto
+                            || sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaDocument) {
+                        File file = resolvePlainMessageMediaFile(sourceMessage);
+                        if (file == null || !file.exists()) {
+                            showForkSecureError(R.string.ForkSecureForwardFailed);
+                            return false;
+                        }
+                    } else if (!(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaContact)
+                            && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaGeo)
+                            && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaWebPage)
+                            && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaEmpty)) {
+                        showForkSecureError(R.string.ForkSecureForwardFailed);
+                        return false;
+                    }
+                }
+            }
+        }
+
+        try {
+            for (int i = 0; i < messagesToForward.size(); i++) {
+                MessageObject sourceMessage = messagesToForward.get(i);
+                if (sourceMessage.isForkSecureCarrier()) {
+                    String sourceCarrier = sourceMessage.messageOwner.message;
+                    SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(sourceCarrier);
+                    String mediaPath = resolveForkSecureMediaPath(sourceMessage);
+                    if (mediaPath != null && new File(mediaPath).exists()) {
+                        String caption = hideCaption ? "" : (sourceMessage.forkSecureMediaCaption != null
+                                ? sourceMessage.forkSecureMediaCaption : "");
+                        String mime = sourceMessage.forkSecureMediaMime;
+                        boolean isPhoto = sourceMessage.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO;
+                        int presentation = sourceMessage.forkSecureMediaPresentation;
+                        if (presentation < 0) {
+                            presentation = isPhoto ? SecureContentCodec.ATTACHMENT_PRESENTATION_FILE : -1;
+                        }
+                        prepareSendingForkSecureMedia(
+                                getAccountInstance(),
+                                mediaPath,
+                                mime,
+                                caption,
+                                isPhoto,
+                                presentation,
+                                sourceMessage.forkSecureMediaDurationSeconds,
+                                sourceMessage.forkSecureMediaTitle,
+                                sourceMessage.forkSecureMediaPerformer,
+                                targetDialogId,
+                                replyToTopMsg,
+                                notify,
+                                scheduleDate,
+                                null);
+                    } else {
+                        SecureContentCodec.Contact contact = null;
+                        SecureContentCodec.GeoLocation location = null;
+                        String plaintext = null;
+
+                        if (sourceMessage.getDialogId() == getUserConfig().getClientUserId()) {
+                            SecureSavedMessagesKeyStore.KeyMaterial key =
+                                    new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
+                            SecureSavedMessagesPinStore pinStore =
+                                    new SecureSavedMessagesPinStore(ApplicationLoader.applicationContext);
+                            try {
+                                byte[] decrypted = SecureSavedMessageCrypto.decryptRecordBound(
+                                        decoded.payload, key, pinStore, sourceMessage.getId());
+                                SecureContentCodec.Decoded content = SecureContentCodec.decode(decrypted);
+                                if (content.contact != null) {
+                                    contact = content.contact;
+                                } else if (content.location != null) {
+                                    location = content.location;
+                                } else {
+                                    plaintext = content.text;
+                                }
+                            } catch (IllegalArgumentException mediaRecordFailure) {
+                                if (!"Saved Messages media record mismatch".equals(
+                                        mediaRecordFailure.getMessage())) {
+                                    throw mediaRecordFailure;
+                                }
+                                plaintext = SecureSavedMessageCrypto.decryptTextBound(
+                                        decoded.payload, key, pinStore, sourceMessage.getId());
+                            }
+                        } else {
+                            long sourceDialogId = sourceMessage.getDialogId() != 0
+                                    ? sourceMessage.getDialogId()
+                                    : sourceMessage.getFromChatId();
+                            SecureChatEngine sourceChat = SecureChatEngine.get(
+                                    ApplicationLoader.applicationContext, currentAccount, sourceDialogId);
+                            String sourceText = sourceMessage.isOutOwner()
+                                    ? sourceChat.getOutgoingText(sourceCarrier)
+                                    : sourceChat.getIncomingText(sourceCarrier);
+                            if (SecureChatEngine.isContactDisplay(sourceText)) {
+                                contact = sourceMessage.isOutOwner()
+                                        ? sourceChat.getOutgoingContact(sourceCarrier)
+                                        : sourceChat.getIncomingContact(sourceCarrier);
+                            } else if (SecureChatEngine.isLocationDisplay(sourceText)) {
+                                location = sourceMessage.isOutOwner()
+                                        ? sourceChat.getOutgoingLocation(sourceCarrier)
+                                        : sourceChat.getIncomingLocation(sourceCarrier);
+                            } else {
+                                plaintext = sourceText;
+                            }
+                        }
+
+                        if (contact != null) {
+                            TLRPC.User u = new TLRPC.TL_user();
+                            u.phone = contact.phoneNumber;
+                            u.first_name = contact.firstName;
+                            u.last_name = contact.lastName;
+                            SendMessageParams params = SendMessageParams.of(u, targetDialogId, null, replyToTopMsg, null, null, notify, scheduleDate, 0);
+                            params.monoForumPeer = monoForumPeerId;
+                            sendMessage(params);
+                        } else if (location != null) {
+                            TLRPC.TL_messageMediaGeo g = new TLRPC.TL_messageMediaGeo();
+                            g.geo = new TLRPC.TL_geoPoint();
+                            g.geo.lat = location.latitude;
+                            g.geo._long = location.longitude;
+                            g.geo.accuracy_radius = location.accuracy;
+                            g.period = location.period;
+                            SendMessageParams params = SendMessageParams.of(g, targetDialogId, null, replyToTopMsg, null, null, notify, scheduleDate, 0);
+                            params.monoForumPeer = monoForumPeerId;
+                            sendMessage(params);
+                        } else if (!TextUtils.isEmpty(plaintext)
+                                && !SecureChatEngine.isPairingAcknowledgementDisplay(plaintext)
+                                && !SecureChatEngine.isPairingRejectionDisplay(plaintext)) {
+                            SendMessageParams params = SendMessageParams.of(plaintext, targetDialogId, null, replyToTopMsg, null, true, null, null, null, notify, scheduleDate, 0, null, false);
+                            params.monoForumPeer = monoForumPeerId;
+                            sendMessage(params);
+                        }
+                    }
+                } else {
+                    // Plain message forwarded into protected chat
+                    if (sourceMessage.messageOwner != null && sourceMessage.messageOwner.media != null
+                            && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaWebPage)
+                            && !(sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaEmpty)) {
+                        if (sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaPhoto) {
+                            File file = resolvePlainMessageMediaFile(sourceMessage);
+                            if (file != null && file.exists()) {
+                                String caption = hideCaption ? "" : (sourceMessage.messageOwner.message != null ? sourceMessage.messageOwner.message : "");
+                                prepareSendingPhoto(
+                                        getAccountInstance(),
+                                        file.getAbsolutePath(),
+                                        null,
+                                        null,
+                                        targetDialogId,
+                                        null,
+                                        replyToTopMsg,
+                                        null,
+                                        null,
+                                        null,
+                                        null,
+                                        null,
+                                        0,
+                                        null,
+                                        null,
+                                        notify,
+                                        scheduleDate,
+                                        0,
+                                        false,
+                                        caption,
+                                        null,
+                                        0,
+                                        0);
+                            }
+                        } else if (sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaDocument) {
+                            File file = resolvePlainMessageMediaFile(sourceMessage);
+                            if (file != null && file.exists()) {
+                                String caption = hideCaption ? "" : (sourceMessage.messageOwner.message != null ? sourceMessage.messageOwner.message : "");
+                                if (sourceMessage.getDocument() instanceof TLRPC.TL_document) {
+                                    prepareForkSecureDirectDocumentIfNeeded(
+                                            (TLRPC.TL_document) sourceMessage.getDocument(),
+                                            file.getAbsolutePath(),
+                                            caption,
+                                            targetDialogId,
+                                            null,
+                                            replyToTopMsg,
+                                            null,
+                                            null,
+                                            notify,
+                                            scheduleDate,
+                                            0,
+                                            null,
+                                            0,
+                                            0,
+                                            false,
+                                            0,
+                                            monoForumPeerId,
+                                            null,
+                                            0,
+                                            null);
+                                } else {
+                                    String mime = sourceMessage.getDocument() != null ? sourceMessage.getDocument().mime_type : "application/octet-stream";
+                                    prepareSendingForkSecureMedia(
+                                            getAccountInstance(),
+                                            file.getAbsolutePath(),
+                                            mime,
+                                            caption,
+                                            false,
+                                            -1,
+                                            0,
+                                            "",
+                                            "",
+                                            targetDialogId,
+                                            replyToTopMsg,
+                                            notify,
+                                            scheduleDate,
+                                            null);
+                                }
+                            }
+                        } else if (sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaContact) {
+                            TLRPC.TL_messageMediaContact c = (TLRPC.TL_messageMediaContact) sourceMessage.messageOwner.media;
+                            TLRPC.User u = new TLRPC.TL_user();
+                            u.phone = c.phone_number;
+                            u.first_name = c.first_name;
+                            u.last_name = c.last_name;
+                            SendMessageParams params = SendMessageParams.of(u, targetDialogId, null, replyToTopMsg, null, null, notify, scheduleDate, 0);
+                            params.monoForumPeer = monoForumPeerId;
+                            sendMessage(params);
+                        } else if (sourceMessage.messageOwner.media instanceof TLRPC.TL_messageMediaGeo) {
+                            TLRPC.TL_messageMediaGeo g = (TLRPC.TL_messageMediaGeo) sourceMessage.messageOwner.media;
+                            if (g != null) {
+                                SendMessageParams params = SendMessageParams.of(g, targetDialogId, null, replyToTopMsg, null, null, notify, scheduleDate, 0);
+                                params.monoForumPeer = monoForumPeerId;
+                                sendMessage(params);
+                            }
+                        }
+                    } else {
+                        CharSequence text = !TextUtils.isEmpty(sourceMessage.messageText)
+                                ? sourceMessage.messageText
+                                : (sourceMessage.messageOwner != null ? sourceMessage.messageOwner.message : null);
+                        if (!TextUtils.isEmpty(text)) {
+                            SendMessageParams params = SendMessageParams.of(text.toString(), targetDialogId, null, replyToTopMsg, null, true, null, null, null, notify, scheduleDate, 0, null, false);
+                            params.monoForumPeer = monoForumPeerId;
+                            sendMessage(params);
+                        }
+                    }
+                }
+            }
+            return true;
+        } catch (Exception error) {
+            FileLog.e(error);
+            showForkSecureError(R.string.ForkSecureForwardFailed);
+            return false;
+        }
+    }
+
     public int sendMessage(ArrayList<MessageObject> messages, final long peer, boolean forwardFromMyName, boolean hideCaption, boolean notify, int scheduleDate, long payStars) {
         return sendMessage(messages, peer, forwardFromMyName, hideCaption, notify, scheduleDate, null, -1, payStars);
     }
@@ -4733,16 +5175,23 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (messages == null || messages.isEmpty()) {
             return 0;
         }
+        if (isForkSecureProtectedPeer(peer)) {
+            return forwardForkSecureMessages(
+                    messages,
+                    peer,
+                    forwardFromMyName,
+                    hideCaption,
+                    notify,
+                    scheduleDate,
+                    replyToTopMsg,
+                    monoForumPeerId) ? 0 : -1;
+        }
         for (int i = 0; i < messages.size(); i++) {
             MessageObject msg = messages.get(i);
             if (msg != null && msg.isForkSecureCarrier()) {
                 showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
                 return 0;
             }
-        }
-        if (isForkSecureProtectedPeer(peer)) {
-            showForkSecureError(R.string.ForkSecureForwardNeedsProtectedChat);
-            return 0;
         }
         int sendResult = 0;
         long myId = getUserConfig().getClientUserId();

@@ -3018,9 +3018,6 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             return null;
         }
         if (preview.kind == SecureChatEngine.DialogPreview.Kind.PLAINTEXT) {
-            if (context != null && org.telegram.secureoverlay.SecureContentSettings.isScreenProtectionEnabled(context)) {
-                return LocaleController.getString(R.string.ForkSecureReplyPreview);
-            }
             return LocaleController.formatString(
                     R.string.ForkSecureTextPreview, preview.plaintext);
         } else if (preview.kind == SecureChatEngine.DialogPreview.Kind.PAIRING_ACK) {
@@ -3113,10 +3110,8 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                         SecureChatEngine.get(getContext(), currentAccount, currentDialogId);
                 securePreviewPeerId = currentDialogId;
             }
-            // Keep dialog list previews strictly cacheOnly=true so the main chat list never
-            // advances the Libsignal ratchet in the background or exposes uncached plaintext (SA-34).
             SecureChatEngine.DialogPreview preview = securePreviewEngine.resolveDialogPreview(
-                    carrier, message.isOutOwner(), message.getForkSecureSenderUserId(), true);
+                    carrier, message.isOutOwner(), message.getForkSecureSenderUserId(), false);
             if (preview != null) {
                 CharSequence previewText = formatForkSecureDialogPreview(getContext(), preview);
                 if (preview.kind == SecureChatEngine.DialogPreview.Kind.CONTROL_DELETE) {

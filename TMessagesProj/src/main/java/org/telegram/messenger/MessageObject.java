@@ -11898,7 +11898,7 @@ public class MessageObject {
     }
 
     public boolean canSetReaction() {
-        if (isEphemeral() || isForkSecureCarrier()) {
+        if (isEphemeral() || forkSecureService) {
             return false;
         }
         if (messageOwner instanceof TLRPC.TL_messageService)

@@ -16285,9 +16285,9 @@ public class MessagesController extends BaseController implements NotificationCe
                 SecureChatEngine groupEngine = SecureChatEngine.get(context, currentAccount, groupDialogId);
                 ArrayList<TLRPC.Message> localIncoming =
                         getMessagesStorage().loadRecentIncomingMessagesSync(peerUserId, 30);
-                processForkSecureIncomingSyncBatch(peerEngine, peerUserId, localIncoming);
+                boolean receivedKey = processForkSecureIncomingSyncBatch(peerEngine, peerUserId, localIncoming);
 
-                if (!groupEngine.hasSenderKeyFrom(peerUserId)) {
+                if (!receivedKey || !groupEngine.hasSenderKeyFrom(peerUserId)) {
                     TLRPC.InputPeer inputPeer = getInputPeer(peerUserId);
                     if (inputPeer != null && !(inputPeer instanceof TLRPC.TL_inputPeerEmpty)) {
                         final ArrayList<TLRPC.Message> remoteBatch = new ArrayList<>();
@@ -16322,12 +16322,12 @@ public class MessagesController extends BaseController implements NotificationCe
                             Thread.currentThread().interrupt();
                         }
                         if (!remoteBatch.isEmpty()) {
-                            processForkSecureIncomingSyncBatch(peerEngine, peerUserId, remoteBatch);
+                            receivedKey |= processForkSecureIncomingSyncBatch(peerEngine, peerUserId, remoteBatch);
                         }
                     }
                 }
 
-                if (groupEngine.hasSenderKeyFrom(peerUserId)) {
+                if (receivedKey || groupEngine.hasSenderKeyFrom(peerUserId)) {
                     SecureChatEngine.clearFailedDecryptCache(currentAccount, groupDialogId);
                     if (onSyncedUi != null) {
                         AndroidUtilities.runOnUIThread(onSyncedUi);
@@ -16341,10 +16341,11 @@ public class MessagesController extends BaseController implements NotificationCe
         });
     }
 
-    private void processForkSecureIncomingSyncBatch(
+    private boolean processForkSecureIncomingSyncBatch(
             SecureChatEngine peerEngine,
             long peerUserId,
             ArrayList<TLRPC.Message> batch) {
+        boolean receivedGroupKey = false;
         for (int i = 0; i < batch.size(); i++) {
             TLRPC.Message msg = batch.get(i);
             if (msg == null
@@ -16365,10 +16366,14 @@ public class MessagesController extends BaseController implements NotificationCe
                 continue;
             }
             try {
-                peerEngine.decryptText(msg.message, fromId);
+                String res = peerEngine.decryptText(msg.message, fromId);
+                if (SecureChatEngine.isGroupKeyReceivedDisplay(res)) {
+                    receivedGroupKey = true;
+                }
             } catch (Throwable ignore) {
             }
         }
+        return receivedGroupKey;
     }
 
     public void changeChatTitle(long chatId, String title) {

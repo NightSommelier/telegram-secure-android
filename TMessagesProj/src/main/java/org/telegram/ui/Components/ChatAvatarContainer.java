@@ -783,7 +783,8 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
         avatarImageView.layout(1 + leftPadding, 1 + viewTop, 1 + leftPadding + avatarImageView.getMeasuredWidth(), 1 + viewTop + avatarImageView.getMeasuredHeight());
         int l = leftPadding + (avatarImageView.getVisibility() == VISIBLE ? dp(glassMode ? 49.66f : 55) : dp(glassMode ? 13 : 1)) + rightAvatarPadding;
         SimpleTextView titleTextLargerCopyView = this.titleTextLargerCopyView.get();
-        if (getSubtitleTextView().getVisibility() != GONE) {
+        boolean hasSubtitleText = subtitleTextView != null ? !TextUtils.isEmpty(subtitleTextView.getText()) : (animatedSubtitleTextView != null && !TextUtils.isEmpty(animatedSubtitleTextView.getText()));
+        if (getSubtitleTextView().getVisibility() != GONE && hasSubtitleText) {
             titleTextView.layout(l, viewTop + dp(1.66f) - titleTextView.getPaddingTop(), l + titleTextView.getMeasuredWidth(), viewTop + titleTextView.getTextHeight() + dp(1.66f) - titleTextView.getPaddingTop() + titleTextView.getPaddingBottom());
             if (titleTextLargerCopyView != null) {
                 titleTextLargerCopyView.layout(l, viewTop + dp(1.66f), l + titleTextLargerCopyView.getMeasuredWidth(), viewTop + titleTextLargerCopyView.getTextHeight() + dp(1.66f));
@@ -852,13 +853,17 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
                 timeItem.setAlpha(factor);
                 timeItem.setScaleX(factor * 0.85f);
                 timeItem.setScaleY(factor * 0.85f);
-                timeItem.setVisibility(factor > 0 ? VISIBLE : GONE);
+                timeItem.setVisibility(factor > 0 && !avatarImageIsHidden ? VISIBLE : GONE);
             }
         }
     }
 
 
     public void showTimeItem(boolean animated) {
+        if (avatarImageIsHidden) {
+            hideTimeItem(false);
+            return;
+        }
         animatorTimeVisible.setValue(true, animated);
     }
 
@@ -870,7 +875,7 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
         if (timerDrawable == null) {
             return;
         }
-        boolean show = !stars;
+        boolean show = !stars && !avatarImageIsHidden;
         if (value == 0 && !secretChatTimer) {
             show = false;
             return;
