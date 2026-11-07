@@ -6787,23 +6787,74 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
 
     public MultiLayoutTypingAnimator botDraftTypingAnimator;
 
-    private void setMessageContent(MessageObject messageObject, MessageObject.GroupedMessages groupedMessages, boolean bottomNear, boolean topNear, boolean firstInChat, boolean lastInChatList) {
-        if (messageObject != null && messageObject.isForkSecureCarrier() && !messageObject.forkSecureMediaIndexChecked) {
-            messageObject.forkSecureMediaIndexChecked = true;
-            if ((messageObject.getDocument() != null || messageObject.isPhoto()) && TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
-                try {
-                    SecureMediaIndex.Entry entry = new SecureMediaIndex(
-                            ApplicationLoader.applicationContext,
-                            currentAccount,
-                            messageObject.getDialogId())
-                            .find(messageObject.getId(), messageObject.messageOwner != null ? messageObject.messageOwner.message : null);
-                    if (entry != null) {
-                        messageObject.applyForkSecureMediaIndex(entry);
-                    }
-                } catch (Throwable ignore) {
-                }
-            }
+    private static final java.util.Set<String> forkSecureAsyncIndexInFlight =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+    private void hydrateForkSecureMediaIndexForCell(MessageObject messageObject) {
+        if (messageObject == null || !messageObject.isForkSecureCarrier() || messageObject.forkSecureMediaIndexChecked) {
+            return;
         }
+        if ((messageObject.getDocument() == null && !messageObject.isPhoto())
+                || !TextUtils.isEmpty(messageObject.forkSecureMediaPath)) {
+            messageObject.forkSecureMediaIndexChecked = true;
+            return;
+        }
+        final String carrier = messageObject.messageOwner != null ? messageObject.messageOwner.message : null;
+        final long dialogId = messageObject.getDialogId();
+        final int account = currentAccount;
+        final int msgId = messageObject.getId();
+        if (TextUtils.isEmpty(carrier) || dialogId == 0) {
+            messageObject.forkSecureMediaIndexChecked = true;
+            return;
+        }
+        SecureMediaIndex.CachedLookup cached = SecureMediaIndex.lookupCached(account, dialogId, carrier);
+        if (cached.isHit()) {
+            messageObject.forkSecureMediaIndexChecked = true;
+            messageObject.applyForkSecureMediaIndex(cached.entry);
+            return;
+        }
+        if (cached.isNegative()) {
+            messageObject.forkSecureMediaIndexChecked = true;
+            return;
+        }
+        final String dedupeKey = account + ":" + dialogId + ":" + msgId + ":" + carrier.hashCode();
+        if (!forkSecureAsyncIndexInFlight.add(dedupeKey)) {
+            return;
+        }
+        final Context appContext = ApplicationLoader.applicationContext;
+        Utilities.globalQueue.postRunnable(() -> {
+            SecureMediaIndex.Entry found = null;
+            try {
+                found = new SecureMediaIndex(appContext, account, dialogId).find(msgId, carrier);
+            } catch (Throwable ignore) {
+            } finally {
+                forkSecureAsyncIndexInFlight.remove(dedupeKey);
+            }
+            final SecureMediaIndex.Entry entry = found;
+            AndroidUtilities.runOnUIThread(() -> {
+                messageObject.forkSecureMediaIndexChecked = true;
+                if (entry != null && messageObject.applyForkSecureMediaIndex(entry)) {
+                    messageObject.resetLayout();
+                    if (currentMessageObject == messageObject
+                            || (currentMessageObject != null
+                                    && currentMessageObject.getId() == msgId
+                                    && currentMessageObject.getDialogId() == dialogId)) {
+                        if (currentMessageObject != messageObject) {
+                            currentMessageObject.forkSecureMediaIndexChecked = true;
+                            currentMessageObject.applyForkSecureMediaIndex(entry);
+                            currentMessageObject.resetLayout();
+                        }
+                        setMessageObject(currentMessageObject, currentMessagesGroup, pinnedBottom, pinnedTop, firstInChat);
+                        requestLayout();
+                        invalidate();
+                    }
+                }
+            });
+        });
+    }
+
+    private void setMessageContent(MessageObject messageObject, MessageObject.GroupedMessages groupedMessages, boolean bottomNear, boolean topNear, boolean firstInChat, boolean lastInChatList) {
+        hydrateForkSecureMediaIndexForCell(messageObject);
         if (messageObject.checkLayout() || currentPosition != null && lastHeight != AndroidUtilities.displaySize.y) {
             currentMessageObject = null;
         }

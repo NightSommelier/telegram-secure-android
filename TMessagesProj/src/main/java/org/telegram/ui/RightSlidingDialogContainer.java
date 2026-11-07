@@ -87,6 +87,7 @@ public abstract class RightSlidingDialogContainer extends FrameLayout {
                 animateReplace(oldFragment);
             } else if (!isOpenned) {
                 isOpenned = true;
+                cancelOpenAnimator();
                 if (!SharedConfig.animationsEnabled()) {
                     openAnimationStarted(true);
                     fragment.onTransitionAnimationStart(true, false);
@@ -256,12 +257,22 @@ public abstract class RightSlidingDialogContainer extends FrameLayout {
 
     }
 
+    private void cancelOpenAnimator() {
+        if (openAnimator != null) {
+            ValueAnimator anim = openAnimator;
+            openAnimator = null;
+            anim.removeAllListeners();
+            anim.cancel();
+            notificationsLocker.unlock();
+        }
+    }
+
     public boolean hasFragment() {
         return currentFragment != null;
     }
 
     public void finishPreview() {
-        if (!isOpenned) {
+        if (!isOpenned && currentFragment == null) {
             return;
         }
         openAnimationStarted(false);
@@ -270,6 +281,7 @@ public abstract class RightSlidingDialogContainer extends FrameLayout {
 
     public void finishPreviewInernal() {
         isOpenned = false;
+        cancelOpenAnimator();
         if (!SharedConfig.animationsEnabled()) {
             openedProgress = 0;
             updateOpenAnimationProgress();
@@ -343,6 +355,11 @@ public abstract class RightSlidingDialogContainer extends FrameLayout {
         }
         if (hasFragment() && enabled) {
             if (ev != null && ev.getAction() == MotionEvent.ACTION_DOWN) {
+                if (ev.getX() < AndroidUtilities.dp(24) || (getMeasuredWidth() > 0 && ev.getX() > getMeasuredWidth() - AndroidUtilities.dp(24))) {
+                    maybeStartTracking = false;
+                    startedTracking = false;
+                    return false;
+                }
                 startedTrackingPointerId = ev.getPointerId(0);
                 maybeStartTracking = true;
                 startedTrackingX = (int) ev.getX();
@@ -385,7 +402,7 @@ public abstract class RightSlidingDialogContainer extends FrameLayout {
                 }
                 velocityTracker.computeCurrentVelocity(1000);
 
-                if (startedTracking) {
+                if (startedTracking && isOpenned) {
                     float x = swipeBackX;
                     float velX = velocityTracker.getXVelocity();
                     float velY = velocityTracker.getYVelocity();
@@ -394,6 +411,7 @@ public abstract class RightSlidingDialogContainer extends FrameLayout {
                     if (!backAnimation) {
                         finishPreviewInernal();
                     } else {
+                        cancelOpenAnimator();
                         openAnimator = ValueAnimator.ofFloat(openedProgress, 1f);
                         openAnimator.addUpdateListener(animation -> {
                             openedProgress = (float) animation.getAnimatedValue();

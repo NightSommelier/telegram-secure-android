@@ -39,8 +39,9 @@ public class WindowInsetsStateHolder implements WindowInsetsProvider, WindowInse
             @Override
             public void onFactorChangeFinished(int id, float finalFactor, FactorAnimator callee) {
                 boolean changed = false;
-                if (getAnimatedImeBottomInset() == 0 && inAppKeyboardState == IN_APP_IME_STATE_HIDE_AFTER_ANIMATION_END || inAppKeyboardState == IN_APP_IME_STATE_HIDE_AFTER_KEYBOARD_OPEN) {
+                if (getAnimatedImeBottomInset() == 0 && (inAppKeyboardState == IN_APP_IME_STATE_HIDE_AFTER_ANIMATION_END || inAppKeyboardState == IN_APP_IME_STATE_HIDE_AFTER_KEYBOARD_OPEN)) {
                     inAppKeyboardState = IN_APP_IME_STATE_HIDDEN;
+                    inAppKeyboardHeight = 0;
                     changed = true;
                 }
                 if (finalFactor == 1f) {
@@ -74,6 +75,9 @@ public class WindowInsetsStateHolder implements WindowInsetsProvider, WindowInse
     private void onKeyboardStateChanged(KeyboardState.State state) {
         if (state == KeyboardState.State.STATE_FULLY_VISIBLE && (inAppKeyboardState == IN_APP_IME_STATE_HIDE_AFTER_ANIMATION_END || inAppKeyboardState == IN_APP_IME_STATE_HIDE_AFTER_KEYBOARD_OPEN)) {
             inAppKeyboardState = IN_APP_IME_STATE_HIDDEN;
+            inAppKeyboardHeight = 0;
+            inAppKeyboardViewHeight = 0;
+            AndroidUtilities.cancelRunOnUIThread(closeInAppKeyboard);
         }
 
         onUpdateListener.run();
@@ -106,9 +110,14 @@ public class WindowInsetsStateHolder implements WindowInsetsProvider, WindowInse
 
         if (inAppKeyboardState == IN_APP_IME_STATE_HIDE_AFTER_ANIMATION_END) {
             inAppKeyboardHeight = 0;
+            inAppKeyboardViewHeight = 0;
+            AndroidUtilities.cancelRunOnUIThread(closeInAppKeyboard);
         }
         if (inAppKeyboardState == IN_APP_IME_STATE_HIDE_AFTER_KEYBOARD_OPEN && imeInsets.bottom > 0) {
             inAppKeyboardHeight = 0;
+            inAppKeyboardViewHeight = 0;
+            inAppKeyboardState = IN_APP_IME_STATE_HIDDEN;
+            AndroidUtilities.cancelRunOnUIThread(closeInAppKeyboard);
         }
 
         final Insets inAppInsets = Insets.of(0, 0, 0, inAppKeyboardHeight);
@@ -243,19 +252,23 @@ public class WindowInsetsStateHolder implements WindowInsetsProvider, WindowInse
     @Override
     public void resetInAppKeyboardHeight(boolean waitKeyboardOpen) {
         if (inAppKeyboardHeight == 0) {
+            inAppKeyboardState = IN_APP_IME_STATE_HIDDEN;
+            inAppKeyboardViewHeight = 0;
+            AndroidUtilities.cancelRunOnUIThread(closeInAppKeyboard);
             return;
         }
 
         AndroidUtilities.cancelRunOnUIThread(closeInAppKeyboard);
 
-        this.inAppKeyboardState = waitKeyboardOpen ?
+        boolean shouldWaitKeyboard = waitKeyboardOpen && (lastInsets == null || lastInsets.getInsets(WindowInsetsCompat.Type.ime()).bottom == 0);
+        this.inAppKeyboardState = shouldWaitKeyboard ?
             IN_APP_IME_STATE_HIDE_AFTER_KEYBOARD_OPEN :
             IN_APP_IME_STATE_HIDE_AFTER_ANIMATION_END;
 
         setInsets(lastInsets);
 
-        if (waitKeyboardOpen) {
-            AndroidUtilities.runOnUIThread(closeInAppKeyboard, 1000);
+        if (shouldWaitKeyboard) {
+            AndroidUtilities.runOnUIThread(closeInAppKeyboard, 250);
         }
 
     }
