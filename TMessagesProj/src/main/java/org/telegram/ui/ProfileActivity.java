@@ -2538,7 +2538,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         }
         try {
             org.telegram.secureoverlay.SecureChatEngine secureChat =
-                    new org.telegram.secureoverlay.SecureChatEngine(
+                    org.telegram.secureoverlay.SecureChatEngine.get(
                             ApplicationLoader.applicationContext,
                             currentAccount,
                             peerId);

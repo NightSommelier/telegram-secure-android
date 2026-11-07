@@ -1099,12 +1099,17 @@ public class FilterCreateActivity extends BaseFragment {
             fragment.getMessagesController().onFilterUpdate(filter);
         }
         fragment.getMessagesStorage().saveDialogFilter(filter, atBegin, true);
+        org.telegram.messenger.ForkLocalFoldersAndPinsStore.recordLocalFolderOrder(
+                fragment.getCurrentAccount(),
+                fragment.getMessagesController().getDialogFilters());
         if (atBegin) {
             TLRPC.TL_messages_updateDialogFiltersOrder req = new TLRPC.TL_messages_updateDialogFiltersOrder();
             ArrayList<MessagesController.DialogFilter> filters = fragment.getMessagesController().getDialogFilters();
-            for (int a = 0, N = filters.size(); a < N; a++) {
-                req.order.add(filters.get(a).id);
-            }
+            req.order = org.telegram.messenger.ForkLocalFoldersAndPinsStore.buildServerFolderOrderRequest(
+                    fragment.getCurrentAccount(),
+                    filters,
+                    fragment.getUserConfig().isPremium(),
+                    true);
             fragment.getConnectionsManager().sendRequest(req, null);
         }
         if (onFinish != null) {
@@ -1150,6 +1155,8 @@ public class FilterCreateActivity extends BaseFragment {
             req.filter.color = newFilterColor;
         }
         MessagesController messagesController = fragment.getMessagesController();
+        final int account = fragment.getCurrentAccount();
+        final boolean isPremium = fragment.getUserConfig().isPremium();
         ArrayList<Long> pinArray = new ArrayList<>();
         if (newPinned.size() != 0) {
             for (int a = 0, N = newPinned.size(); a < N; a++) {
@@ -1170,6 +1177,13 @@ public class FilterCreateActivity extends BaseFragment {
                 return 0;
             });
         }
+        org.telegram.messenger.ForkLocalFoldersAndPinsStore.recordLocalFilterPeers(
+                account,
+                filter.id,
+                pinArray,
+                newAlwaysShow,
+                isPremium);
+        final int serverPeersLimit = org.telegram.messenger.ForkLocalFoldersAndPinsStore.getServerFilterPeersLimit(isPremium);
         for (int b = 0; b < 3; b++) {
             ArrayList<Long> fromArray;
             ArrayList<TLRPC.InputPeer> toArray;
@@ -1186,6 +1200,15 @@ public class FilterCreateActivity extends BaseFragment {
             for (int a = 0, N = fromArray.size(); a < N; a++) {
                 long did = fromArray.get(a);
                 if (b == 0 && newPinned.indexOfKey(did) >= 0) {
+                    continue;
+                }
+                if (b == 2 && org.telegram.messenger.ForkLocalFoldersAndPinsStore.isLocalOnlyFilterPinnedPeer(account, filter.id, did)) {
+                    continue;
+                }
+                if (b == 0 && org.telegram.messenger.ForkLocalFoldersAndPinsStore.isLocalOnlyFilterIncludedPeer(account, filter.id, did)) {
+                    continue;
+                }
+                if ((b == 0 || b == 2) && (req.filter.pinned_peers.size() + req.filter.include_peers.size()) >= serverPeersLimit) {
                     continue;
                 }
                 if (!DialogObject.isEncryptedDialog(did)) {
@@ -1218,8 +1241,20 @@ public class FilterCreateActivity extends BaseFragment {
         fragment.getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
             if (error != null) {
                 FileLog.w("ForkFolders: updateDialogFilter server returned error: " + error.code + " " + error.text + " for filter id=" + filter.id);
+                if ("DIALOG_FILTERS_TOO_MUCH".equals(error.text) || "FILTER_ID_INVALID".equals(error.text)) {
+                    org.telegram.messenger.ForkLocalFoldersAndPinsStore.markLocalOnlyFilter(
+                            account,
+                            filter.id,
+                            true,
+                            fragment.getMessagesController().getDialogFilters());
+                }
             } else {
                 FileLog.d("ForkFolders: updateDialogFilter server success for filter id=" + filter.id);
+                org.telegram.messenger.ForkLocalFoldersAndPinsStore.markLocalOnlyFilter(
+                        account,
+                        filter.id,
+                        false,
+                        fragment.getMessagesController().getDialogFilters());
             }
             if (progress) {
                 try {

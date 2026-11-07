@@ -1891,7 +1891,7 @@ public class NotificationsController extends BaseController implements Notificat
             } else {
                 // Never advance the Signal ratchet, process group distributions, or expose
                 // decrypted plaintext from background notifications (SA-11).
-                SecureChatEngine secureChat = new SecureChatEngine(
+                SecureChatEngine secureChat = SecureChatEngine.get(
                         ApplicationLoader.applicationContext, currentAccount, peerId);
                 String cached = messageObject.isOutOwner()
                         ? secureChat.getOutgoingText(messageObject.messageOwner.message)

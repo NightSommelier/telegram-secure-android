@@ -1684,19 +1684,17 @@ public class FilterTabsView extends FrameLayout {
         adapter.notifyDataSetChanged();
         invalidate();
         if (!isEditing && orderChanged) {
-            MessagesStorage.getInstance(UserConfig.selectedAccount).saveDialogFiltersOrder();
+            int account = UserConfig.selectedAccount;
+            MessagesStorage.getInstance(account).saveDialogFiltersOrder();
             TLRPC.TL_messages_updateDialogFiltersOrder req = new TLRPC.TL_messages_updateDialogFiltersOrder();
-            ArrayList<MessagesController.DialogFilter> filters = MessagesController.getInstance(UserConfig.selectedAccount).getDialogFilters();
-            for (int a = 0, N = filters.size(); a < N; a++) {
-                MessagesController.DialogFilter filter = filters.get(a);
-                if (filter.isDefault()) {
-                    req.order.add(0);
-                } else {
-                    req.order.add(filter.id);
-                }
-            }
-            MessagesController.getInstance(UserConfig.selectedAccount).lockFiltersInternal();
-            ConnectionsManager.getInstance(UserConfig.selectedAccount).sendRequest(req, (response, error) -> {
+            ArrayList<MessagesController.DialogFilter> filters = MessagesController.getInstance(account).getDialogFilters();
+            req.order = org.telegram.messenger.ForkLocalFoldersAndPinsStore.buildServerFolderOrderRequest(
+                    account,
+                    filters,
+                    UserConfig.getInstance(account).isPremium(),
+                    true);
+            MessagesController.getInstance(account).lockFiltersInternal();
+            ConnectionsManager.getInstance(account).sendRequest(req, (response, error) -> {
             });
             orderChanged = false;
         }

@@ -3356,6 +3356,7 @@ public class MessagesStorage extends BaseController {
                         HashSet<Long> existingDialogsIds = new HashSet<>();
 
                         LinkedHashMap<Integer, Long> secretChatsMap = null;
+                        ArrayList<Long> currentLocalPinnedIds = new ArrayList<>();
                         if (filter.pinnedDialogs.size() != 0) {
                             ArrayList<Long> pinArray = new ArrayList<>();
                             boolean hasSecret = false;
@@ -3366,25 +3367,26 @@ public class MessagesStorage extends BaseController {
                                 }
                                 pinArray.add(did);
                             }
-                            if (hasSecret) {
-                                secretChatsMap = new LinkedHashMap<>();
-                                LongSparseIntArray pinnedDialogs = filter.pinnedDialogs;
-                                Collections.sort(pinArray, (o1, o2) -> {
-                                    int idx1 = pinnedDialogs.get(o1);
-                                    int idx2 = pinnedDialogs.get(o2);
-                                    if (idx1 > idx2) {
-                                        return 1;
-                                    } else if (idx1 < idx2) {
-                                        return -1;
-                                    }
-                                    return 0;
-                                });
-                                for (int c = 0, N2 = pinArray.size(); c < N2; c++) {
-                                    long did = pinArray.get(c);
-                                    if (!DialogObject.isEncryptedDialog(did)) {
-                                        continue;
+                            LongSparseIntArray pinnedDialogs = filter.pinnedDialogs;
+                            Collections.sort(pinArray, (o1, o2) -> {
+                                int idx1 = pinnedDialogs.get(o1);
+                                int idx2 = pinnedDialogs.get(o2);
+                                if (idx1 > idx2) {
+                                    return 1;
+                                } else if (idx1 < idx2) {
+                                    return -1;
+                                }
+                                return 0;
+                            });
+                            for (int c = 0, N2 = pinArray.size(); c < N2; c++) {
+                                long did = pinArray.get(c);
+                                if (DialogObject.isEncryptedDialog(did)) {
+                                    if (secretChatsMap == null) {
+                                        secretChatsMap = new LinkedHashMap<>();
                                     }
                                     secretChatsMap.put(c, did);
+                                } else {
+                                    currentLocalPinnedIds.add(did);
                                 }
                             }
                         }
@@ -3397,7 +3399,8 @@ public class MessagesStorage extends BaseController {
                             existingIds.remove(did);
                         }
 
-                        filter.pinnedDialogs.clear();
+                        HashMap<Long, TLRPC.InputPeer> incomingPinnedPeersMap = new HashMap<>();
+                        ArrayList<Long> incomingServerPinnedIds = new ArrayList<>();
                         for (int b = 0, N2 = newFilter.pinned_peers.size(); b < N2; b++) {
                             TLRPC.InputPeer peer = newFilter.pinned_peers.get(b);
                             Long id;
@@ -3406,6 +3409,18 @@ public class MessagesStorage extends BaseController {
                             } else {
                                 id = -(peer.chat_id != 0 ? peer.chat_id : peer.channel_id);
                             }
+                            incomingServerPinnedIds.add(id);
+                            incomingPinnedPeersMap.put(id, peer);
+                        }
+                        List<Long> mergedFilterPinnedIds = ForkLocalFoldersAndPinsStore.mergeFilterPinnedPeersOnSync(
+                                currentAccount,
+                                filter.id,
+                                incomingServerPinnedIds,
+                                currentLocalPinnedIds);
+
+                        filter.pinnedDialogs.clear();
+                        for (int b = 0, N2 = mergedFilterPinnedIds.size(); b < N2; b++) {
+                            Long id = mergedFilterPinnedIds.get(b);
                             int index = filter.pinnedDialogs.size();
                             if (secretChatsMap != null) {
                                 Long did;
@@ -3418,7 +3433,8 @@ public class MessagesStorage extends BaseController {
                             existingIds.remove(id);
                             if (!existingDialogsIds.remove(id)) {
                                 changed = true;
-                                if (!dialogsToLoadMap.containsKey(id)) {
+                                TLRPC.InputPeer peer = incomingPinnedPeersMap.get(id);
+                                if (peer != null && !dialogsToLoadMap.containsKey(id)) {
                                     dialogsToLoad.add(id);
                                     dialogsToLoadMap.put(id, peer);
                                 }
@@ -3436,11 +3452,16 @@ public class MessagesStorage extends BaseController {
 
                             if (c == 0) {
                                 // put pinned_peers into include_peers (alwaysShow)
-                                ArrayList<Long> pinnedArray = toPeerIds(newFilter.pinned_peers);
+                                ArrayList<Long> pinnedArray = new ArrayList<>(mergedFilterPinnedIds);
                                 for (int i = 0; i < pinnedArray.size(); ++i) {
                                     fromArray.remove(pinnedArray.get(i));
                                 }
                                 fromArray.addAll(0, pinnedArray);
+                                fromArray = ForkLocalFoldersAndPinsStore.mergeFilterAlwaysShowOnSync(
+                                        currentAccount,
+                                        filter.id,
+                                        fromArray,
+                                        toArray);
                             }
 
                             final int fromArrayCount = fromArray.size();
@@ -3576,8 +3597,13 @@ public class MessagesStorage extends BaseController {
         putUsersAndChats(users, chats, true, false);
         for (int a = 0, N = filtersToDelete.size(); a < N; a++) {
             MessagesController.DialogFilter filter = filtersToDelete.valueAt(a);
-            if (filtersOrder != null && filtersOrder.size() >= 10 && dialogFilters.size() <= getMessagesController().dialogFiltersLimitPremium) {
-                FileLog.d("ForkFolders: retaining local filter id=" + filter.id + " name=" + filter.name + " missing from server response (server count=" + filtersOrder.size() + ", local count=" + dialogFilters.size() + ")");
+            if (ForkLocalFoldersAndPinsStore.shouldRetainMissingFilterOnSync(
+                    currentAccount,
+                    filter.id,
+                    filtersOrder,
+                    dialogFilters.size(),
+                    getMessagesController().dialogFiltersLimitPremium)) {
+                FileLog.d("ForkFolders: retaining local filter id=" + filter.id + " name=" + filter.name + " missing from server response (server count=" + (filtersOrder != null ? filtersOrder.size() : 0) + ", local count=" + dialogFilters.size() + ")");
                 continue;
             }
             FileLog.d("ForkFolders: deleting filter id=" + filter.id + " name=" + filter.name);
@@ -3607,10 +3633,19 @@ public class MessagesStorage extends BaseController {
             saveDialogFilterInternal(filtersToSave.get(a), false, true);
             anythingChanged = true;
         }
+        List<Integer> mergedFiltersOrder = ForkLocalFoldersAndPinsStore.mergeFolderOrderOnSync(
+                currentAccount,
+                filtersOrder,
+                dialogFilters,
+                getUserConfig().isPremium());
         boolean orderChanged = false;
         for (int a = 0, N = dialogFilters.size(); a < N; a++) {
             MessagesController.DialogFilter filter = dialogFilters.get(a);
-            int order = filtersOrder.indexOf(filter.id);
+            int keyId = filter.isDefault() ? 0 : filter.id;
+            int order = mergedFiltersOrder.indexOf(keyId);
+            if (order < 0) {
+                order = mergedFiltersOrder.size() + a;
+            }
             if (filter.order != order) {
                 filter.order = order;
                 anythingChanged = true;
@@ -3641,6 +3676,7 @@ public class MessagesStorage extends BaseController {
         try {
             dialogFilters.remove(filter);
             dialogFiltersMap.remove(filter.id);
+            ForkLocalFoldersAndPinsStore.removeFilter(currentAccount, filter.id);
             database.executeFast("DELETE FROM dialog_filter WHERE id = " + filter.id).stepThis().dispose();
             database.executeFast("DELETE FROM dialog_filter_ep WHERE id = " + filter.id).stepThis().dispose();
             database.executeFast("DELETE FROM dialog_filter_pin_v2 WHERE id = " + filter.id).stepThis().dispose();
@@ -3694,6 +3730,7 @@ public class MessagesStorage extends BaseController {
 
     public void saveDialogFiltersOrder() {
         ArrayList<MessagesController.DialogFilter> filtersFinal = new ArrayList<>(getMessagesController().dialogFilters);
+        ForkLocalFoldersAndPinsStore.recordLocalFolderOrder(currentAccount, filtersFinal);
         storageQueue.postRunnable(() -> {
             dialogFilters.clear();
             dialogFiltersMap.clear();
@@ -14603,6 +14640,128 @@ public class MessagesStorage extends BaseController {
         });
     }
 
+    public void deleteChannelUser(long channelId, long userId) {
+        if (channelId <= 0 || userId <= 0) {
+            return;
+        }
+        storageQueue.postRunnable(() -> {
+            SQLitePreparedStatement state = null;
+            try {
+                state = database.executeFast("DELETE FROM channel_users_v2 WHERE did = ? AND uid = ?");
+                state.requery();
+                state.bindLong(1, -channelId);
+                state.bindLong(2, userId);
+                state.step();
+            } catch (Exception e) {
+                checkSQLException(e);
+            } finally {
+                if (state != null) {
+                    state.dispose();
+                }
+            }
+        });
+    }
+
+    public ArrayList<Long> loadChannelParticipantIdsSync(long channelId) {
+        ArrayList<Long> result = new ArrayList<>();
+        if (channelId <= 0) {
+            return result;
+        }
+        Runnable queryTask = () -> {
+            SQLiteCursor cursor = null;
+            try {
+                cursor = database.queryFinalized("SELECT uid FROM channel_users_v2 WHERE did = " + (-channelId) + " ORDER BY date DESC");
+                while (cursor.next()) {
+                    long uid = cursor.longValue(0);
+                    if (uid > 0 && !result.contains(uid)) {
+                        result.add(uid);
+                    }
+                }
+            } catch (Exception e) {
+                checkSQLException(e);
+            } finally {
+                if (cursor != null) {
+                    cursor.dispose();
+                }
+            }
+        };
+        if (Thread.currentThread() == storageQueue) {
+            queryTask.run();
+        } else {
+            CountDownLatch latch = new CountDownLatch(1);
+            storageQueue.postRunnable(() -> {
+                try {
+                    queryTask.run();
+                } finally {
+                    latch.countDown();
+                }
+            });
+            try {
+                latch.await(3, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ignore) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        return result;
+    }
+
+    public ArrayList<TLRPC.Message> loadRecentIncomingMessagesSync(long dialogId, int limit) {
+        ArrayList<TLRPC.Message> result = new ArrayList<>();
+        if (dialogId <= 0 || limit <= 0) {
+            return result;
+        }
+        Runnable queryTask = () -> {
+            SQLiteCursor cursor = null;
+            try {
+                cursor = database.queryFinalized(String.format(
+                        Locale.US,
+                        "SELECT data FROM messages_v2 WHERE uid = %d AND out = 0 AND mid > 0 ORDER BY mid DESC LIMIT %d",
+                        dialogId,
+                        limit));
+                long clientUserId = UserConfig.getInstance(currentAccount).clientUserId;
+                while (cursor.next()) {
+                    NativeByteBuffer data = cursor.byteBufferValue(0);
+                    if (data != null) {
+                        try {
+                            TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                            if (message != null) {
+                                message.readAttachPath(data, clientUserId);
+                                result.add(message);
+                            }
+                        } finally {
+                            data.reuse();
+                        }
+                    }
+                }
+                Collections.reverse(result);
+            } catch (Exception e) {
+                checkSQLException(e);
+            } finally {
+                if (cursor != null) {
+                    cursor.dispose();
+                }
+            }
+        };
+        if (Thread.currentThread() == storageQueue) {
+            queryTask.run();
+        } else {
+            CountDownLatch latch = new CountDownLatch(1);
+            storageQueue.postRunnable(() -> {
+                try {
+                    queryTask.run();
+                } finally {
+                    latch.countDown();
+                }
+            });
+            try {
+                latch.await(3, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ignore) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        return result;
+    }
+
     private ArrayList<Long> markMessagesAsDeletedInternal(long dialogId, ArrayList<Integer> messages, boolean deleteFiles, int mode, int threadMessageId) {
         SQLiteCursor cursor = null;
         SQLitePreparedStatement state = null;
@@ -17502,23 +17661,45 @@ public class MessagesStorage extends BaseController {
                         cursor = database.queryFinalized("SELECT pinned FROM dialogs WHERE did = " + dialog.id);
                         if (cursor.next()) {
                             exists = true;
+                            int existingPinned = cursor.intValue(0);
                             if (dialog.pinned) {
-                                dialog.pinnedNum = cursor.intValue(0);
+                                dialog.pinnedNum = existingPinned;
+                            } else if (existingPinned > 0 && ForkLocalFoldersAndPinsStore.isLocalOnlyPinnedDialog(currentAccount, dialog.folder_id, dialog.id)) {
+                                dialog.pinned = true;
+                                dialog.pinnedNum = existingPinned;
                             }
                         }
                         cursor.dispose();
                         cursor = null;
                     } else if (check == 3) {
                         int mid = 0;
-                        cursor = database.queryFinalized("SELECT last_mid FROM dialogs WHERE did = " + dialog.id);
+                        int existingPinned = 0;
+                        cursor = database.queryFinalized("SELECT last_mid, pinned FROM dialogs WHERE did = " + dialog.id);
                         if (cursor.next()) {
                             mid = cursor.intValue(0);
+                            existingPinned = cursor.intValue(1);
                         }
                         cursor.dispose();
                         cursor = null;
                         if (mid < 0) {
                             continue;
                         }
+                        if (!dialog.pinned && existingPinned > 0 && ForkLocalFoldersAndPinsStore.isLocalOnlyPinnedDialog(currentAccount, dialog.folder_id, dialog.id)) {
+                            dialog.pinned = true;
+                            dialog.pinnedNum = existingPinned;
+                        }
+                    } else if (!dialog.pinned && ForkLocalFoldersAndPinsStore.isLocalOnlyPinnedDialog(currentAccount, dialog.folder_id, dialog.id)) {
+                        int existingPinned = 0;
+                        cursor = database.queryFinalized("SELECT pinned FROM dialogs WHERE did = " + dialog.id);
+                        if (cursor.next()) {
+                            existingPinned = cursor.intValue(0);
+                        }
+                        cursor.dispose();
+                        cursor = null;
+                        dialog.pinned = true;
+                        dialog.pinnedNum = existingPinned > 0
+                                ? existingPinned
+                                : ForkLocalFoldersAndPinsStore.getFallbackPinnedNum(currentAccount, dialog.folder_id, dialog.id);
                     }
                     int messageDate = 0;
 

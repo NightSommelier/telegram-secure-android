@@ -286,6 +286,8 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
         titleTextView.setCanHideRightDrawable(false);
         titleTextView.setRightDrawableOutside(true);
         titleTextView.setPadding(0, dp(6), 0, dp(12));
+        titleTextView.setScrollNonFitText(true);
+        titleTextView.setScrollDelay(2000);
         addView(titleTextView);
 
         if (useAnimatedSubtitle()) {
@@ -307,6 +309,8 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
             subtitleTextView.setTextSize(14);
             subtitleTextView.setGravity(Gravity.LEFT);
             subtitleTextView.setPadding(0, 0, dp(10), 0);
+            subtitleTextView.setScrollNonFitText(true);
+            subtitleTextView.setScrollDelay(2000);
             addView(subtitleTextView);
         }
 

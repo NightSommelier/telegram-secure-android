@@ -621,10 +621,11 @@ public class FiltersSetupActivity extends BaseFragment implements NotificationCe
             getMessagesStorage().saveDialogFiltersOrder();
             TLRPC.TL_messages_updateDialogFiltersOrder req = new TLRPC.TL_messages_updateDialogFiltersOrder();
             ArrayList<MessagesController.DialogFilter> filters = getMessagesController().getDialogFilters();
-            for (int a = 0, N = filters.size(); a < N; a++) {
-                MessagesController.DialogFilter filter = filters.get(a);
-                req.order.add(filter.id);
-            }
+            req.order = org.telegram.messenger.ForkLocalFoldersAndPinsStore.buildServerFolderOrderRequest(
+                    currentAccount,
+                    filters,
+                    getUserConfig().isPremium(),
+                    true);
             getConnectionsManager().sendRequest(req, (response, error) -> {
 
             });
