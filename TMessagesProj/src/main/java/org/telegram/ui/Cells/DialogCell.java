@@ -3111,7 +3111,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 securePreviewPeerId = currentDialogId;
             }
             SecureChatEngine.DialogPreview preview = securePreviewEngine.resolveDialogPreview(
-                    carrier, message.isOutOwner(), message.getForkSecureSenderUserId(), false);
+                    carrier, message.isOutOwner(), message.getForkSecureSenderUserId(), true);
             if (preview != null) {
                 CharSequence previewText = formatForkSecureDialogPreview(getContext(), preview);
                 if (preview.kind == SecureChatEngine.DialogPreview.Kind.CONTROL_DELETE) {
@@ -3119,6 +3119,52 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 }
                 forkSecurePreviewCache.put(cacheKey, previewText);
                 message.applyNewText(previewText);
+            } else if (!message.isOutOwner()) {
+                boolean shouldSchedule;
+                synchronized (forkSecurePreviewsInFlight) {
+                    shouldSchedule = forkSecurePreviewsInFlight.add(cacheKey);
+                }
+                if (shouldSchedule) {
+                    final Context appContext = getContext().getApplicationContext();
+                    final int account = currentAccount;
+                    final long dialogId = currentDialogId;
+                    final long senderUserId = message.getForkSecureSenderUserId();
+                    final MessageObject targetMessage = message;
+                    Utilities.globalQueue.postRunnable(() -> {
+                        CharSequence resolvedText = null;
+                        boolean controlDelete = false;
+                        try {
+                            SecureChatEngine bgEngine = SecureChatEngine.get(appContext, account, dialogId);
+                            SecureChatEngine.DialogPreview bgPreview = bgEngine.resolveDialogPreview(
+                                    carrier, false, senderUserId, false);
+                            if (bgPreview != null) {
+                                resolvedText = formatForkSecureDialogPreview(appContext, bgPreview);
+                                controlDelete = bgPreview.kind == SecureChatEngine.DialogPreview.Kind.CONTROL_DELETE;
+                            }
+                        } catch (RuntimeException error) {
+                            resolvedText = LocaleController.getString(R.string.ForkSecureMessageFailed);
+                        } finally {
+                            synchronized (forkSecurePreviewsInFlight) {
+                                forkSecurePreviewsInFlight.remove(cacheKey);
+                            }
+                        }
+                        if (resolvedText != null) {
+                            forkSecurePreviewCache.put(cacheKey, resolvedText);
+                            final CharSequence finalText = resolvedText;
+                            final boolean finalControlDelete = controlDelete;
+                            AndroidUtilities.runOnUIThread(() -> {
+                                if (this.message == targetMessage && this.currentDialogId == dialogId) {
+                                    if (finalControlDelete) {
+                                        targetMessage.deleted = true;
+                                    }
+                                    targetMessage.applyNewText(finalText);
+                                    buildLayout();
+                                    invalidate();
+                                }
+                            });
+                        }
+                    });
+                }
             }
         } catch (RuntimeException error) {
             CharSequence failedText = getString(R.string.ForkSecureMessageFailed);

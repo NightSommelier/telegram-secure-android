@@ -6994,7 +6994,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (messageObject == null || parentFragment == null) {
             return;
         }
-        if (messageObject.isForkSecureCarrier() || isForkSecureProtectedPeer(messageObject.getDialogId())) {
+        if (messageObject.forkSecureService) {
             showForkSecureError(R.string.ForkSecureActionUnsupported);
             return;
         }

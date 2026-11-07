@@ -22827,14 +22827,29 @@ public class ChatActivity extends BaseFragment implements
         for (int i = 0; i < batch.size(); i++) {
             updateSecureStickerRow(batch.get(i));
         }
-        updateVisibleRows();
     }
 
     private void updateSecureStickerRow(MessageObject message) {
-        if (message != null && fragmentView != null && chatAdapter != null && messages.indexOf(message) >= 0) {
-            message.forceUpdate = true;
-            chatAdapter.updateRowWithMessageObject(
-                    message, false, needsViewTypeReplaceForSecureRow(message));
+        if (message != null && fragmentView != null && chatAdapter != null) {
+            if (messages.indexOf(message) >= 0) {
+                message.forceUpdate = true;
+                chatAdapter.updateRowWithMessageObject(
+                        message, false, needsViewTypeReplaceForSecureRow(message));
+            } else if (chatListView != null) {
+                int count = chatListView.getChildCount();
+                for (int i = 0; i < count; i++) {
+                    View child = chatListView.getChildAt(i);
+                    if (child instanceof ChatMessageCell) {
+                        ChatMessageCell cell = (ChatMessageCell) child;
+                        MessageObject rowMsg = cell.getMessageObject();
+                        if (rowMsg != null && rowMsg.replyMessageObject == message) {
+                            applySecureReplyOverlayFast(rowMsg, secureChatEngine);
+                            rowMsg.forceUpdate = true;
+                            chatAdapter.updateRowWithMessageObject(rowMsg, false, false);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -27472,7 +27487,7 @@ public class ChatActivity extends BaseFragment implements
                             for (int b = 0, N2 = arrayList.size(); b < N2; b++) {
                                 MessageObject owner = arrayList.get(b);
                                 addReplyMessageOwner(owner, 0);
-                                if (owner != null) {
+                                if (owner != null && !applySecureReplyOverlayFast(owner, secureChatEngine)) {
                                     ownersToOverlay.add(owner);
                                 }
                             }

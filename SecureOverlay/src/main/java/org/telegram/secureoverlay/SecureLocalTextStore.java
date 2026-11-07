@@ -205,10 +205,8 @@ final class SecureLocalTextStore {
                 blobs.delete(legacy);
                 data = payload;
             } else {
-                if (OUTGOING_PREFIX.equals(prefix)) {
-                    synchronized (displayCache) {
-                        displayCache.put(storageKey, NEGATIVE_SENTINEL);
-                    }
+                synchronized (displayCache) {
+                    displayCache.put(storageKey, NEGATIVE_SENTINEL);
                 }
                 return null;
             }

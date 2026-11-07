@@ -5644,7 +5644,7 @@ public class MessageObject {
     }
 
     public boolean hasReactions() {
-        if (isForkSecureCarrier()) {
+        if (forkSecureService) {
             return false;
         }
         return messageOwner.reactions != null && !messageOwner.reactions.results.isEmpty();
@@ -14011,7 +14011,7 @@ public class MessageObject {
     }
 
     public boolean isReactionsAvailable() {
-        if (isForkSecureCarrier()) {
+        if (forkSecureService) {
             return false;
         }
         return !isEditing() && !isSponsored() && isSent() && !isEphemeral() && !isExpiredStory() && canSetReaction();

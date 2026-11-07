@@ -16260,6 +16260,9 @@ public class MessagesController extends BaseController implements NotificationCe
         });
     }
 
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> forkSecurePeerSyncCooldown =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     public void syncForkSecurePeerIncomingMessages(
             final long peerUserId,
             final long groupDialogId,
@@ -16272,9 +16275,16 @@ public class MessagesController extends BaseController implements NotificationCe
                 || !SecureChatEngine.hasLocalState(context, currentAccount, peerUserId)) {
             return;
         }
+        final String cooldownKey = groupDialogId + "_" + peerUserId;
+        final long now = android.os.SystemClock.elapsedRealtime();
+        Long lastSync = forkSecurePeerSyncCooldown.get(cooldownKey);
+        if (lastSync != null && now - lastSync < 15_000L) {
+            return;
+        }
         if (!forkSecureSyncingPeers.add(peerUserId)) {
             return;
         }
+        forkSecurePeerSyncCooldown.put(cooldownKey, now);
         Utilities.globalQueue.postRunnable(() -> {
             try {
                 SecureChatEngine peerEngine = SecureChatEngine.get(context, currentAccount, peerUserId);
@@ -16283,6 +16293,7 @@ public class MessagesController extends BaseController implements NotificationCe
                     return;
                 }
                 SecureChatEngine groupEngine = SecureChatEngine.get(context, currentAccount, groupDialogId);
+                final boolean hadSenderKeyBefore = groupEngine.hasSenderKeyFrom(peerUserId);
                 ArrayList<TLRPC.Message> localIncoming =
                         getMessagesStorage().loadRecentIncomingMessagesSync(peerUserId, 30);
                 boolean receivedKey = processForkSecureIncomingSyncBatch(peerEngine, peerUserId, localIncoming);
@@ -16327,7 +16338,7 @@ public class MessagesController extends BaseController implements NotificationCe
                     }
                 }
 
-                if (receivedKey || groupEngine.hasSenderKeyFrom(peerUserId)) {
+                if (receivedKey || (!hadSenderKeyBefore && groupEngine.hasSenderKeyFrom(peerUserId))) {
                     SecureChatEngine.clearFailedDecryptCache(currentAccount, groupDialogId);
                     if (onSyncedUi != null) {
                         AndroidUtilities.runOnUIThread(onSyncedUi);

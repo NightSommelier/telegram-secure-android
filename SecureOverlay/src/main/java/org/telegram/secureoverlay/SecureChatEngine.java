@@ -1380,11 +1380,11 @@ public final class SecureChatEngine {
             }
             return CachedText.hit(res.text);
         }
+        if (hasRecentFailedDecrypt(account, peerUserId, carrier)) {
+            return CachedText.FAILED;
+        }
         if (cacheOnly && res.state == SecureLocalTextStore.LookupResult.NEGATIVE) {
             return CachedText.NEGATIVE;
-        }
-        if (!cacheOnly && hasRecentFailedDecrypt(account, peerUserId, carrier)) {
-            return CachedText.FAILED;
         }
         return CachedText.COLD;
     }
@@ -1573,7 +1573,8 @@ public final class SecureChatEngine {
             } catch (Exception e) {
                 if (e instanceof org.signal.libsignal.protocol.InvalidMessageException
                         || e instanceof org.signal.libsignal.protocol.InvalidKeyIdException
-                        || e instanceof org.signal.libsignal.protocol.UntrustedIdentityException) {
+                        || e instanceof org.signal.libsignal.protocol.UntrustedIdentityException
+                        || e instanceof org.signal.libsignal.protocol.NoSessionException) {
                     String cacheKey = failedDecryptKey(account, peerUserId, carrier);
                     synchronized (failedDecryptCarriers) {
                         failedDecryptCarriers.put(cacheKey, new FailedDecryptEntry(System.currentTimeMillis()));
