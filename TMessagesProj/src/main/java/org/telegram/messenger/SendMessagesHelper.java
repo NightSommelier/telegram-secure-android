@@ -66,6 +66,7 @@ import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.secureoverlay.SecureMediaCrypto;
 import org.telegram.secureoverlay.SecureSavedMessageCrypto;
 import org.telegram.secureoverlay.SecureSavedMessagesKeyStore;
+import org.telegram.secureoverlay.SecureSavedMessagesPinStore;
 import org.telegram.secureoverlay.SecureSavedMessagesSettings;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.NativeByteBuffer;
@@ -2449,7 +2450,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         SecureChatEngine secureChat = null;
         if (!pending.savedMessages) {
             try {
-                secureChat = new SecureChatEngine(ApplicationLoader.applicationContext, currentAccount, pending.peer);
+                secureChat = SecureChatEngine.get(ApplicationLoader.applicationContext, currentAccount, pending.peer);
             } catch (Throwable e) {
                 FileLog.e(e);
             }
@@ -2551,10 +2552,56 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             SecureSavedMessageCrypto.encryptRecord(
                                     SecureContentCodec.encodeSticker(manifest), key));
                 } else {
-                    SecureChatEngine secureChat = new SecureChatEngine(
+                    if (DialogObject.isChatDialog(pending.peer)) {
+                        ensureForkSecureGroupSenderKeyDistributedSync(pending.peer, false);
+                    }
+                    SecureChatEngine secureChat = SecureChatEngine.get(
                             ApplicationLoader.applicationContext, currentAccount, pending.peer);
                     carrier = secureChat.encryptStickerManifest(manifest);
                 }
+
+                String stickerExt;
+                if (secureStickerFormat == SecureContentCodec.STICKER_FORMAT_TGS) {
+                    stickerExt = ".tgs";
+                } else if (secureStickerFormat == SecureContentCodec.STICKER_FORMAT_WEBM) {
+                    stickerExt = ".webm";
+                } else {
+                    stickerExt = ".webp";
+                }
+                File localStickerDir = new File(
+                        ApplicationLoader.applicationContext.getCacheDir(),
+                        "fork-secure-media-in");
+                if (!localStickerDir.exists()) {
+                    localStickerDir.mkdirs();
+                }
+                File localStickerFile = new File(
+                        localStickerDir,
+                        Utilities.bytesToHex(manifest.mediaId) + stickerExt);
+                if (!localStickerFile.isFile() || localStickerFile.length() != manifest.plaintextSize) {
+                    try {
+                        AndroidUtilities.copyFile(secureSource, localStickerFile);
+                    } catch (Throwable ignore) {
+                    }
+                }
+                String cachedStickerPath = localStickerFile.isFile()
+                        ? localStickerFile.getAbsolutePath()
+                        : secureSource.getAbsolutePath();
+                MessageObject.cacheOutgoingForkSecureMedia(
+                        carrier,
+                        cachedStickerPath,
+                        MessageObject.FORK_SECURE_MEDIA_KIND_STICKER,
+                        secureWidth,
+                        secureHeight,
+                        null,
+                        pending.document.mime_type,
+                        null,
+                        SecureContentCodec.ATTACHMENT_PRESENTATION_FILE,
+                        0,
+                        0,
+                        "",
+                        "",
+                        null,
+                        null);
 
                 ArrayList<String> paths = new ArrayList<>();
                 paths.add(encryptedFile.getAbsolutePath());
@@ -2622,17 +2669,23 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         if (!savedMessages && !SecureChatEngine.hasLocalState(ApplicationLoader.applicationContext, currentAccount, peer)) {
             return false;
         }
-        final SecureChatEngine secureChat;
-        try {
-            secureChat = savedMessages ? null : new SecureChatEngine(
-                    ApplicationLoader.applicationContext, currentAccount, peer);
-            if (!savedMessages && !secureChat.isPaired()) {
-                return false;
+        if (!savedMessages) {
+            try {
+                SecureChatEngine.Mode mode = org.telegram.secureoverlay.SecureChatState.getMode(
+                        ApplicationLoader.applicationContext, currentAccount, peer);
+                if (mode != SecureChatEngine.Mode.PROTECTED) {
+                    if (mode == SecureChatEngine.Mode.IDENTITY_CHANGED
+                            || mode == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                        showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                        return true;
+                    }
+                    return false;
+                }
+            } catch (RuntimeException error) {
+                FileLog.e(error);
+                showForkSecureError(R.string.ForkSecureSetupSendFailed);
+                return true;
             }
-        } catch (RuntimeException error) {
-            FileLog.e(error);
-            showForkSecureError(R.string.ForkSecureSetupSendFailed);
-            return true;
         }
 
         final boolean isGif = MessageObject.isGifDocument(document) || "image/gif".equalsIgnoreCase(document.mime_type);
@@ -2693,7 +2746,6 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         }
         putToForkSecurePendingDocumentSends(String.valueOf(document.id), pending);
 
-        FileLoader.getInstance(currentAccount).loadFile(document, document, FileLoader.PRIORITY_HIGH, 0);
         FileLoader.getInstance(currentAccount).loadFile(document, document, FileLoader.PRIORITY_HIGH, 1);
         return true;
     }
@@ -2720,9 +2772,18 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         });
     }
 
+    private static final DispatchQueue forkSecureOutboundQueue =
+            new DispatchQueue("ForkSecureOutboundQueue");
+
     public static boolean isForkSecureProtectedPeer(int currentAccount, long peer) {
         if (!DialogObject.isUserDialog(peer) && !DialogObject.isChatDialog(peer)) {
             return false;
+        }
+        if (DialogObject.isChatDialog(peer)) {
+            TLRPC.Chat chat = MessagesController.getInstance(currentAccount).getChat(-peer);
+            if (chat != null && ChatObject.isChannelAndNotMegaGroup(chat)) {
+                return false;
+            }
         }
         if (peer == UserConfig.getInstance(currentAccount).getClientUserId()) {
             return SecureSavedMessagesSettings.isSecureByDefault(
@@ -2732,10 +2793,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             return false;
         }
         try {
-            SecureChatEngine.Mode mode = new SecureChatEngine(
+            SecureChatEngine.Mode mode = org.telegram.secureoverlay.SecureChatState.getMode(
                     ApplicationLoader.applicationContext,
                     currentAccount,
-                    peer).getMode();
+                    peer);
             return mode == SecureChatEngine.Mode.PROTECTED
                     || mode == SecureChatEngine.Mode.IDENTITY_CHANGED
                     || mode == SecureChatEngine.Mode.RECOVERY_CHANGED;
@@ -2816,7 +2877,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         SecureChatEngine secureChat = null;
         if (!savedMessages) {
             try {
-                secureChat = new SecureChatEngine(
+                secureChat = SecureChatEngine.get(
                         ApplicationLoader.applicationContext, currentAccount, dialogId);
                 if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
                         || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
@@ -3050,7 +3111,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         }
         final SecureChatEngine secureChat;
         try {
-            secureChat = new SecureChatEngine(
+            secureChat = SecureChatEngine.get(
                     ApplicationLoader.applicationContext,
                     accountInstance.getCurrentAccount(),
                     dialogId);
@@ -3210,7 +3271,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         }
         final SecureChatEngine secureChat;
         try {
-            secureChat = new SecureChatEngine(
+            secureChat = SecureChatEngine.get(
                     ApplicationLoader.applicationContext,
                     accountInstance.getCurrentAccount(),
                     dialogId);
@@ -3385,7 +3446,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 "secure Saved Messages carrier is not an attachment");
                     }
                     SecureContentCodec.Decoded content = SecureContentCodec.decode(
-                            SecureSavedMessageCrypto.decryptRecord(carrier.payload, key));
+                            SecureSavedMessageCrypto.decryptRecordBound(
+                                    carrier.payload,
+                                    key,
+                                    new SecureSavedMessagesPinStore(ApplicationLoader.applicationContext),
+                                    messageId));
                     if (content.attachment == null) {
                         throw new IllegalArgumentException(
                                 "secure Saved Messages carrier is not an attachment");
@@ -3396,7 +3461,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         throw new IllegalArgumentException(
                                 "only the author can edit a secure attachment caption");
                     }
-                    secureChat = new SecureChatEngine(
+                    secureChat = SecureChatEngine.get(
                             ApplicationLoader.applicationContext,
                             accountInstance.getCurrentAccount(),
                             dialogId);
@@ -3420,10 +3485,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             new SecureSavedMessagesKeyStore(
                                     ApplicationLoader.applicationContext).getOrCreate(
                                     accountInstance.getCurrentAccount());
+                    byte[] encodedEdited = SecureContentCodec.encodeAttachment(edited);
                     newCarrier = SecureCarrierCodec.encode(
                             SecureCarrierCodec.TYPE_SAVED_MESSAGE,
-                            SecureSavedMessageCrypto.encryptRecord(
-                                    SecureContentCodec.encodeAttachment(edited), key));
+                            messageId > 0
+                                    ? SecureSavedMessageCrypto.encryptRecordForEdit(
+                                            encodedEdited, key, messageId)
+                                    : SecureSavedMessageCrypto.encryptRecord(
+                                            encodedEdited, key));
                 } else {
                     editTransport = secureChat.encryptAttachmentForEdit(edited, 1024, 4096);
                     newCarrier = editTransport.attachmentCarrier;
@@ -3482,7 +3551,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             secureChat = null;
         } else {
             try {
-                secureChat = new SecureChatEngine(
+                secureChat = SecureChatEngine.get(
                         ApplicationLoader.applicationContext,
                         accountInstance.getCurrentAccount(),
                         dialogId);
@@ -3534,49 +3603,232 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     public boolean distributeForkSecureGroupSenderKeyPairwise(long groupDialogId) {
-        if (groupDialogId >= 0) {
+        if (!DialogObject.isChatDialog(groupDialogId)) {
             return false;
         }
-        TLRPC.ChatFull chatFull = getMessagesController().getChatFull(-groupDialogId);
-        if (chatFull == null
-                || chatFull.participants == null
-                || chatFull.participants.participants == null
-                || chatFull.participants.participants.isEmpty()) {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            Utilities.globalQueue.postRunnable(() -> {
+                try {
+                    ensureForkSecureGroupSenderKeyDistributedSync(groupDialogId, true);
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
+            });
+            return true;
+        }
+        return ensureForkSecureGroupSenderKeyDistributedSync(groupDialogId, true);
+    }
+
+    public boolean ensureForkSecureGroupSenderKeyDistributedSync(long groupDialogId, boolean force) {
+        if (!DialogObject.isChatDialog(groupDialogId)) {
+            return false;
+        }
+        long chatId = -groupDialogId;
+        TLRPC.Chat chat = getMessagesController().getChat(chatId);
+        if (chat != null && ChatObject.isChannelAndNotMegaGroup(chat)) {
+            return false;
+        }
+        java.util.Collection<Long> memberIds = resolveForkSecureGroupParticipantIds(groupDialogId, chat);
+        if (memberIds.isEmpty()) {
             return false;
         }
         long selfId = getUserConfig().getClientUserId();
-        int distributedCount = 0;
-        for (int i = 0; i < chatFull.participants.participants.size(); i++) {
-            TLRPC.ChatParticipant participant = chatFull.participants.participants.get(i);
-            if (participant == null || participant.user_id <= 0 || participant.user_id == selfId) {
+        for (Long memberObj : memberIds) {
+            if (memberObj == null) {
                 continue;
             }
-            long memberUserId = participant.user_id;
+            long memberUserId = memberObj;
+            if (memberUserId <= 0 || memberUserId == selfId) {
+                continue;
+            }
             if (!SecureChatEngine.hasLocalState(
                     ApplicationLoader.applicationContext, currentAccount, memberUserId)) {
                 continue;
             }
             try {
-                SecureChatEngine memberEngine = new SecureChatEngine(
+                SecureChatEngine memberEngine = SecureChatEngine.get(
                         ApplicationLoader.applicationContext, currentAccount, memberUserId);
-                if (memberEngine.getMode() != SecureChatEngine.Mode.PROTECTED) {
+                if (memberEngine.getMode() != SecureChatEngine.Mode.PROTECTED
+                        || !memberEngine.hasActiveSession()) {
                     continue;
                 }
-                String distCarrier =
-                        memberEngine.createGroupSenderKeyDistributionCarrier(groupDialogId);
+                String distCarrier = force
+                        ? memberEngine.createGroupSenderKeyDistributionCarrier(groupDialogId)
+                        : memberEngine.createGroupSenderKeyDistributionCarrierIfNeeded(groupDialogId);
                 if (distCarrier != null) {
                     AndroidUtilities.runOnUIThread(() -> {
                         SendMessageParams distParams = SendMessageParams.of(distCarrier, memberUserId);
                         distParams.forkSecureProvenance = true;
                         sendMessage(distParams);
                     });
-                    distributedCount++;
                 }
             } catch (Throwable e) {
                 FileLog.e(e);
             }
         }
-        return distributedCount > 0;
+        try {
+            SecureChatEngine groupEngine = SecureChatEngine.get(
+                    ApplicationLoader.applicationContext, currentAccount, groupDialogId);
+            if (groupEngine.isGroupKeyNeedsDistribution()) {
+                groupEngine.clearGroupKeyNeedsDistribution();
+            }
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
+        return true;
+    }
+
+    private java.util.Collection<Long> resolveForkSecureGroupParticipantIds(long groupDialogId, TLRPC.Chat chat) {
+        java.util.LinkedHashSet<Long> memberIds = new java.util.LinkedHashSet<>();
+        long chatId = -groupDialogId;
+        TLRPC.ChatFull chatFull = getMessagesController().getChatFull(chatId);
+        if (chatFull != null
+                && chatFull.participants != null
+                && chatFull.participants.participants != null) {
+            for (int i = 0; i < chatFull.participants.participants.size(); i++) {
+                TLRPC.ChatParticipant participant = chatFull.participants.participants.get(i);
+                if (participant != null && participant.user_id > 0) {
+                    memberIds.add(participant.user_id);
+                }
+            }
+        }
+        if (!memberIds.isEmpty() || android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            return memberIds;
+        }
+        boolean isChannel = ChatObject.isChannel(chat);
+        try {
+            TLRPC.ChatFull storedFull = getMessagesStorage().loadChatInfo(
+                    chatId, isChannel, new java.util.concurrent.CountDownLatch(1), false, false);
+            if (storedFull != null
+                    && storedFull.participants != null
+                    && storedFull.participants.participants != null) {
+                for (int i = 0; i < storedFull.participants.participants.size(); i++) {
+                    TLRPC.ChatParticipant participant = storedFull.participants.participants.get(i);
+                    if (participant != null && participant.user_id > 0) {
+                        memberIds.add(participant.user_id);
+                    }
+                }
+            }
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
+        if (isChannel && memberIds.isEmpty()) {
+            memberIds.addAll(getMessagesStorage().loadChannelParticipantIdsSync(chatId));
+        }
+        if (!memberIds.isEmpty()) {
+            return memberIds;
+        }
+        if (isChannel) {
+            java.util.concurrent.ConcurrentLinkedQueue<Long> fetchedIds =
+                    new java.util.concurrent.ConcurrentLinkedQueue<>();
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(2);
+
+            TLRPC.TL_channels_getParticipants recentReq = new TLRPC.TL_channels_getParticipants();
+            recentReq.channel = getMessagesController().getInputChannel(chatId);
+            recentReq.filter = new TLRPC.TL_channelParticipantsRecent();
+            recentReq.offset = 0;
+            recentReq.limit = 200;
+            getConnectionsManager().sendRequest(recentReq, (response, error) -> {
+                try {
+                    if (error == null && response instanceof TLRPC.TL_channels_channelParticipants) {
+                        TLRPC.TL_channels_channelParticipants res =
+                                (TLRPC.TL_channels_channelParticipants) response;
+                        for (int i = 0; i < res.participants.size(); i++) {
+                            long uid = MessageObject.getPeerId(res.participants.get(i).peer);
+                            if (uid > 0) {
+                                fetchedIds.add(uid);
+                            }
+                        }
+                        getMessagesStorage().putUsersAndChats(res.users, res.chats, true, true);
+                        getMessagesStorage().updateChannelUsers(chatId, res.participants);
+                        AndroidUtilities.runOnUIThread(() -> {
+                            getMessagesController().putUsers(res.users, false);
+                            getMessagesController().putChats(res.chats, false);
+                        });
+                    }
+                } finally {
+                    latch.countDown();
+                }
+            });
+
+            TLRPC.TL_channels_getParticipants contactsReq = new TLRPC.TL_channels_getParticipants();
+            contactsReq.channel = getMessagesController().getInputChannel(chatId);
+            TLRPC.TL_channelParticipantsContacts contactsFilter =
+                    new TLRPC.TL_channelParticipantsContacts();
+            contactsFilter.q = "";
+            contactsReq.filter = contactsFilter;
+            contactsReq.offset = 0;
+            contactsReq.limit = 200;
+            getConnectionsManager().sendRequest(contactsReq, (response, error) -> {
+                try {
+                    if (error == null && response instanceof TLRPC.TL_channels_channelParticipants) {
+                        TLRPC.TL_channels_channelParticipants res =
+                                (TLRPC.TL_channels_channelParticipants) response;
+                        for (int i = 0; i < res.participants.size(); i++) {
+                            long uid = MessageObject.getPeerId(res.participants.get(i).peer);
+                            if (uid > 0) {
+                                fetchedIds.add(uid);
+                            }
+                        }
+                        getMessagesStorage().putUsersAndChats(res.users, res.chats, true, true);
+                        AndroidUtilities.runOnUIThread(() -> {
+                            getMessagesController().putUsers(res.users, false);
+                            getMessagesController().putChats(res.chats, false);
+                        });
+                    }
+                } finally {
+                    latch.countDown();
+                }
+            });
+
+            try {
+                latch.await(4, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ignore) {
+                Thread.currentThread().interrupt();
+            }
+            memberIds.addAll(fetchedIds);
+        } else {
+            java.util.concurrent.ConcurrentLinkedQueue<Long> fetchedIds =
+                    new java.util.concurrent.ConcurrentLinkedQueue<>();
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            TLRPC.TL_messages_getFullChat req = new TLRPC.TL_messages_getFullChat();
+            req.chat_id = chatId;
+            getConnectionsManager().sendRequest(req, (response, error) -> {
+                try {
+                    if (error == null && response instanceof TLRPC.TL_messages_chatFull) {
+                        TLRPC.TL_messages_chatFull res = (TLRPC.TL_messages_chatFull) response;
+                        if (res.full_chat != null
+                                && res.full_chat.participants != null
+                                && res.full_chat.participants.participants != null) {
+                            for (int i = 0; i < res.full_chat.participants.participants.size(); i++) {
+                                TLRPC.ChatParticipant p = res.full_chat.participants.participants.get(i);
+                                if (p != null && p.user_id > 0) {
+                                    fetchedIds.add(p.user_id);
+                                }
+                            }
+                        }
+                        getMessagesStorage().putUsersAndChats(res.users, res.chats, true, true);
+                        getMessagesStorage().updateChatInfo(res.full_chat, false);
+                        AndroidUtilities.runOnUIThread(() -> {
+                            getMessagesController().putUsers(res.users, false);
+                            getMessagesController().putChats(res.chats, false);
+                            if (res.full_chat != null) {
+                                getMessagesController().putChatFull(res.full_chat);
+                            }
+                        });
+                    }
+                } finally {
+                    latch.countDown();
+                }
+            });
+            try {
+                latch.await(4, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ignore) {
+                Thread.currentThread().interrupt();
+            }
+            memberIds.addAll(fetchedIds);
+        }
+        return memberIds;
     }
 
     private static void prepareForkSecureAttachments(
@@ -3599,11 +3851,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             long monoForumPeerId,
         MessageSuggestionParams suggestionParams) {
         Utilities.globalQueue.postRunnable(() -> {
-            if (secureChat != null && DialogObject.isChatDialog(dialogId) && secureChat.isGroupKeyNeedsDistribution()) {
+            if (secureChat != null && DialogObject.isChatDialog(dialogId)) {
                 try {
-                    if (accountInstance.getSendMessagesHelper().distributeForkSecureGroupSenderKeyPairwise(dialogId)) {
-                        secureChat.clearGroupKeyNeedsDistribution();
-                    }
+                    accountInstance.getSendMessagesHelper()
+                            .ensureForkSecureGroupSenderKeyDistributedSync(dialogId, false);
                 } catch (Throwable e) {
                     FileLog.e(e);
                 }
@@ -3760,7 +4011,19 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         if (!persistentDir.exists()) {
                             persistentDir.mkdirs();
                         }
-                        String ext = mimeType.startsWith("video/") ? ".mp4" : (mimeType.startsWith("audio/") ? ".ogg" : ".bin");
+                        String ext = mimeType.startsWith("video/")
+                                ? ".mp4"
+                                : (mimeType.startsWith("audio/")
+                                        ? ".ogg"
+                                        : ("image/jpeg".equals(mimeType)
+                                                ? ".jpg"
+                                                : ("image/png".equals(mimeType)
+                                                        ? ".png"
+                                                        : ("image/webp".equals(mimeType)
+                                                                ? ".webp"
+                                                                : ("image/gif".equals(mimeType)
+                                                                        ? ".gif"
+                                                                        : ".bin")))));
                         File persistentCopy = new File(persistentDir, Utilities.bytesToHex(manifest.mediaId) + ext);
                         try {
                             AndroidUtilities.copyFile(resolved.file, persistentCopy);
@@ -3789,8 +4052,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     if (presentation.ttlSeconds == 0) {
                         try {
                             int indexKind;
-                            if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_FILE) {
-                                indexKind = SecureMediaIndex.KIND_FILE;
+                            if (resolved.photo) {
+                                indexKind = SecureMediaIndex.KIND_PHOTO;
                             } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
                                     || "image/gif".equalsIgnoreCase(mimeType)) {
                                 indexKind = SecureMediaIndex.KIND_GIF;
@@ -3800,8 +4063,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 indexKind = SecureMediaIndex.KIND_VOICE;
                             } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
                                 indexKind = SecureMediaIndex.KIND_MUSIC;
-                            } else if (resolved.photo) {
-                                indexKind = SecureMediaIndex.KIND_PHOTO;
+                            } else if (presentation.kind == SecureContentCodec.ATTACHMENT_PRESENTATION_FILE) {
+                                indexKind = SecureMediaIndex.KIND_FILE;
                             } else if (mimeType != null && mimeType.toLowerCase(Locale.ROOT).startsWith("video/")) {
                                 indexKind = SecureMediaIndex.KIND_VIDEO;
                             } else {
@@ -5827,10 +6090,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                 new SecureSavedMessagesKeyStore(
                                         ApplicationLoader.applicationContext).getOrCreate(
                                         currentAccount);
-                        message = SecureCarrierCodec.encode(
-                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
-                                SecureSavedMessageCrypto.encryptRecord(
-                                        SecureContentCodec.encodeText(message), key));
+                        int editTargetId = messageObject.getId();
+                        message = editTargetId > 0
+                                ? SecureSavedMessageCrypto.encryptTextCarrierForEdit(
+                                        message, key, editTargetId)
+                                : SecureSavedMessageCrypto.encryptTextCarrier(message, key);
                     } catch (Exception e) {
                         FileLog.e(e);
                         showForkSecureError(R.string.ForkSecureEditFailed);
@@ -5838,7 +6102,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     }
                 } else {
                     try {
-                        SecureChatEngine secureChat = new SecureChatEngine(
+                        SecureChatEngine secureChat = SecureChatEngine.get(
                                 ApplicationLoader.applicationContext,
                                 currentAccount,
                                 messageObject.getDialogId());
@@ -6851,117 +7115,165 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             return;
         }
         if (!forkSecureCarrier && isForkSecureProtectedPeer(peer)) {
-            final boolean savedMessages = peer == getUserConfig().getClientUserId();
+            final long targetPeer = peer;
+            final boolean savedMessages = targetPeer == getUserConfig().getClientUserId();
             if (user != null && user.phone != null && ttl == 0) {
-                try {
-                    SecureContentCodec.Contact secureContact = new SecureContentCodec.Contact(
-                            user.phone,
-                            user.first_name,
-                            user.last_name,
-                            "");
-                    String carrier;
-                    if (savedMessages) {
-                        SecureSavedMessagesKeyStore.KeyMaterial key =
-                                new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
-                        byte[] payload = SecureContentCodec.encodeContact(secureContact);
-                        carrier = SecureCarrierCodec.encode(
-                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
-                                SecureSavedMessageCrypto.encryptRecord(payload, key));
-                    } else {
-                        SecureChatEngine secureChat = new SecureChatEngine(
-                                ApplicationLoader.applicationContext, currentAccount, peer);
-                        if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
-                                || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
-                            showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
-                            return;
+                final SecureContentCodec.Contact secureContact = new SecureContentCodec.Contact(
+                        user.phone,
+                        user.first_name,
+                        user.last_name,
+                        "");
+                sendMessageParams.user = null;
+                sendMessageParams.message = null;
+                sendMessageParams.webPage = null;
+                sendMessageParams.mediaWebPage = null;
+                sendMessageParams.searchLinks = false;
+                sendMessageParams.entities = null;
+                sendMessageParams.replyQuote = null;
+                sendMessageParams.replyToStoryItem = null;
+                sendMessageParams.replyMarkup = null;
+                forkSecureOutboundQueue.postRunnable(() -> {
+                    try {
+                        String carrier;
+                        if (savedMessages) {
+                            SecureSavedMessagesKeyStore.KeyMaterial key =
+                                    new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
+                            byte[] payload = SecureContentCodec.encodeContact(secureContact);
+                            carrier = SecureCarrierCodec.encode(
+                                    SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                                    SecureSavedMessageCrypto.encryptRecord(payload, key));
+                        } else {
+                            SecureChatEngine secureChat = SecureChatEngine.get(
+                                    ApplicationLoader.applicationContext, currentAccount, targetPeer);
+                            if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                                    || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                                showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                                return;
+                            }
+                            if (!secureChat.isPaired()) {
+                                showForkSecureError(R.string.ForkSecureActionUnsupported);
+                                return;
+                            }
+                            if (DialogObject.isChatDialog(targetPeer)) {
+                                ensureForkSecureGroupSenderKeyDistributedSync(targetPeer, false);
+                            }
+                            carrier = secureChat.encryptContact(secureContact);
                         }
-                        if (!secureChat.isPaired()) {
-                            showForkSecureError(R.string.ForkSecureActionUnsupported);
-                            return;
-                        }
-                        carrier = secureChat.encryptContact(secureContact);
+                        AndroidUtilities.runOnUIThread(() -> {
+                            sendMessageParams.message = carrier;
+                            sendMessageParams.forkSecureProvenance = true;
+                            sendMessage(sendMessageParams);
+                        });
+                    } catch (Exception error) {
+                        FileLog.e(error);
+                        showForkSecureError(R.string.ForkSecureSetupSendFailed);
                     }
-                    sendMessageParams.user = null;
-                    sendMessageParams.message = carrier;
-                    sendMessageParams.forkSecureProvenance = true;
-                    sendMessage(sendMessageParams);
-                    return;
-                } catch (Exception error) {
-                    FileLog.e(error);
-                    showForkSecureError(R.string.ForkSecureSetupSendFailed);
-                    return;
-                }
+                });
+                return;
             } else if (location != null && location.geo != null && ttl == 0) {
-                try {
-                    int accuracy = location.geo.accuracy_radius;
-                    int period = location.period;
-                    SecureContentCodec.GeoLocation secureLocation = new SecureContentCodec.GeoLocation(
-                            location.geo.lat,
-                            location.geo._long,
-                            accuracy,
-                            period);
-                    String carrier;
-                    if (savedMessages) {
-                        SecureSavedMessagesKeyStore.KeyMaterial key =
-                                new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
-                        byte[] payload = SecureContentCodec.encodeLocation(secureLocation);
-                        carrier = SecureCarrierCodec.encode(
-                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
-                                SecureSavedMessageCrypto.encryptRecord(payload, key));
-                    } else {
-                        SecureChatEngine secureChat = new SecureChatEngine(
-                                ApplicationLoader.applicationContext, currentAccount, peer);
-                        if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
-                                || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
-                            showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
-                            return;
+                int accuracy = location.geo.accuracy_radius;
+                int period = location.period;
+                final SecureContentCodec.GeoLocation secureLocation = new SecureContentCodec.GeoLocation(
+                        location.geo.lat,
+                        location.geo._long,
+                        accuracy,
+                        period);
+                sendMessageParams.location = null;
+                sendMessageParams.message = null;
+                sendMessageParams.webPage = null;
+                sendMessageParams.mediaWebPage = null;
+                sendMessageParams.searchLinks = false;
+                sendMessageParams.entities = null;
+                sendMessageParams.replyQuote = null;
+                sendMessageParams.replyToStoryItem = null;
+                sendMessageParams.replyMarkup = null;
+                forkSecureOutboundQueue.postRunnable(() -> {
+                    try {
+                        String carrier;
+                        if (savedMessages) {
+                            SecureSavedMessagesKeyStore.KeyMaterial key =
+                                    new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
+                            byte[] payload = SecureContentCodec.encodeLocation(secureLocation);
+                            carrier = SecureCarrierCodec.encode(
+                                    SecureCarrierCodec.TYPE_SAVED_MESSAGE,
+                                    SecureSavedMessageCrypto.encryptRecord(payload, key));
+                        } else {
+                            SecureChatEngine secureChat = SecureChatEngine.get(
+                                    ApplicationLoader.applicationContext, currentAccount, targetPeer);
+                            if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                                    || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                                showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                                return;
+                            }
+                            if (!secureChat.isPaired()) {
+                                showForkSecureError(R.string.ForkSecureActionUnsupported);
+                                return;
+                            }
+                            if (DialogObject.isChatDialog(targetPeer)) {
+                                ensureForkSecureGroupSenderKeyDistributedSync(targetPeer, false);
+                            }
+                            carrier = secureChat.encryptLocation(secureLocation);
                         }
-                        if (!secureChat.isPaired()) {
-                            showForkSecureError(R.string.ForkSecureActionUnsupported);
-                            return;
-                        }
-                        carrier = secureChat.encryptLocation(secureLocation);
+                        AndroidUtilities.runOnUIThread(() -> {
+                            sendMessageParams.message = carrier;
+                            sendMessageParams.forkSecureProvenance = true;
+                            sendMessage(sendMessageParams);
+                        });
+                    } catch (Exception error) {
+                        FileLog.e(error);
+                        showForkSecureError(R.string.ForkSecureSetupSendFailed);
                     }
-                    sendMessageParams.location = null;
-                    sendMessageParams.message = carrier;
-                    sendMessageParams.forkSecureProvenance = true;
-                    sendMessage(sendMessageParams);
-                    return;
-                } catch (Exception error) {
-                    FileLog.e(error);
-                    showForkSecureError(R.string.ForkSecureSetupSendFailed);
-                    return;
-                }
+                });
+                return;
             } else if (!TextUtils.isEmpty(message) && ttl == 0) {
-                try {
-                    String carrier;
-                    if (savedMessages) {
-                        SecureSavedMessagesKeyStore.KeyMaterial key =
-                                new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
-                        carrier = SecureSavedMessageCrypto.encryptTextCarrier(message, key);
-                    } else {
-                        SecureChatEngine secureChat = new SecureChatEngine(
-                                ApplicationLoader.applicationContext, currentAccount, peer);
-                        if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
-                                || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
-                            showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
-                            return;
-                        }
-                        if (!secureChat.isPaired()) {
-                            showForkSecureError(R.string.ForkSecureActionUnsupported);
-                            return;
-                        }
-                        carrier = secureChat.encryptText(message);
-                    }
-                    sendMessageParams.message = carrier;
-                    sendMessageParams.forkSecureProvenance = true;
-                    sendMessage(sendMessageParams);
-                    return;
-                } catch (Exception error) {
-                    FileLog.e(error);
-                    showForkSecureError(R.string.ForkSecureSetupSendFailed);
+                if (DialogObject.isChatDialog(targetPeer) && message.length() > 2800) {
+                    showForkSecureError(R.string.ForkSecureActionUnsupported);
                     return;
                 }
+                final String plainText = message;
+                sendMessageParams.message = null;
+                sendMessageParams.webPage = null;
+                sendMessageParams.mediaWebPage = null;
+                sendMessageParams.searchLinks = false;
+                sendMessageParams.entities = null;
+                sendMessageParams.replyQuote = null;
+                sendMessageParams.replyToStoryItem = null;
+                sendMessageParams.replyMarkup = null;
+                forkSecureOutboundQueue.postRunnable(() -> {
+                    try {
+                        String carrier;
+                        if (savedMessages) {
+                            SecureSavedMessagesKeyStore.KeyMaterial key =
+                                    new SecureSavedMessagesKeyStore(ApplicationLoader.applicationContext).getOrCreate(currentAccount);
+                            carrier = SecureSavedMessageCrypto.encryptTextCarrier(plainText, key);
+                        } else {
+                            SecureChatEngine secureChat = SecureChatEngine.get(
+                                    ApplicationLoader.applicationContext, currentAccount, targetPeer);
+                            if (secureChat.getMode() == SecureChatEngine.Mode.IDENTITY_CHANGED
+                                    || secureChat.getMode() == SecureChatEngine.Mode.RECOVERY_CHANGED) {
+                                showForkSecureError(R.string.ForkSecureKeyChangedSendBlocked);
+                                return;
+                            }
+                            if (!secureChat.isPaired()) {
+                                showForkSecureError(R.string.ForkSecureActionUnsupported);
+                                return;
+                            }
+                            if (DialogObject.isChatDialog(targetPeer)) {
+                                ensureForkSecureGroupSenderKeyDistributedSync(targetPeer, false);
+                            }
+                            carrier = secureChat.encryptText(plainText);
+                        }
+                        AndroidUtilities.runOnUIThread(() -> {
+                            sendMessageParams.message = carrier;
+                            sendMessageParams.forkSecureProvenance = true;
+                            sendMessage(sendMessageParams);
+                        });
+                    } catch (Exception error) {
+                        FileLog.e(error);
+                        showForkSecureError(R.string.ForkSecureSetupSendFailed);
+                    }
+                });
+                return;
             }
             showForkSecureError(R.string.ForkSecureActionUnsupported);
             return;
@@ -11535,7 +11847,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             newMedia.document.size = sentMedia.document.size;
             newMedia.document.mime_type = sentMedia.document.mime_type;
 
-            if ((sentMessage.flags & TLRPC.MESSAGE_FLAG_FWD) == 0 && (MessageObject.isOut(sentMessage) || sentMessage.dialog_id == getUserConfig().getClientUserId()) && !MessageObject.isQuickReply(sentMessage)) {
+            if ((sentMessage.flags & TLRPC.MESSAGE_FLAG_FWD) == 0
+                    && (MessageObject.isOut(sentMessage) || sentMessage.dialog_id == getUserConfig().getClientUserId())
+                    && !MessageObject.isQuickReply(sentMessage)
+                    && !SecureCarrierCodec.isMarked(sentMessage.message)
+                    && !MediaDataController.isForkSecureCarrierDocument(sentMedia.document)) {
                 if (MessageObject.isNewGifDocument(sentMedia.document)) {
                     boolean save;
                     if (MessageObject.isDocumentHasAttachedStickers(sentMedia.document)) {

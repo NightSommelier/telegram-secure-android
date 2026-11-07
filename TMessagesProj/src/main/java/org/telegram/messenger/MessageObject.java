@@ -215,6 +215,7 @@ public class MessageObject {
     public CharSequence forkSecureServiceText;
     /** Local-only verified text for a nested Fork-Secure reply/quote preview. */
     public CharSequence forkSecureReplyText;
+    public String forkSecureQuoteCarrier;
     /** Local-only authenticated plaintext media path; never serialized into Telegram storage. */
     public String forkSecureMediaPath;
     /** Local-only Telegram ciphertext path retained while plaintext media is prepared. */
@@ -626,30 +627,48 @@ public class MessageObject {
      * original opaque Telegram message.
      */
     public boolean applyForkSecureMediaIndex(SecureMediaIndex.Entry entry) {
-        if (entry == null || !isForkSecureCarrier()) {
+        if (entry == null
+                || !isForkSecureCarrier()
+                || messageOwner == null
+                || !(messageOwner.media instanceof TLRPC.TL_messageMediaDocument
+                        || messageOwner.media instanceof TLRPC.TL_messageMediaPhoto)) {
+            return false;
+        }
+        if (entry.plaintextPath != null && entry.plaintextPath.contains("fork-secure-media-in")) {
             return false;
         }
         if (entry.messageId != getId() && getId() > 0 && entry.messageId > 0) {
             return false;
         }
+        int entryKind = entry.kind;
+        if (entryKind == SecureMediaIndex.KIND_FILE
+                && entry.mimeType != null
+                && entry.mimeType.toLowerCase(java.util.Locale.ROOT).startsWith("image/")
+                && !"image/gif".equalsIgnoreCase(entry.mimeType)
+                && entry.fileName != null
+                && (entry.fileName.matches("^-?\\d{15,}\\.jpe?g$")
+                        || entry.fileName.startsWith("Fork-Secure-")
+                        || entry.fileName.startsWith("fork-secure-photo-"))) {
+            entryKind = SecureMediaIndex.KIND_PHOTO;
+        }
         int mediaKind;
         int presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
-        if (entry.kind == SecureMediaIndex.KIND_PHOTO) {
+        if (entryKind == SecureMediaIndex.KIND_PHOTO) {
             mediaKind = FORK_SECURE_MEDIA_KIND_PHOTO;
             presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_FILE;
-        } else if (entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO) {
+        } else if (entryKind == SecureMediaIndex.KIND_ROUND_VIDEO) {
             mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
             presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO;
-        } else if (entry.kind == SecureMediaIndex.KIND_VOICE) {
+        } else if (entryKind == SecureMediaIndex.KIND_VOICE) {
             mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
             presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE;
-        } else if (entry.kind == SecureMediaIndex.KIND_MUSIC) {
+        } else if (entryKind == SecureMediaIndex.KIND_MUSIC) {
             mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
             presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO;
-        } else if (entry.kind == SecureMediaIndex.KIND_VIDEO) {
+        } else if (entryKind == SecureMediaIndex.KIND_VIDEO) {
             mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
             presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO;
-        } else if (entry.kind == SecureMediaIndex.KIND_GIF) {
+        } else if (entryKind == SecureMediaIndex.KIND_GIF) {
             mediaKind = FORK_SECURE_MEDIA_KIND_FILE;
             presentation = SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION;
         } else {
@@ -679,7 +698,7 @@ public class MessageObject {
         String performer = existingState != null && existingState.performer != null ? existingState.performer : "";
         byte[] waveform = existingState != null ? existingState.waveform : null;
         if (plaintext.isFile()) {
-            if (entry.kind == SecureMediaIndex.KIND_VOICE) {
+            if (entryKind == SecureMediaIndex.KIND_VOICE) {
                 if (waveform == null && !isMainThread()) {
                     try {
                         waveform = MediaController.getWaveform(plaintext.getAbsolutePath());
@@ -698,7 +717,7 @@ public class MessageObject {
                     } catch (Throwable ignore) {
                     }
                 }
-            } else if (entry.kind == SecureMediaIndex.KIND_MUSIC) {
+            } else if (entryKind == SecureMediaIndex.KIND_MUSIC) {
                 if ((durationSeconds <= 0 || TextUtils.isEmpty(title)) && !isMainThread()) {
                     try {
                         android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
@@ -760,7 +779,7 @@ public class MessageObject {
             if (plaintext.isFile()) {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
             }
-        } else if (entry.kind == SecureMediaIndex.KIND_VIDEO && getDocument() != null) {
+        } else if (entryKind == SecureMediaIndex.KIND_VIDEO && getDocument() != null) {
             TLRPC.Document document = getDocument();
             document.mime_type = TextUtils.isEmpty(entry.mimeType)
                     ? "video/mp4" : entry.mimeType;
@@ -829,7 +848,7 @@ public class MessageObject {
             if (plaintext.isFile()) {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
             }
-        } else if (entry.kind == SecureMediaIndex.KIND_ROUND_VIDEO && getDocument() != null) {
+        } else if (entryKind == SecureMediaIndex.KIND_ROUND_VIDEO && getDocument() != null) {
             TLRPC.Document document = getDocument();
             document.mime_type = TextUtils.isEmpty(entry.mimeType)
                     ? "video/mp4" : entry.mimeType;
@@ -895,7 +914,7 @@ public class MessageObject {
             if (plaintext.isFile()) {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
             }
-        } else if (entry.kind == SecureMediaIndex.KIND_VOICE && getDocument() != null) {
+        } else if (entryKind == SecureMediaIndex.KIND_VOICE && getDocument() != null) {
             TLRPC.Document document = getDocument();
             document.mime_type = TextUtils.isEmpty(entry.mimeType)
                     ? "audio/ogg" : entry.mimeType;
@@ -928,7 +947,7 @@ public class MessageObject {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
                 MediaController.getInstance().generateWaveform(this);
             }
-        } else if (entry.kind == SecureMediaIndex.KIND_MUSIC && getDocument() != null) {
+        } else if (entryKind == SecureMediaIndex.KIND_MUSIC && getDocument() != null) {
             TLRPC.Document document = getDocument();
             document.mime_type = TextUtils.isEmpty(entry.mimeType)
                     ? "audio/mp3" : entry.mimeType;
@@ -960,7 +979,7 @@ public class MessageObject {
             if (plaintext.isFile()) {
                 forkSecureMediaPath = plaintext.getAbsolutePath();
             }
-        } else if (entry.kind == SecureMediaIndex.KIND_GIF && getDocument() != null) {
+        } else if (entryKind == SecureMediaIndex.KIND_GIF && getDocument() != null) {
             TLRPC.Document document = getDocument();
             document.mime_type = TextUtils.isEmpty(entry.mimeType)
                     ? "video/mp4" : entry.mimeType;
@@ -1361,6 +1380,11 @@ public class MessageObject {
                 audio.title = !TextUtils.isEmpty(state.title) ? state.title : (!TextUtils.isEmpty(state.name) ? state.name : "");
                 audio.performer = !TextUtils.isEmpty(state.performer) ? state.performer : "";
                 audio.flags |= 1 | 2;
+            }
+        } else if (state.kind == FORK_SECURE_MEDIA_KIND_STICKER) {
+            if (!TextUtils.isEmpty(state.path) && new File(state.path).isFile()) {
+                mediaExists = true;
+                attachPathExists = true;
             }
         } else if (state.kind == FORK_SECURE_MEDIA_KIND_PHOTO) {
             type = TYPE_PHOTO;
@@ -2276,6 +2300,7 @@ public class MessageObject {
         forkSecureService = old.forkSecureService;
         forkSecureServiceText = old.forkSecureServiceText;
         forkSecureReplyText = old.forkSecureReplyText;
+        forkSecureQuoteCarrier = old.forkSecureQuoteCarrier;
         forkSecureMediaPath = old.forkSecureMediaPath;
         forkSecureCipherPath = old.forkSecureCipherPath;
         forkSecureMediaWidth = old.forkSecureMediaWidth;
@@ -11355,6 +11380,24 @@ public class MessageObject {
         return getPeerId(message.from_id);
     }
 
+    public static long getForkSecureSenderUserId(TLRPC.Message message) {
+        if (message == null || message.fwd_from != null || message.post) {
+            return 0;
+        }
+        if (message.from_id != null) {
+            if (message.from_id instanceof TLRPC.TL_peerUser && message.from_id.user_id > 0) {
+                return message.from_id.user_id;
+            }
+            return 0;
+        }
+        if (!isOut(message)
+                && message.peer_id instanceof TLRPC.TL_peerUser
+                && message.peer_id.user_id > 0) {
+            return message.peer_id.user_id;
+        }
+        return 0;
+    }
+
     public static long getObjectPeerId(TLObject peer) {
         if (peer == null) {
             return 0;
@@ -11458,6 +11501,10 @@ public class MessageObject {
 
     public long getFromChatId() {
         return getFromChatId(messageOwner);
+    }
+
+    public long getForkSecureSenderUserId() {
+        return getForkSecureSenderUserId(messageOwner);
     }
 
     public long getChatId() {

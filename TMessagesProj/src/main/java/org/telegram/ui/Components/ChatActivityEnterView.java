@@ -152,6 +152,7 @@ import org.telegram.secureoverlay.SecureChatEngine;
 import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.secureoverlay.SecureSavedMessageCrypto;
 import org.telegram.secureoverlay.SecureSavedMessagesKeyStore;
+import org.telegram.secureoverlay.SecureSavedMessagesPinStore;
 import org.telegram.secureoverlay.SecureSavedMessagesSettings;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
@@ -5424,12 +5425,13 @@ public class ChatActivityEnterView extends FrameLayout implements
                 return canvasButton.checkTouchEvent(event);
             }
             if (isPopupShowing() && event.getAction() == MotionEvent.ACTION_DOWN) {
+                closingEmojiSearchKeyboard = false;
                 if (searchingType != 0) {
                     setSearchingTypeInternal(0, false);
                     emojiView.closeSearch(false);
                     requestFocus();
                 }
-                showPopup(AndroidUtilities.usingHardwareInput ? 0 : 2, POPUP_CONTENT_EMOJI_KEYBOARD);
+                showPopup(AndroidUtilities.usingHardwareInput || keyboardVisible ? 0 : 2, POPUP_CONTENT_EMOJI_KEYBOARD, true, false);
                 if (stickersExpanded) {
                     setStickersExpanded(false, true, false);
                     waitingForKeyboardOpenAfterAnimation = true;
@@ -6736,7 +6738,7 @@ public class ChatActivityEnterView extends FrameLayout implements
         if (parentFragment instanceof ChatActivity) {
             return ((ChatActivity) parentFragment).getSecureChatEngine();
         }
-        return new SecureChatEngine(getContext(), currentAccount, dialog_id);
+        return SecureChatEngine.get(getContext(), currentAccount, dialog_id);
     }
 
     public void setChatInfo(TLRPC.ChatFull chatInfo) {
@@ -7728,16 +7730,27 @@ public class ChatActivityEnterView extends FrameLayout implements
                                     "Saved Messages key unavailable", error);
                         }
                         attachment = SecureContentCodec.decode(
-                                SecureSavedMessageCrypto.decryptRecord(outer.payload, key))
+                                SecureSavedMessageCrypto.decryptRecordBound(
+                                        outer.payload,
+                                        key,
+                                        new SecureSavedMessagesPinStore(parentFragment.getContext()),
+                                        editingMessageObject.getId()))
                                 .attachment;
                         attachment = SecureContentCodec.withCaption(
                                 attachment,
                                 message[0].toString(),
                                 editingMessageObject.messageOwner.invert_media);
+                        int editTargetId = (!editingMessageObject.needResendWhenEdit()
+                                && editingMessageObject.getId() > 0)
+                                ? editingMessageObject.getId() : 0;
+                        byte[] encodedAttachment = SecureContentCodec.encodeAttachment(attachment);
                         message[0] = SecureCarrierCodec.encode(
                                 SecureCarrierCodec.TYPE_SAVED_MESSAGE,
-                                SecureSavedMessageCrypto.encryptRecord(
-                                        SecureContentCodec.encodeAttachment(attachment), key));
+                                editTargetId > 0
+                                        ? SecureSavedMessageCrypto.encryptRecordForEdit(
+                                                encodedAttachment, key, editTargetId)
+                                        : SecureSavedMessageCrypto.encryptRecord(
+                                                encodedAttachment, key));
                     } else {
                         SecureChatEngine secureChat = getSecureChatEngine();
                         if (secureChat == null || !secureChat.isPaired()) {
@@ -7764,10 +7777,14 @@ public class ChatActivityEnterView extends FrameLayout implements
                             throw new IllegalStateException(
                                     "Saved Messages key unavailable", error);
                         }
-                        byte[] payload = SecureContentCodec.encodeText(message[0].toString());
-                        message[0] = SecureCarrierCodec.encode(
-                                SecureCarrierCodec.TYPE_SAVED_MESSAGE,
-                                SecureSavedMessageCrypto.encryptRecord(payload, key));
+                        int editTargetId = (!editingMessageObject.needResendWhenEdit()
+                                && editingMessageObject.getId() > 0)
+                                ? editingMessageObject.getId() : 0;
+                        message[0] = editTargetId > 0
+                                ? SecureSavedMessageCrypto.encryptTextCarrierForEdit(
+                                        message[0].toString(), key, editTargetId)
+                                : SecureSavedMessageCrypto.encryptTextCarrier(
+                                        message[0].toString(), key);
                     } else {
                         SecureChatEngine secureChat = getSecureChatEngine();
                         if (secureChat == null || !secureChat.isPaired() || message[0].length() > 2800) {
@@ -7879,6 +7896,7 @@ public class ChatActivityEnterView extends FrameLayout implements
             text = AndroidUtilities.getTrimmedString(text);
         }
         boolean forkSecureOrigin = false;
+        boolean forkSecureGroupPendingEncrypt = false;
         if (parentFragment instanceof ChatActivity
                 && ((ChatActivity) parentFragment).isSavedMessagesSecureModeEnabled()
                 && text.length() != 0) {
@@ -7939,24 +7957,35 @@ public class ChatActivityEnterView extends FrameLayout implements
                     notify = false;
                     notifySecureModeChanged();
                 } else if ("/secure-start".equals(entered)) {
-                    if (secureChat.isPaired()) {
-                        return false;
-                    }
-                    if (secureChat.resumeIfPaused()) {
-                        notifySecureModeChanged();
-                        return true;
-                    }
                     if (DialogObject.isChatDialog(dialog_id)) {
-                        secureChat.enableGroup();
-                        if (accountInstance.getSendMessagesHelper()
-                                .distributeForkSecureGroupSenderKeyPairwise(dialog_id)) {
-                            secureChat.clearGroupKeyNeedsDistribution();
-                        } else {
-                            secureChat.setGroupKeyNeedsDistribution(true);
+                        TLRPC.Chat chat = accountInstance.getMessagesController().getChat(-dialog_id);
+                        if (chat != null && ChatObject.isChannelAndNotMegaGroup(chat)) {
+                            return false;
                         }
+                        if (secureChat.isPaired()) {
+                            return false;
+                        }
+                        if (!secureChat.resumeIfPaused()) {
+                            secureChat.enableGroup();
+                        }
+                        Utilities.globalQueue.postRunnable(() -> {
+                            try {
+                                accountInstance.getSendMessagesHelper()
+                                        .ensureForkSecureGroupSenderKeyDistributedSync(dialog_id, false);
+                            } catch (Throwable e) {
+                                FileLog.e(e);
+                            }
+                        });
                         notifySecureModeChanged();
                         return true;
                     } else {
+                        if (secureChat.isPaired() && secureChat.hasActiveSession()) {
+                            return false;
+                        }
+                        if (secureChat.resumeIfPaused() && secureChat.hasActiveSession()) {
+                            notifySecureModeChanged();
+                            return true;
+                        }
                         text = secureChat.createPairingOffer(
                                 accountInstance.getUserConfig().getClientUserId());
                         forkSecureOrigin = true;
@@ -7964,17 +7993,25 @@ public class ChatActivityEnterView extends FrameLayout implements
                         notifySecureModeChanged();
                     }
                 } else if ("/secure-group-key".equals(entered) && DialogObject.isChatDialog(dialog_id)) {
-                    if (accountInstance.getSendMessagesHelper()
-                            .distributeForkSecureGroupSenderKeyPairwise(dialog_id)) {
-                        secureChat.clearGroupKeyNeedsDistribution();
-                    }
+                    Utilities.globalQueue.postRunnable(() -> {
+                        try {
+                            accountInstance.getSendMessagesHelper()
+                                    .ensureForkSecureGroupSenderKeyDistributedSync(dialog_id, true);
+                        } catch (Throwable e) {
+                            FileLog.e(e);
+                        }
+                    });
                     return true;
                 } else if ("/secure-group-rotate".equals(entered) && DialogObject.isChatDialog(dialog_id)) {
                     secureChat.rotateGroupSenderKey();
-                    if (accountInstance.getSendMessagesHelper()
-                            .distributeForkSecureGroupSenderKeyPairwise(dialog_id)) {
-                        secureChat.clearGroupKeyNeedsDistribution();
-                    }
+                    Utilities.globalQueue.postRunnable(() -> {
+                        try {
+                            accountInstance.getSendMessagesHelper()
+                                    .ensureForkSecureGroupSenderKeyDistributedSync(dialog_id, true);
+                        } catch (Throwable e) {
+                            FileLog.e(e);
+                        }
+                    });
                     return true;
                 } else if ("/secure-off".equals(entered)) {
                     secureChat.disable();
@@ -7985,14 +8022,13 @@ public class ChatActivityEnterView extends FrameLayout implements
                     if (entered.length() > 2800) {
                         return false;
                     }
-                    if (DialogObject.isChatDialog(dialog_id) && secureChat.isGroupKeyNeedsDistribution()) {
-                        if (accountInstance.getSendMessagesHelper()
-                                .distributeForkSecureGroupSenderKeyPairwise(dialog_id)) {
-                            secureChat.clearGroupKeyNeedsDistribution();
-                        }
+                    if (DialogObject.isChatDialog(dialog_id)) {
+                        text = entered;
+                        forkSecureGroupPendingEncrypt = true;
+                    } else {
+                        text = secureChat.encryptText(entered);
+                        forkSecureOrigin = true;
                     }
-                    text = secureChat.encryptText(entered);
-                    forkSecureOrigin = true;
                 }
             } catch (RuntimeException error) {
                 // Do not log message text or key material; the stack trace is enough for diagnosis.
@@ -8085,7 +8121,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                 }
                 SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(message[0].toString(), dialog_id, replyingMessageObject, replyToTopMsg, messageWebPage, messageWebPageSearch, entities, null, null, notify, scheduleDate, scheduleRepeatPeriod, sendAnimationData, updateStickersOrder);
                 params.forkSecureProvenance = forkSecureOrigin;
-                boolean forkSecureCarrier = forkSecureOrigin;
+                boolean forkSecureCarrier = forkSecureOrigin || forkSecureGroupPendingEncrypt;
                 if (forkSecureCarrier) {
                     params.webPage = null;
                     params.mediaWebPage = null;
@@ -12211,6 +12247,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                 }
                 if (stickersExpanded) {
                     if (searchingType != 0) {
+                        closingEmojiSearchKeyboard = keyboardVisible;
                         setSearchingTypeInternal(0, true);
                         emojiView.closeSearch(true, MessageObject.getStickerSetId(sticker));
                         emojiView.hideSearchKeyboard();
@@ -12508,6 +12545,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                     AlertsCreator.ensurePaidMessageConfirmation(currentAccount, dialog_id, 1, stars -> {
                         Runnable runnable = () -> {
                             if (searchingType != 0) {
+                                closingEmojiSearchKeyboard = keyboardVisible;
                                 setSearchingTypeInternal(0, true);
                                 emojiView.closeSearch(true);
                                 emojiView.hideSearchKeyboard();
@@ -12583,7 +12621,12 @@ public class ChatActivityEnterView extends FrameLayout implements
                                 params.put("force_gif", "1");
 
                                 if (storyItem == null) {
-                                    SendMessagesHelper.prepareSendingBotContextResult(parentFragment, accountInstance, result, params, dialog_id, replyingMessageObject, getThreadMessage(), null, replyingQuote, notify, scheduleDate, 0, parentFragment != null ? parentFragment.getMessageChatSendParams() : null, stars, getSendMonoForumPeerId());
+                                    boolean forkSecureGifRoute = result.document != null && (SendMessagesHelper.isForkSecureProtectedPeer(currentAccount, dialog_id) || (dialog_id == UserConfig.getInstance(currentAccount).getClientUserId() && org.telegram.secureoverlay.SecureSavedMessagesSettings.isSecureByDefault(ApplicationLoader.applicationContext, currentAccount)));
+                                    if (forkSecureGifRoute) {
+                                        SendMessagesHelper.getInstance(currentAccount).sendSticker(result.document, query, dialog_id, entry != null ? entry.caption : null, null, replyingMessageObject, getThreadMessage(), storyItem, replyingQuote, null, notify, scheduleDate, scheduleRepeatPeriod, false, parent, parentFragment != null ? parentFragment.getMessageChatSendParams() : null, stars, getSendMonoForumPeerId(), getSendMessageSuggestionParams(), invertMedia);
+                                    } else {
+                                        SendMessagesHelper.prepareSendingBotContextResult(parentFragment, accountInstance, result, params, dialog_id, replyingMessageObject, getThreadMessage(), null, replyingQuote, notify, scheduleDate, 0, parentFragment != null ? parentFragment.getMessageChatSendParams() : null, stars, getSendMonoForumPeerId());
+                                    }
                                 } else {
                                     SendMessagesHelper.getInstance(currentAccount).sendSticker(result.document, query, dialog_id, replyingMessageObject, getThreadMessage(), storyItem, replyingQuote, null, notify, scheduleDate, scheduleRepeatPeriod, false, parent, parentFragment != null ? parentFragment.getMessageChatSendParams() : null, stars, getSendMonoForumPeerId(), getSendMessageSuggestionParams());
                                 }
@@ -12851,6 +12894,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                         return;
                     }
                     if (searchingType != 0) {
+                        closingEmojiSearchKeyboard = keyboardVisible;
                         setSearchingTypeInternal(0, true);
                         emojiView.closeSearch(true);
                         emojiView.hideSearchKeyboard();
@@ -13039,7 +13083,7 @@ public class ChatActivityEnterView extends FrameLayout implements
             if (emojiView != null) {
                 if (show != 2 || AndroidUtilities.usingHardwareInput || AndroidUtilities.isInMultiwindow) {
                     if (smoothKeyboard && !keyboardVisible && !stickersExpanded) {
-                        if (emojiViewVisible = true) {
+                        if (emojiViewVisible) {
                             animatingContentType = 0;
                         }
                         emojiView.setShowing(false);
@@ -13086,7 +13130,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                         } else {
                             this.animationEndRunnable = animationEndRunnable;
                         }
-                        AndroidUtilities.runOnUIThread(runEmojiPanelAnimation, 50);
+                        runEmojiPanelAnimation.run();
                         requestLayout();
                     } else {
                         if (delegate != null) {
@@ -13139,7 +13183,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                             }
                         });
                         notificationsLocker.lock();
-                        AndroidUtilities.runOnUIThread(runEmojiPanelAnimation, 50);
+                        runEmojiPanelAnimation.run();
                         requestLayout();
                     } else {
                         if (!waitingForKeyboardOpen) {
@@ -13155,7 +13199,7 @@ public class ChatActivityEnterView extends FrameLayout implements
             updateBotButton(true);
 
             if (windowInsetsInAppController != null) {
-                windowInsetsInAppController.resetInAppKeyboardHeight(waitKeyboard);
+                windowInsetsInAppController.resetInAppKeyboardHeight(waitKeyboard && waitingForKeyboardOpen);
             }
         }
 
@@ -13249,6 +13293,8 @@ public class ChatActivityEnterView extends FrameLayout implements
         return hidePopup(byBackButton, forceAnimate, true);
     }
 
+    private boolean closingEmojiSearchKeyboard;
+
     public boolean hidePopup(boolean byBackButton, boolean forceAnimate, boolean waitKeyboardOpen) {
         if (isPopupShowing()) {
             if (currentPopupContentType == POPUP_CONTENT_BOT_KEYBOARD && botReplyMarkup != null && byBackButton && botButtonsMessageObject != null) {
@@ -13257,12 +13303,14 @@ public class ChatActivityEnterView extends FrameLayout implements
                 }
                 MessagesController.getMainSettings(currentAccount).edit().putInt("closed_botkeyboard_" + getTopicKeyString(), botButtonsMessageObject.getId()).apply();
             }
-            if (byBackButton && searchingType != 0 || forceAnimate) {
+            if (forceAnimate || (byBackButton && searchingType != 0 && keyboardVisible)) {
+                closingEmojiSearchKeyboard = keyboardVisible;
                 setSearchingTypeInternal(0, true);
                 if (emojiView != null) {
                     emojiView.closeSearch(true);
+                    emojiView.hideSearchKeyboard();
                 }
-                if (messageEditText != null) {
+                if (!byBackButton && messageEditText != null) {
                     messageEditText.requestFocus();
                 }
                 setStickersExpanded(false, true, false);
@@ -13271,15 +13319,30 @@ public class ChatActivityEnterView extends FrameLayout implements
                 }
             } else {
                 if (searchingType != 0) {
+                    closingEmojiSearchKeyboard = keyboardVisible;
                     setSearchingTypeInternal(0, false);
-                    emojiView.closeSearch(false);
-                    if (messageEditText != null) {
+                    if (emojiView != null) {
+                        emojiView.closeSearch(false);
+                    }
+                    if (!byBackButton && messageEditText != null) {
                         messageEditText.requestFocus();
                     }
+                    if (byBackButton) {
+                        if (stickersExpanded) {
+                            setStickersExpanded(false, false, false);
+                        }
+                        showPopup(0, POPUP_CONTENT_EMOJI_KEYBOARD, true, false);
+                    }
                 } else if (stickersExpanded) {
-                    setStickersExpanded(false, true, false);
+                    if (byBackButton) {
+                        setStickersExpanded(false, false, false);
+                        showPopup(0, POPUP_CONTENT_EMOJI_KEYBOARD, true, false);
+                    } else {
+                        setStickersExpanded(false, true, false);
+                    }
                 } else {
-                    showPopup(0, POPUP_CONTENT_EMOJI_KEYBOARD, true, waitKeyboardOpen && !byBackButton);
+                    boolean waitKeyboard = waitKeyboardOpen && !byBackButton && waitingForKeyboardOpen;
+                    showPopup(0, POPUP_CONTENT_EMOJI_KEYBOARD, true, waitKeyboard);
                 }
             }
             return true;
@@ -13334,7 +13397,8 @@ public class ChatActivityEnterView extends FrameLayout implements
         if (hasBotWebView() && botCommandsMenuIsShowing() || BaseFragment.hasSheets(parentFragment)) {
             return;
         }
-        showPopup(AndroidUtilities.usingHardwareInput || AndroidUtilities.isInMultiwindow || parentFragment != null && parentFragment.isInBubbleMode() || isPaused ? 0 : 2, POPUP_CONTENT_EMOJI_KEYBOARD);
+        closingEmojiSearchKeyboard = false;
+        showPopup(AndroidUtilities.usingHardwareInput || AndroidUtilities.isInMultiwindow || parentFragment != null && parentFragment.isInBubbleMode() || isPaused || keyboardVisible ? 0 : 2, POPUP_CONTENT_EMOJI_KEYBOARD, true, false);
         if (delegate != null) {
             delegate.onKeyboardRequested();
         }
@@ -13388,7 +13452,8 @@ public class ChatActivityEnterView extends FrameLayout implements
     }
 
     public boolean isPopupShowing() {
-        return emojiViewVisible || botKeyboardViewVisible;
+        return (emojiViewVisible && emojiView != null && emojiView.getVisibility() == View.VISIBLE && emojiView.getParent() != null)
+            || (botKeyboardViewVisible && botKeyboardView != null && botKeyboardView.getVisibility() == View.VISIBLE);
     }
 
     public boolean closeCreationLinkDialog(boolean invoked) {
@@ -13429,11 +13494,17 @@ public class ChatActivityEnterView extends FrameLayout implements
 
     @Override
     public void onSizeChanged(int height, boolean isWidthGreater) {
-        if (searchingType != 0) {
+        if (height <= 0) {
+            closingEmojiSearchKeyboard = false;
+        }
+        if (searchingType != 0 || closingEmojiSearchKeyboard) {
             lastSizeChangeValue1 = height;
             lastSizeChangeValue2 = isWidthGreater;
             keyboardVisible = height > 0;
             checkBotMenu();
+            if (closingEmojiSearchKeyboard) {
+                onWindowSizeChanged();
+            }
             return;
         }
         if (height > dp(50) && keyboardVisible && !AndroidUtilities.isInMultiwindow) {
@@ -13522,6 +13593,9 @@ public class ChatActivityEnterView extends FrameLayout implements
         }
 
         if (lastSizeChangeValue1 == height && lastSizeChangeValue2 == isWidthGreater) {
+            if (keyboardVisible && isPopupShowing() && stickersExpansionAnim == null) {
+                showPopup(0, currentPopupContentType, true, false);
+            }
             onWindowSizeChanged();
             return;
         }
@@ -13532,7 +13606,7 @@ public class ChatActivityEnterView extends FrameLayout implements
         keyboardVisible = height > 0;
         checkBotMenu();
         if (keyboardVisible && isPopupShowing() && stickersExpansionAnim == null) {
-            showPopup(0, currentPopupContentType);
+            showPopup(0, currentPopupContentType, true, false);
         } else if (!keyboardVisible && !isPopupShowing() && botButtonsMessageObject != null && replyingMessageObject != botButtonsMessageObject && (!hasBotWebView() && !botCommandsMenuIsShowing() && !BaseFragment.hasSheets(parentFragment)) && (messageEditText == null || TextUtils.isEmpty(messageEditText.getText())) && botReplyMarkup != null && !botReplyMarkup.rows.isEmpty()) {
             if (sizeNotifierLayout.adjustPanLayoutHelper.animationInProgress()) {
                 sizeNotifierLayout.adjustPanLayoutHelper.stopTransition();
@@ -14108,8 +14182,8 @@ public class ChatActivityEnterView extends FrameLayout implements
                             sizeNotifierLayout.setForeground(null);
                             sizeNotifierLayout.setWillNotDraw(false);
                         }
-                        if (keyboardVisible && isPopupShowing()) {
-                            showPopup(0, currentPopupContentType);
+                        if (keyboardVisible && !closingEmojiSearchKeyboard && isPopupShowing()) {
+                            showPopup(0, currentPopupContentType, true, false);
                         }
                         if (onEmojiSearchClosed != null) {
                             onEmojiSearchClosed.run();
@@ -14139,7 +14213,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                 }
             }
 
-            if (windowInsetsInAppController != null) {
+            if (windowInsetsInAppController != null && emojiViewVisible) {
                 windowInsetsInAppController.requestInAppKeyboardHeightIncludeNavbar(origHeight);
             }
         }

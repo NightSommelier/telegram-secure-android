@@ -75,6 +75,63 @@ public final class SecureMediaIndex {
         legacyPrefix = PREFIX + account + '.' + peerUserId + '.';
     }
 
+    public static final class CachedLookup {
+        public static final CachedLookup MISS = new CachedLookup(0, null);
+        public static final CachedLookup NEGATIVE = new CachedLookup(1, null);
+
+        private final int state;
+        public final Entry entry;
+
+        private CachedLookup(int state, Entry entry) {
+            this.state = state;
+            this.entry = entry;
+        }
+
+        public boolean isMiss() {
+            return state == 0;
+        }
+
+        public boolean isNegative() {
+            return state == 1;
+        }
+
+        public boolean isHit() {
+            return state == 2 && entry != null;
+        }
+
+        static CachedLookup hit(Entry entry) {
+            return new CachedLookup(2, entry);
+        }
+    }
+
+    /**
+     * Pure in-memory lookup safe for UI/scroll threads: performs zero SQLite queries and zero
+     * Android Keystore IPC calls. Works for 1:1 chats, basic groups, and supergroups.
+     */
+    public static CachedLookup lookupCached(int account, long peerUserId, String carrier) {
+        if (account < 0 || peerUserId == 0 || carrier == null || carrier.isEmpty()) {
+            return CachedLookup.NEGATIVE;
+        }
+        byte[] maskKey = SecureNameMask.peekCachedKey();
+        if (maskKey == null) {
+            return CachedLookup.MISS;
+        }
+        byte[] carrierDigest = digest(carrier);
+        String peerMask = SecureNameMask.maskPeer(maskKey, account, peerUserId);
+        String carrierMask = SecureNameMask.maskCarrier(maskKey, account, peerUserId, hex(carrierDigest));
+        String key = PREFIX + account + '.' + peerMask + '.' + carrierMask;
+        synchronized (memoryCache) {
+            Entry cached = memoryCache.get(key);
+            if (cached == null) {
+                return CachedLookup.MISS;
+            }
+            if (cached == NEGATIVE_ENTRY) {
+                return CachedLookup.NEGATIVE;
+            }
+            return CachedLookup.hit(cached);
+        }
+    }
+
     public static void clearMemoryCache() {
         synchronized (memoryCache) {
             memoryCache.clear();
@@ -159,6 +216,10 @@ public final class SecureMediaIndex {
                 }
                 return null;
             }
+            entry = sanitizeEntry(key, entry);
+            if (entry == null) {
+                return null;
+            }
             if (messageId > 0 && entry.messageId != messageId) {
                 entry = new Entry(
                         messageId,
@@ -203,7 +264,10 @@ public final class SecureMediaIndex {
             }
             ArrayList<Entry> result = new ArrayList<>();
             for (Map.Entry<String, byte[]> item : records.entrySet()) {
-                Entry entry = decode(item.getValue());
+                Entry entry = sanitizeEntry(item.getKey(), decode(item.getValue()));
+                if (entry == null) {
+                    continue;
+                }
                 synchronized (memoryCache) {
                     memoryCache.put(item.getKey(), entry);
                 }
@@ -216,6 +280,38 @@ public final class SecureMediaIndex {
                     .thenComparing(
                             Comparator.comparingInt(
                                     (Entry entry) -> entry.messageId).reversed()));
+            return result;
+        } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
+            throw new SecureMediaIndexException("cannot list secure media index", e);
+        }
+    }
+
+    public List<Entry> listAll() {
+        try {
+            Map<String, byte[]> records = blobs.snapshotPrefixes(scopedPrefix);
+            Map<String, byte[]> legacyRecords = blobs.snapshotPrefixes(legacyPrefix);
+            if (!legacyRecords.isEmpty()) {
+                for (Map.Entry<String, byte[]> leg : legacyRecords.entrySet()) {
+                    try {
+                        Entry e = decode(leg.getValue());
+                        blobs.put(key(e.carrierDigest), leg.getValue());
+                        blobs.delete(leg.getKey());
+                        records.put(key(e.carrierDigest), leg.getValue());
+                    } catch (Exception ignore) {
+                    }
+                }
+            }
+            ArrayList<Entry> result = new ArrayList<>();
+            for (Map.Entry<String, byte[]> item : records.entrySet()) {
+                Entry entry = sanitizeEntry(item.getKey(), decode(item.getValue()));
+                if (entry == null) {
+                    continue;
+                }
+                synchronized (memoryCache) {
+                    memoryCache.put(item.getKey(), entry);
+                }
+                result.add(entry);
+            }
             return result;
         } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
             throw new SecureMediaIndexException("cannot list secure media index", e);
@@ -243,7 +339,10 @@ public final class SecureMediaIndex {
                 }
             }
             for (Map.Entry<String, byte[]> item : records.entrySet()) {
-                Entry entry = decode(item.getValue());
+                Entry entry = sanitizeEntry(item.getKey(), decode(item.getValue()));
+                if (entry == null) {
+                    continue;
+                }
                 synchronized (memoryCache) {
                     memoryCache.put(item.getKey(), entry);
                 }
@@ -255,6 +354,126 @@ public final class SecureMediaIndex {
             throw new SecureMediaIndexException("cannot count secure media index", e);
         }
         return counts;
+    }
+
+    public boolean removeIndexOnly(byte[] digest) {
+        if (digest == null || digest.length != DIGEST_BYTES) {
+            return false;
+        }
+        String key = key(digest);
+        String legacyKey = legacyKey(digest);
+        synchronized (memoryCache) {
+            memoryCache.put(key, NEGATIVE_ENTRY);
+            memoryCache.remove(legacyKey);
+        }
+        try {
+            blobs.deleteAll(key, legacyKey);
+            return true;
+        } catch (KeystoreEncryptedBlobStore.StateStoreException e) {
+            return false;
+        }
+    }
+
+    private Entry sanitizeEntry(String storageKey, Entry entry) {
+        if (entry == null) {
+            return null;
+        }
+        String path = entry.plaintextPath != null ? entry.plaintextPath : "";
+        String name = entry.fileName != null
+                ? entry.fileName.toLowerCase(java.util.Locale.ROOT)
+                : "";
+        String mime = entry.mimeType != null
+                ? entry.mimeType.toLowerCase(java.util.Locale.ROOT)
+                : "";
+        // Stickers, control/event artifacts, and orphaned test entries must never appear in
+        // shared media / profile files. Remove only the index record so cached sticker files
+        // in fork-secure-media-in remain usable in chat bubbles.
+        if (path.contains("fork-secure-media-in")
+                || path.contains("fork-secure-stickers")
+                || mime.contains("tgsticker")
+                || name.endsWith(".tgse")
+                || name.endsWith(".tgs")
+                || name.equals("file.bin")
+                || name.matches("^[$#]?[0-9a-f]{32}\\.bin$")
+                || (entry.messageId <= 0 && name.startsWith("fork-secure-photo-"))) {
+            try {
+                blobs.delete(storageKey);
+            } catch (Exception ignore) {
+            }
+            synchronized (memoryCache) {
+                memoryCache.put(storageKey, NEGATIVE_ENTRY);
+            }
+            return null;
+        }
+        if (entry.kind == KIND_FILE) {
+            int resolvedKind = entry.kind;
+            try {
+                String digestHex = hex(entry.carrierDigest);
+                byte[] contentRecord = blobs.get(
+                        SecureLocalContentStore.keyByDigest(
+                                nameMaskKey,
+                                SecureLocalContentStore.OUTGOING_PREFIX,
+                                account,
+                                peerUserId,
+                                digestHex));
+                if (contentRecord == null) {
+                    contentRecord = blobs.get(
+                            SecureLocalContentStore.keyByDigest(
+                                    nameMaskKey,
+                                    SecureLocalContentStore.INCOMING_PREFIX,
+                                    account,
+                                    peerUserId,
+                                    digestHex));
+                }
+                if (contentRecord != null) {
+                    byte[] payload = SecureLocalContentStore.extractPayload(contentRecord);
+                    SecureContentCodec.Decoded decoded = SecureContentCodec.decode(payload);
+                    if (decoded.type == SecureContentCodec.TYPE_PHOTO
+                            || (decoded.type == SecureContentCodec.TYPE_FILE
+                                    && decoded.attachment != null
+                                    && decoded.attachment.photo)) {
+                        resolvedKind = KIND_PHOTO;
+                    } else if (decoded.type != SecureContentCodec.TYPE_FILE) {
+                        blobs.delete(storageKey);
+                        synchronized (memoryCache) {
+                            memoryCache.put(storageKey, NEGATIVE_ENTRY);
+                        }
+                        return null;
+                    }
+                }
+            } catch (Exception ignore) {
+            }
+            if (resolvedKind == KIND_FILE
+                    && mime.startsWith("image/")
+                    && !mime.equals("image/gif")
+                    && !mime.equals("image/webp")
+                    && (name.matches("^-?\\d{10,}(_\\d+)?\\.(jpe?g|png|heic|heif)$")
+                            || name.startsWith("fork-secure-")
+                            || name.startsWith("fscreenshot_")
+                            || name.startsWith("screenshot_")
+                            || name.matches("^img[_0-9-]+\\.(jpe?g|heic|heif)$")
+                            || path.contains("fork-secure-attachments-out"))) {
+                resolvedKind = KIND_PHOTO;
+            }
+            if (resolvedKind != entry.kind) {
+                entry = new Entry(
+                        entry.messageId,
+                        entry.date,
+                        entry.carrierDigest,
+                        resolvedKind,
+                        entry.plaintextPath,
+                        entry.fileName,
+                        entry.mimeType,
+                        entry.caption,
+                        entry.width,
+                        entry.height);
+                try {
+                    blobs.put(storageKey, encode(entry));
+                } catch (Exception ignore) {
+                }
+            }
+        }
+        return entry;
     }
 
     public boolean forget(String carrier) {
@@ -524,6 +743,10 @@ public final class SecureMediaIndex {
             this.caption = caption == null ? "" : caption;
             this.width = width;
             this.height = height;
+        }
+
+        public byte[] carrierDigest() {
+            return carrierDigest.clone();
         }
     }
 

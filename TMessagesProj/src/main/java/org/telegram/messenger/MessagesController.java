@@ -2315,6 +2315,12 @@ public class MessagesController extends BaseController implements NotificationCe
                             }
                             getTranslateController().checkDialogMessage(key);
                         } else {
+                            if (!newDialog.pinned && ForkLocalFoldersAndPinsStore.isLocalOnlyPinnedDialog(currentAccount, newDialog.folder_id, key)) {
+                                newDialog.pinned = true;
+                                newDialog.pinnedNum = currentDialog.pinnedNum > 0
+                                        ? currentDialog.pinnedNum
+                                        : ForkLocalFoldersAndPinsStore.getFallbackPinnedNum(currentAccount, newDialog.folder_id, key);
+                            }
                             currentDialog.pinned = newDialog.pinned;
                             currentDialog.pinnedNum = newDialog.pinnedNum;
                             ArrayList<MessageObject> oldMsgs = dialogMessage.get(key);
@@ -9383,7 +9389,9 @@ public class MessagesController extends BaseController implements NotificationCe
                 } else {
                     markDialogMessageAsDeleted(dialogId, messages);
                 }
-                if (forAll && channelId == 0 && (DialogObject.isUserDialog(dialogId) || DialogObject.isChatDialog(dialogId)) && taskId == 0) {
+                boolean allowForkSecureRemoteDelete = channelId == 0
+                        || !ChatObject.isChannelAndNotMegaGroup(getChat(channelId));
+                if (forAll && !cacheOnly && allowForkSecureRemoteDelete && (DialogObject.isUserDialog(dialogId) || DialogObject.isChatDialog(dialogId)) && taskId == 0) {
                     sendForkSecureDeleteControlIfNeeded(dialogId, toSend != null ? toSend : messages);
                 }
                 getMessagesStorage().markMessagesAsDeleted(dialogId, messages, true, forAll, 0, topicId);
@@ -9538,10 +9546,17 @@ public class MessagesController extends BaseController implements NotificationCe
         if ((!DialogObject.isUserDialog(dialogId) && !DialogObject.isChatDialog(dialogId)) || messages == null || messages.isEmpty()) {
             return;
         }
+        if (DialogObject.isChatDialog(dialogId)) {
+            TLRPC.Chat chat = getChat(-dialogId);
+            if (chat != null && ChatObject.isChannelAndNotMegaGroup(chat)) {
+                return;
+            }
+        }
         final Context context = ApplicationLoader.applicationContext;
         if (!SecureChatEngine.hasLocalState(context, currentAccount, dialogId)) {
             return;
         }
+        final boolean isGroup = DialogObject.isChatDialog(dialogId);
         final ArrayList<Integer> mids = new ArrayList<>(messages);
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
             try {
@@ -9555,7 +9570,9 @@ public class MessagesController extends BaseController implements NotificationCe
                         NativeByteBuffer data = cursor.byteBufferValue(0);
                         if (data != null) {
                             TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
-                            if (message != null && SecureCarrierCodec.isMarked(message.message)) {
+                            if (message != null
+                                    && (!isGroup || message.out)
+                                    && SecureCarrierCodec.isMarked(message.message)) {
                                 digests.add(md.digest(message.message.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
                             }
                             data.reuse();
@@ -9567,13 +9584,18 @@ public class MessagesController extends BaseController implements NotificationCe
                 if (!digests.isEmpty()) {
                     Utilities.globalQueue.postRunnable(() -> {
                         try {
-                            SecureChatEngine secureChat = new SecureChatEngine(context, currentAccount, dialogId);
+                            SecureChatEngine secureChat = SecureChatEngine.get(context, currentAccount, dialogId);
                             if (secureChat.isPaired()) {
+                                if (isGroup) {
+                                    SendMessagesHelper.getInstance(currentAccount)
+                                            .ensureForkSecureGroupSenderKeyDistributedSync(dialogId, false);
+                                }
                                 String controlCarrier = secureChat.encryptDeleteControl(digests);
                                 AndroidUtilities.runOnUIThread(() -> {
                                     SendMessagesHelper.SendMessageParams params = new SendMessagesHelper.SendMessageParams();
                                     params.message = controlCarrier;
                                     params.peer = dialogId;
+                                    params.forkSecureProvenance = true;
                                     SendMessagesHelper.getInstance(currentAccount).sendMessage(params);
                                 });
                             }
@@ -9588,33 +9610,40 @@ public class MessagesController extends BaseController implements NotificationCe
         });
     }
 
-    public void applyForkSecureControlDelete(final long dialogId, final int controlMessageId, final List<byte[]> digests) {
+    public void applyForkSecureControlDelete(
+            final long dialogId,
+            final int controlMessageId,
+            final List<byte[]> digests,
+            final long senderUserId) {
+        if (senderUserId <= 0) {
+            return;
+        }
         if (digests != null && !digests.isEmpty()) {
-            purgeForkSecureMessagesByDigests(dialogId, digests);
+            purgeForkSecureMessagesByDigests(dialogId, digests, senderUserId);
         }
         if (controlMessageId != 0) {
+            boolean isChannel = DialogObject.isChatDialog(dialogId) && ChatObject.isChannel(getChat(-dialogId));
+            boolean isSelfControl = senderUserId == getUserConfig().getClientUserId();
             deleteMessages(
                     new ArrayList<>(java.util.Collections.singletonList(controlMessageId)),
-                    null, null, dialogId, 0, false, 0, false);
+                    null, null, dialogId, 0, false, 0, isChannel && !isSelfControl);
         }
     }
 
-    public void purgeForkSecureMessagesByDigests(final long dialogId, final List<byte[]> digests) {
-        if (digests == null || digests.isEmpty()) {
+    public void purgeForkSecureMessagesByDigests(
+            final long dialogId,
+            final List<byte[]> digests,
+            final long senderUserId) {
+        if (digests == null || digests.isEmpty() || senderUserId <= 0) {
             return;
         }
         final Context context = ApplicationLoader.applicationContext;
-        try {
-            SecureMediaIndex mediaIndex = new SecureMediaIndex(context, currentAccount, dialogId);
-            for (byte[] digest : digests) {
-                mediaIndex.forgetByDigest(digest);
-            }
-        } catch (Throwable e) {
-            FileLog.e(e);
-        }
+        final boolean isGroup = DialogObject.isChatDialog(dialogId);
+        final long selfId = getUserConfig().getClientUserId();
 
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
             ArrayList<Integer> targetMids = new ArrayList<>();
+            ArrayList<byte[]> matchedDigests = new ArrayList<>();
             try {
                 SQLiteCursor cursor = getMessagesStorage().getDatabase().queryFinalized(
                         String.format(java.util.Locale.US, "SELECT mid, data FROM messages_v2 WHERE uid = %d ORDER BY mid DESC LIMIT 500", dialogId));
@@ -9626,10 +9655,20 @@ public class MessagesController extends BaseController implements NotificationCe
                         if (data != null) {
                             TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
                             if (message != null && SecureCarrierCodec.isMarked(message.message)) {
+                                if (isGroup) {
+                                    long msgAuthorId = MessageObject.getForkSecureSenderUserId(message);
+                                    boolean authorized = msgAuthorId == senderUserId
+                                            || (message.out && senderUserId == selfId);
+                                    if (!authorized) {
+                                        data.reuse();
+                                        continue;
+                                    }
+                                }
                                 byte[] msgDigest = localMd.digest(message.message.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                                 for (byte[] target : digests) {
                                     if (java.security.MessageDigest.isEqual(target, msgDigest)) {
                                         targetMids.add(mid);
+                                        matchedDigests.add(msgDigest);
                                         break;
                                     }
                                 }
@@ -9644,9 +9683,22 @@ public class MessagesController extends BaseController implements NotificationCe
                 FileLog.e(e);
             }
 
+            if (!matchedDigests.isEmpty()) {
+                try {
+                    SecureMediaIndex mediaIndex = new SecureMediaIndex(context, currentAccount, dialogId);
+                    for (int i = 0; i < matchedDigests.size(); i++) {
+                        mediaIndex.forgetByDigest(matchedDigests.get(i));
+                    }
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
+            }
+
             if (!targetMids.isEmpty()) {
                 AndroidUtilities.runOnUIThread(() -> {
-                    deleteMessages(targetMids, null, null, dialogId, 0, false, 0, false);
+                    boolean isChannel = isGroup && ChatObject.isChannel(getChat(-dialogId));
+                    boolean isSelfAuthor = senderUserId == 0 || senderUserId == selfId;
+                    deleteMessages(targetMids, null, null, dialogId, 0, false, 0, isChannel && !isSelfAuthor);
                 });
             }
         });
@@ -10501,7 +10553,12 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void saveGif(Object parentObject, TLRPC.Document document) {
-        if (parentObject == null || !MessageObject.isGifDocument(document)) {
+        if (parentObject == null
+                || !MessageObject.isGifDocument(document)
+                || MediaDataController.isForkSecureCarrierDocument(document)
+                || (parentObject instanceof MessageObject
+                        && (((MessageObject) parentObject).forkSecureVerified
+                                || ((MessageObject) parentObject).isForkSecureCarrier()))) {
             return;
         }
         TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
@@ -10521,7 +10578,12 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void saveRecentSticker(Object parentObject, TLRPC.Document document, boolean asMask) {
-        if (parentObject == null || document == null) {
+        if (parentObject == null
+                || document == null
+                || MediaDataController.isForkSecureCarrierDocument(document)
+                || (parentObject instanceof MessageObject
+                        && (((MessageObject) parentObject).forkSecureVerified
+                                || ((MessageObject) parentObject).isForkSecureCarrier()))) {
             return;
         }
         TLRPC.TL_messages_saveRecentSticker req = new TLRPC.TL_messages_saveRecentSticker();
@@ -13780,6 +13842,12 @@ public class MessagesController extends BaseController implements NotificationCe
                         if (loadType != DIALOGS_LOAD_TYPE_CACHE) {
                             currentDialog.notify_settings = value.notify_settings;
                         }
+                        if (!value.pinned && ForkLocalFoldersAndPinsStore.isLocalOnlyPinnedDialog(currentAccount, value.folder_id, key)) {
+                            value.pinned = true;
+                            value.pinnedNum = currentDialog.pinnedNum > 0
+                                    ? currentDialog.pinnedNum
+                                    : ForkLocalFoldersAndPinsStore.getFallbackPinnedNum(currentAccount, value.folder_id, key);
+                        }
                         currentDialog.pinned = value.pinned;
                         currentDialog.pinnedNum = value.pinnedNum;
                         ArrayList<MessageObject> oldMsgs = dialogMessage.get(key);
@@ -16149,19 +16217,157 @@ public class MessagesController extends BaseController implements NotificationCe
         }, ConnectionsManager.RequestFlagInvokeAfter);
     }
 
+    private final java.util.Set<Long> forkSecureSyncingPeers =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
     private void checkForkSecureParticipantDeleted(long dialogId, long deletedUserId) {
-        if (dialogId >= 0 || deletedUserId == getUserConfig().getClientUserId()) {
+        if (!DialogObject.isChatDialog(dialogId)
+                || deletedUserId <= 0
+                || deletedUserId == getUserConfig().getClientUserId()) {
             return;
         }
-        try {
-            org.telegram.secureoverlay.SecureChatEngine secureChat =
-                    new org.telegram.secureoverlay.SecureChatEngine(
-                            ApplicationLoader.applicationContext, currentAccount, dialogId);
-            if (secureChat.isPaired()) {
-                secureChat.rotateGroupSenderKey();
-                FileLog.d("ForkSecure: rotated group sender key for " + dialogId + " after user " + deletedUserId + " deleted");
+        final long chatId = -dialogId;
+        getMessagesStorage().deleteChannelUser(chatId, deletedUserId);
+        AndroidUtilities.runOnUIThread(() -> {
+            TLRPC.ChatFull chatFull = getChatFull(chatId);
+            if (chatFull != null
+                    && chatFull.participants != null
+                    && chatFull.participants.participants != null) {
+                for (int i = chatFull.participants.participants.size() - 1; i >= 0; i--) {
+                    TLRPC.ChatParticipant participant = chatFull.participants.participants.get(i);
+                    if (participant != null && participant.user_id == deletedUserId) {
+                        chatFull.participants.participants.remove(i);
+                    }
+                }
             }
-        } catch (Throwable ignore) {
+        });
+        if (!SecureChatEngine.hasLocalState(
+                ApplicationLoader.applicationContext, currentAccount, dialogId)) {
+            return;
+        }
+        Utilities.globalQueue.postRunnable(() -> {
+            try {
+                org.telegram.secureoverlay.SecureChatEngine secureChat =
+                        org.telegram.secureoverlay.SecureChatEngine.get(
+                                ApplicationLoader.applicationContext, currentAccount, dialogId);
+                secureChat.revokeGroupMemberSenderKey(deletedUserId);
+                if (secureChat.isPaired()) {
+                    secureChat.rotateGroupSenderKey();
+                    FileLog.d("ForkSecure: rotated group sender key for " + dialogId + " after user " + deletedUserId + " deleted");
+                }
+            } catch (Throwable ignore) {
+            }
+        });
+    }
+
+    public void syncForkSecurePeerIncomingMessages(
+            final long peerUserId,
+            final long groupDialogId,
+            final Runnable onSyncedUi) {
+        if (peerUserId <= 0 || !DialogObject.isChatDialog(groupDialogId)) {
+            return;
+        }
+        final Context context = ApplicationLoader.applicationContext;
+        if (SecureChatEngine.isStateTemporarilyUnavailable(context)
+                || !SecureChatEngine.hasLocalState(context, currentAccount, peerUserId)) {
+            return;
+        }
+        if (!forkSecureSyncingPeers.add(peerUserId)) {
+            return;
+        }
+        Utilities.globalQueue.postRunnable(() -> {
+            try {
+                SecureChatEngine peerEngine = SecureChatEngine.get(context, currentAccount, peerUserId);
+                if (peerEngine.getMode() != SecureChatEngine.Mode.PROTECTED
+                        || !peerEngine.hasActiveSession()) {
+                    return;
+                }
+                SecureChatEngine groupEngine = SecureChatEngine.get(context, currentAccount, groupDialogId);
+                ArrayList<TLRPC.Message> localIncoming =
+                        getMessagesStorage().loadRecentIncomingMessagesSync(peerUserId, 30);
+                processForkSecureIncomingSyncBatch(peerEngine, peerUserId, localIncoming);
+
+                if (!groupEngine.hasSenderKeyFrom(peerUserId)) {
+                    TLRPC.InputPeer inputPeer = getInputPeer(peerUserId);
+                    if (inputPeer != null && !(inputPeer instanceof TLRPC.TL_inputPeerEmpty)) {
+                        final ArrayList<TLRPC.Message> remoteBatch = new ArrayList<>();
+                        final java.util.concurrent.CountDownLatch latch =
+                                new java.util.concurrent.CountDownLatch(1);
+                        TLRPC.TL_messages_getHistory req = new TLRPC.TL_messages_getHistory();
+                        req.peer = inputPeer;
+                        req.limit = 20;
+                        getConnectionsManager().sendRequest(req, (response, error) -> {
+                            try {
+                                if (error == null && response instanceof TLRPC.messages_Messages) {
+                                    TLRPC.messages_Messages res = (TLRPC.messages_Messages) response;
+                                    getMessagesStorage().putUsersAndChats(res.users, res.chats, true, true);
+                                    if (res.messages != null && !res.messages.isEmpty()) {
+                                        getMessagesStorage().putMessages(
+                                                res.messages, true, true, true, 0, false, 0, 0);
+                                        for (int i = res.messages.size() - 1; i >= 0; i--) {
+                                            TLRPC.Message msg = res.messages.get(i);
+                                            if (msg != null && !msg.out && msg.id > 0) {
+                                                remoteBatch.add(msg);
+                                            }
+                                        }
+                                    }
+                                }
+                            } finally {
+                                latch.countDown();
+                            }
+                        });
+                        try {
+                            latch.await(4, java.util.concurrent.TimeUnit.SECONDS);
+                        } catch (InterruptedException ignore) {
+                            Thread.currentThread().interrupt();
+                        }
+                        if (!remoteBatch.isEmpty()) {
+                            processForkSecureIncomingSyncBatch(peerEngine, peerUserId, remoteBatch);
+                        }
+                    }
+                }
+
+                if (groupEngine.hasSenderKeyFrom(peerUserId)) {
+                    SecureChatEngine.clearFailedDecryptCache(currentAccount, groupDialogId);
+                    if (onSyncedUi != null) {
+                        AndroidUtilities.runOnUIThread(onSyncedUi);
+                    }
+                }
+            } catch (Throwable e) {
+                FileLog.e(e);
+            } finally {
+                forkSecureSyncingPeers.remove(peerUserId);
+            }
+        });
+    }
+
+    private void processForkSecureIncomingSyncBatch(
+            SecureChatEngine peerEngine,
+            long peerUserId,
+            ArrayList<TLRPC.Message> batch) {
+        for (int i = 0; i < batch.size(); i++) {
+            TLRPC.Message msg = batch.get(i);
+            if (msg == null
+                    || msg.out
+                    || msg.fwd_from != null
+                    || !SecureCarrierCodec.isMarked(msg.message)) {
+                continue;
+            }
+            SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(msg.message);
+            if (decoded == null
+                    || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                    || decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION
+                    || decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
+                continue;
+            }
+            long fromId = MessageObject.getForkSecureSenderUserId(msg);
+            if (fromId != peerUserId) {
+                continue;
+            }
+            try {
+                peerEngine.decryptText(msg.message, fromId);
+            } catch (Throwable ignore) {
+            }
         }
     }
 
@@ -17411,9 +17617,17 @@ public class MessagesController extends BaseController implements NotificationCe
                 }
                 dids.add(dialog.id);
                 pinned.add(dialog.pinnedNum);
-                if (!DialogObject.isEncryptedDialog(dialog.id)) {
-                    TLRPC.InputPeer inputPeer = getInputPeer(dialog.id);
-                    TLRPC.Chat chat = getMessagesController().getChat(-dialog.id);
+            }
+            java.util.Set<Long> allowedServerIds = ForkLocalFoldersAndPinsStore.recordMainPinnedOrderAndGetServerIds(
+                    currentAccount,
+                    folderId,
+                    dids,
+                    getUserConfig().isPremium());
+            for (int a = 0, N = dids.size(); a < N; a++) {
+                long dialogId = dids.get(a);
+                if (!DialogObject.isEncryptedDialog(dialogId) && allowedServerIds.contains(dialogId)) {
+                    TLRPC.InputPeer inputPeer = getInputPeer(dialogId);
+                    TLRPC.Chat chat = getMessagesController().getChat(-dialogId);
                     if (ChatObject.isCommunity(chat)) {
                         TLRPC.TL_inputDialogPeerCommunity inputDialogPeerCommunity = new TLRPC.TL_inputDialogPeerCommunity();
                         inputDialogPeerCommunity.community = getMessagesController().getInputChannel(chat.id);
@@ -17482,11 +17696,32 @@ public class MessagesController extends BaseController implements NotificationCe
             dialog.pinnedNum = 0;
         }
         sortDialogs(null);
+        ArrayList<Long> currentPinnedTopToBottom = new ArrayList<>();
+        for (int a = 0; a < dialogs.size(); a++) {
+            TLRPC.Dialog d = dialogs.get(a);
+            if (d instanceof TLRPC.TL_dialogFolder) {
+                continue;
+            }
+            if (!d.pinned) {
+                if (d.id != promoDialogId) {
+                    break;
+                }
+                continue;
+            }
+            currentPinnedTopToBottom.add(d.id);
+        }
+        boolean shouldSendToServer = ForkLocalFoldersAndPinsStore.onMainDialogPinToggled(
+                currentAccount,
+                folderId,
+                dialogId,
+                pin,
+                currentPinnedTopToBottom,
+                getUserConfig().isPremium());
         if (!pin && !dialogs.isEmpty() && dialogs.get(dialogs.size() - 1) == dialog && !dialogsEndReached.get(folderId)) {
             dialogs.remove(dialogs.size() - 1);
         }
         getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
-        if (!DialogObject.isEncryptedDialog(dialogId)) {
+        if (!DialogObject.isEncryptedDialog(dialogId) && shouldSendToServer) {
             if (taskId != -1) {
                 TLRPC.TL_messages_toggleDialogPin req = new TLRPC.TL_messages_toggleDialogPin();
                 req.pinned = pin;
@@ -17520,6 +17755,9 @@ public class MessagesController extends BaseController implements NotificationCe
                 getConnectionsManager().sendRequest(req, (response, error) -> {
                     if (newTaskId != 0) {
                         getMessagesStorage().removePendingTask(newTaskId);
+                    }
+                    if (error != null && pin && error.text != null && error.text.startsWith("PINNED_DIALOGS_TOO_MUCH")) {
+                        ForkLocalFoldersAndPinsStore.markLocalOnlyPinnedDialog(currentAccount, folderId, dialogId, true);
                     }
                 });
             }
@@ -17637,6 +17875,9 @@ public class MessagesController extends BaseController implements NotificationCe
                     int maxPinnedNum = 0;
 
                     ArrayList<TLRPC.Dialog> dialogs = getDialogs(folderId);
+                    ArrayList<Long> currentLocalPinnedIds = new ArrayList<>();
+                    ArrayList<TLRPC.Dialog> encryptedPinnedDialogs = new ArrayList<>();
+                    ArrayList<Integer> encryptedPinnedPositions = new ArrayList<>();
 
                     int pinnedNum = firstIsFolder ? 1 : 0;
                     for (int a = 0; a < dialogs.size(); a++) {
@@ -17645,11 +17886,8 @@ public class MessagesController extends BaseController implements NotificationCe
                             continue;
                         }
                         if (DialogObject.isEncryptedDialog(dialog.id)) {
-                            if (pinnedNum < newPinnedDialogs.size()) {
-                                newPinnedDialogs.add(pinnedNum, dialog);
-                            } else {
-                                newPinnedDialogs.add(dialog);
-                            }
+                            encryptedPinnedDialogs.add(dialog);
+                            encryptedPinnedPositions.add(pinnedNum);
                             pinnedNum++;
                             continue;
                         }
@@ -17659,11 +17897,55 @@ public class MessagesController extends BaseController implements NotificationCe
                             }
                             continue;
                         }
+                        currentLocalPinnedIds.add(dialog.id);
                         maxPinnedNum = Math.max(dialog.pinnedNum, maxPinnedNum);
                         dialog.pinned = false;
                         dialog.pinnedNum = 0;
                         changed = true;
                         pinnedNum++;
+                    }
+
+                    TLRPC.Dialog folderEntry = firstIsFolder ? newPinnedDialogs.remove(0) : null;
+                    LongSparseArray<TLRPC.Dialog> incomingDialogById = new LongSparseArray<>();
+                    ArrayList<Long> incomingServerIds = new ArrayList<>();
+                    for (int a = 0; a < newPinnedDialogs.size(); a++) {
+                        TLRPC.Dialog d = newPinnedDialogs.get(a);
+                        if (d != null && !DialogObject.isEncryptedDialog(d.id)) {
+                            incomingDialogById.put(d.id, d);
+                            incomingServerIds.add(d.id);
+                        }
+                    }
+                    java.util.List<Long> mergedNonSecretIds = ForkLocalFoldersAndPinsStore.mergeMainPinnedDialogsOnSync(
+                            currentAccount,
+                            folderId,
+                            incomingServerIds,
+                            currentLocalPinnedIds,
+                            getUserConfig().isPremium());
+                    newPinnedDialogs.clear();
+                    if (folderEntry != null) {
+                        newPinnedDialogs.add(folderEntry);
+                    }
+                    for (int a = 0; a < mergedNonSecretIds.size(); a++) {
+                        long did = mergedNonSecretIds.get(a);
+                        TLRPC.Dialog d = incomingDialogById.get(did);
+                        if (d == null) {
+                            d = dialogs_dict.get(did);
+                            if (d != null) {
+                                d.pinned = true;
+                            }
+                        }
+                        if (d != null) {
+                            newPinnedDialogs.add(d);
+                        }
+                    }
+                    for (int a = 0; a < encryptedPinnedDialogs.size(); a++) {
+                        TLRPC.Dialog encDialog = encryptedPinnedDialogs.get(a);
+                        int pos = encryptedPinnedPositions.get(a);
+                        if (pos < newPinnedDialogs.size()) {
+                            newPinnedDialogs.add(pos, encDialog);
+                        } else {
+                            newPinnedDialogs.add(encDialog);
+                        }
                     }
 
                     ArrayList<Long> pinnedDialogs = new ArrayList<>();
@@ -18794,7 +19076,7 @@ public class MessagesController extends BaseController implements NotificationCe
                     } else if (message.from_id instanceof TLRPC.TL_peerUser && message.from_id.user_id == clientUserId && message.action.user_id == clientUserId) {
                         continue;
                     }
-                    checkForkSecureParticipantDeleted(message.dialog_id, message.action.user_id);
+                    checkForkSecureParticipantDeleted(MessageObject.getDialogId(message), message.action.user_id);
                 }
 
                 ImageLoader.saveMessageThumbs(message);
@@ -22116,7 +22398,8 @@ public class MessagesController extends BaseController implements NotificationCe
                 if (!hasNotOutMessage && !message.isOut()) {
                     hasNotOutMessage = true;
                 }
-                if (message.isOut() && !message.isSending() && !message.isForwarded()) {
+                if (message.isOut() && !message.isSending() && !message.isForwarded()
+                        && !message.forkSecureVerified && !message.isForkSecureCarrier()) {
                     if (message.isNewGif()) {
                         boolean save;
                         if (MessageObject.isDocumentHasAttachedStickers(message.messageOwner.media.document)) {

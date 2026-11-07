@@ -3110,13 +3110,13 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                     || securePreviewPeerId != currentDialogId
                     || securePreviewEngine.isStale()) {
                 securePreviewEngine =
-                        new SecureChatEngine(getContext(), currentAccount, currentDialogId);
+                        SecureChatEngine.get(getContext(), currentAccount, currentDialogId);
                 securePreviewPeerId = currentDialogId;
             }
             // Keep dialog list previews strictly cacheOnly=true so the main chat list never
             // advances the Libsignal ratchet in the background or exposes uncached plaintext (SA-34).
             SecureChatEngine.DialogPreview preview = securePreviewEngine.resolveDialogPreview(
-                    carrier, message.isOutOwner(), message.getFromChatId(), true);
+                    carrier, message.isOutOwner(), message.getForkSecureSenderUserId(), true);
             if (preview != null) {
                 CharSequence previewText = formatForkSecureDialogPreview(getContext(), preview);
                 if (preview.kind == SecureChatEngine.DialogPreview.Kind.CONTROL_DELETE) {
@@ -3155,27 +3155,59 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         applyForkSecureDialogMediaPreview(message);
     }
 
+    private static final java.util.Set<String> forkSecureDialogIndexInFlight =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
     private void applyForkSecureDialogMediaPreview(MessageObject candidate) {
         if (candidate == null
                 || !candidate.isForkSecureCarrier()
-                || candidate.messageOwner == null) {
+                || candidate.messageOwner == null
+                || (candidate.getDocument() == null && !candidate.isPhoto())) {
             return;
         }
         if (!candidate.forkSecureMediaIndexChecked) {
-            candidate.forkSecureMediaIndexChecked = true;
-            if ((candidate.getDocument() != null || candidate.isPhoto()) && TextUtils.isEmpty(candidate.forkSecureMediaPath)) {
-                try {
-                    SecureMediaIndex.Entry entry = new SecureMediaIndex(
-                            ApplicationLoader.applicationContext, currentAccount, currentDialogId)
-                            .find(candidate.getId(), candidate.messageOwner.message);
-                    if (entry != null) {
-                        candidate.applyForkSecureMediaIndex(entry);
-                    }
-                } catch (RuntimeException error) {
-                    if (BuildVars.LOGS_ENABLED) {
-                        FileLog.d("DialogCell: secure media index lookup failed: " + error.getMessage());
+            if (TextUtils.isEmpty(candidate.forkSecureMediaPath)) {
+                final String carrier = candidate.messageOwner.message;
+                final long dialogId = currentDialogId;
+                final int account = currentAccount;
+                final int msgId = candidate.getId();
+                SecureMediaIndex.CachedLookup cached = SecureMediaIndex.lookupCached(account, dialogId, carrier);
+                if (cached.isHit()) {
+                    candidate.forkSecureMediaIndexChecked = true;
+                    candidate.applyForkSecureMediaIndex(cached.entry);
+                } else if (cached.isNegative()) {
+                    candidate.forkSecureMediaIndexChecked = true;
+                } else if (!TextUtils.isEmpty(carrier) && dialogId != 0) {
+                    final String dedupeKey = account + ":" + dialogId + ":" + msgId + ":" + carrier.hashCode();
+                    if (forkSecureDialogIndexInFlight.add(dedupeKey)) {
+                        final Context appContext = ApplicationLoader.applicationContext;
+                        Utilities.globalQueue.postRunnable(() -> {
+                            SecureMediaIndex.Entry found = null;
+                            try {
+                                found = new SecureMediaIndex(appContext, account, dialogId).find(msgId, carrier);
+                            } catch (RuntimeException error) {
+                                if (BuildVars.LOGS_ENABLED) {
+                                    FileLog.d("DialogCell: secure media index lookup failed: " + error.getMessage());
+                                }
+                            } finally {
+                                forkSecureDialogIndexInFlight.remove(dedupeKey);
+                            }
+                            final SecureMediaIndex.Entry entry = found;
+                            AndroidUtilities.runOnUIThread(() -> {
+                                candidate.forkSecureMediaIndexChecked = true;
+                                if (entry != null && candidate.applyForkSecureMediaIndex(entry)) {
+                                    if (currentDialogId == dialogId && message == candidate) {
+                                        applyForkSecureDialogMediaPreview(candidate);
+                                        buildLayout();
+                                        invalidate();
+                                    }
+                                }
+                            });
+                        });
                     }
                 }
+            } else {
+                candidate.forkSecureMediaIndexChecked = true;
             }
         }
         if (candidate.isAnyKindOfSticker()) {
@@ -3219,8 +3251,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         if (candidate.isPhoto() || candidate.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
             return getString(R.string.AttachPhoto);
         }
-        if (candidate.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE
-                || candidate.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_FILE) {
+        if (candidate.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_FILE) {
             if (!TextUtils.isEmpty(candidate.forkSecureMediaName)) {
                 return candidate.forkSecureMediaName;
             }

@@ -960,8 +960,54 @@ public class MediaDataController extends BaseController {
         }));
     }
 
+    public static boolean isForkSecureCarrierDocument(TLRPC.Document document) {
+        if (document == null) {
+            return true;
+        }
+        if ("application/octet-stream".equalsIgnoreCase(document.mime_type)) {
+            return true;
+        }
+        if (document.attributes != null) {
+            for (int i = 0, N = document.attributes.size(); i < N; i++) {
+                TLRPC.DocumentAttribute attr = document.attributes.get(i);
+                if (attr instanceof TLRPC.TL_documentAttributeFilename && attr.file_name != null) {
+                    String lower = attr.file_name.toLowerCase(Locale.ROOT);
+                    if (lower.equals("file.bin") || lower.endsWith(".bin") || lower.endsWith(".tgse")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (document.thumbs != null && !document.thumbs.isEmpty()
+                && (document.video_thumbs == null || document.video_thumbs.isEmpty())) {
+            boolean allUnavailable = true;
+            for (int i = 0, N = document.thumbs.size(); i < N; i++) {
+                TLRPC.PhotoSize ps = document.thumbs.get(i);
+                if (ps == null) {
+                    continue;
+                }
+                if (!(ps.location instanceof TLRPC.TL_fileLocationUnavailable)
+                        && ((ps.bytes != null && ps.bytes.length > 0)
+                                || (ps.location != null && (ps.location.volume_id != 0 || ps.location.local_id != 0)))) {
+                    allUnavailable = false;
+                    break;
+                }
+            }
+            if (allUnavailable) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public void addRecentSticker(int type, Object parentObject, TLRPC.Document document, int date, boolean remove) {
         if (type == TYPE_GREETINGS || !MessageObject.isStickerDocument(document) && !MessageObject.isAnimatedStickerDocument(document, true)) {
+            return;
+        }
+        if (!remove && (isForkSecureCarrierDocument(document)
+                || (parentObject instanceof MessageObject
+                        && (((MessageObject) parentObject).forkSecureVerified
+                                || ((MessageObject) parentObject).isForkSecureCarrier())))) {
             return;
         }
         boolean found = false;
@@ -1101,7 +1147,7 @@ public class MediaDataController extends BaseController {
     }
 
     public void addRecentGif(TLRPC.Document document, int date, boolean showReplaceBulletin) {
-        if (document == null) {
+        if (document == null || isForkSecureCarrierDocument(document)) {
             return;
         }
         boolean found = false;
@@ -1951,19 +1997,42 @@ public class MediaDataController extends BaseController {
                     }
                     SQLiteCursor cursor = getMessagesStorage().getDatabase().queryFinalized("SELECT document FROM web_recent_v3 WHERE type = " + cacheType + " ORDER BY date DESC");
                     ArrayList<TLRPC.Document> arrayList = new ArrayList<>();
+                    ArrayList<TLRPC.Document> staleCarrierDocs = new ArrayList<>();
                     while (cursor.next()) {
                         if (!cursor.isNull(0)) {
                             NativeByteBuffer data = cursor.byteBufferValue(0);
                             if (data != null) {
                                 TLRPC.Document document = TLRPC.Document.TLdeserialize(data, data.readInt32(false), false);
                                 if (document != null) {
-                                    arrayList.add(document);
+                                    if (isForkSecureCarrierDocument(document)) {
+                                        staleCarrierDocs.add(document);
+                                    } else {
+                                        arrayList.add(document);
+                                    }
                                 }
                                 data.reuse();
                             }
                         }
                     }
                     cursor.dispose();
+                    if (!staleCarrierDocs.isEmpty()) {
+                        for (int i = 0, N = staleCarrierDocs.size(); i < N; i++) {
+                            TLRPC.Document stale = staleCarrierDocs.get(i);
+                            try {
+                                getMessagesStorage().getDatabase().executeFast("DELETE FROM web_recent_v3 WHERE id = '" + stale.id + "' AND type = " + cacheType).stepThis().dispose();
+                            } catch (Exception ignore) {
+                            }
+                            if (gif) {
+                                TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
+                                req.id = new TLRPC.TL_inputDocument();
+                                req.id.id = stale.id;
+                                req.id.access_hash = stale.access_hash;
+                                req.id.file_reference = stale.file_reference != null ? stale.file_reference : new byte[0];
+                                req.unsave = true;
+                                getConnectionsManager().sendRequest(req, (response, error) -> {});
+                            }
+                        }
+                    }
                     AndroidUtilities.runOnUIThread(() -> {
                         if (gif) {
                             recentGifs = arrayList;
@@ -2085,6 +2154,21 @@ public class MediaDataController extends BaseController {
 
     protected void processLoadedRecentDocuments(int type, ArrayList<TLRPC.Document> documents, boolean gif, int date, boolean replace) {
         if (documents != null) {
+            for (int i = documents.size() - 1; i >= 0; i--) {
+                TLRPC.Document doc = documents.get(i);
+                if (isForkSecureCarrierDocument(doc)) {
+                    documents.remove(i);
+                    if (gif && doc != null) {
+                        TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
+                        req.id = new TLRPC.TL_inputDocument();
+                        req.id.id = doc.id;
+                        req.id.access_hash = doc.access_hash;
+                        req.id.file_reference = doc.file_reference != null ? doc.file_reference : new byte[0];
+                        req.unsave = true;
+                        getConnectionsManager().sendRequest(req, (response, error) -> {});
+                    }
+                }
+            }
             getMessagesStorage().getStorageQueue().postRunnable(() -> {
                 try {
                     SQLiteDatabase database = getMessagesStorage().getDatabase();
@@ -4532,7 +4616,8 @@ public class MediaDataController extends BaseController {
                     if (data != null) {
                         try {
                             TLRPC.Message msg = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
-                            if (msg != null && SecureCarrierCodec.isMarked(msg.message)) {
+                            if (msg != null && (SecureCarrierCodec.isMarked(msg.message)
+                                    || (msg.media != null && msg.media.document != null && isForkSecureCarrierDocument(msg.media.document)))) {
                                 toDelete.add(mid);
                             }
                         } catch (Throwable ignore) {
@@ -4547,6 +4632,52 @@ public class MediaDataController extends BaseController {
                             Locale.US,
                             "DELETE FROM media_v4 WHERE mid = %d AND uid = %d",
                             mid, dialogId)).stepThis().dispose();
+                }
+                if (index != null) {
+                    java.util.List<SecureMediaIndex.Entry> entries = index.listAll();
+                    boolean hasUnbound = false;
+                    for (int i = 0, N = entries.size(); i < N; i++) {
+                        if (entries.get(i).messageId <= 0) {
+                            hasUnbound = true;
+                            break;
+                        }
+                    }
+                    if (hasUnbound) {
+                        java.util.HashMap<String, Integer> digestToMid = new java.util.HashMap<>();
+                        org.telegram.SQLite.SQLiteCursor msgCursor = getMessagesStorage().getDatabase().queryFinalized(String.format(
+                                Locale.US,
+                                "SELECT mid, data FROM messages_v2 WHERE uid = %d",
+                                dialogId));
+                        while (msgCursor.next()) {
+                            int mid = msgCursor.intValue(0);
+                            NativeByteBuffer data = msgCursor.byteBufferValue(1);
+                            if (data != null) {
+                                try {
+                                    TLRPC.Message msg = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                                    if (msg != null && SecureCarrierCodec.isMarked(msg.message)) {
+                                        digestToMid.put(Utilities.bytesToHex(SecureMediaIndex.digest(msg.message)), mid);
+                                    }
+                                } catch (Throwable ignore) {
+                                } finally {
+                                    data.reuse();
+                                }
+                            }
+                        }
+                        msgCursor.dispose();
+                        int nowSec = (int) (System.currentTimeMillis() / 1000L);
+                        for (int i = 0, N = entries.size(); i < N; i++) {
+                            SecureMediaIndex.Entry entry = entries.get(i);
+                            if (entry.messageId <= 0) {
+                                byte[] digest = entry.carrierDigest();
+                                Integer resolvedMid = digestToMid.get(Utilities.bytesToHex(digest));
+                                if (resolvedMid != null && resolvedMid > 0) {
+                                    index.findByDigest(resolvedMid, digest);
+                                } else if (entry.date > 0 && nowSec - entry.date > 120) {
+                                    index.removeIndexOnly(digest);
+                                }
+                            }
+                        }
+                    }
                 }
             } catch (Throwable e) {
                 FileLog.e(e);
@@ -4667,7 +4798,7 @@ public class MediaDataController extends BaseController {
                     if (secureEntry != null) {
                         return mediaTypeForSecureEntry(secureEntry);
                     }
-                    SecureChatEngine secureChat = new SecureChatEngine(
+                    SecureChatEngine secureChat = SecureChatEngine.get(
                             ApplicationLoader.applicationContext,
                             UserConfig.selectedAccount,
                             dialogId);
@@ -4814,7 +4945,7 @@ public class MediaDataController extends BaseController {
                             }
                             if (TextUtils.isEmpty(plaintext)) {
                                 try {
-                                    SecureChatEngine secureChat = new SecureChatEngine(
+                                    SecureChatEngine secureChat = SecureChatEngine.get(
                                             ApplicationLoader.applicationContext,
                                             currentAccount,
                                             dialogId);
@@ -5151,6 +5282,7 @@ public class MediaDataController extends BaseController {
 
 
                     HashSet<Long> groupsToLoad = tag != null ? new HashSet<>() : null;
+                    HashSet<Integer> loadedMessageIds = new HashSet<>();
                     while (cursor.next()) {
                         NativeByteBuffer data = cursor.byteBufferValue(0);
                         if (data != null) {
@@ -5159,12 +5291,17 @@ public class MediaDataController extends BaseController {
                             data.reuse();
                             message.id = cursor.intValue(1);
                             message.dialog_id = uid;
+                            if (type != MEDIA_URL && (SecureCarrierCodec.isMarked(message.message)
+                                    || (message.media != null && message.media.document != null && isForkSecureCarrierDocument(message.media.document)))) {
+                                continue;
+                            }
                             if (DialogObject.isEncryptedDialog(uid)) {
                                 message.random_id = cursor.longValue(2);
                             }
                             if (message.grouped_id != 0 && groupsToLoad != null) {
                                 groupsToLoad.add(message.grouped_id);
                             }
+                            loadedMessageIds.add(message.id);
                             if (reverseMessages) {
                                 res.messages.add(0, message);
                             } else {
@@ -5195,6 +5332,7 @@ public class MediaDataController extends BaseController {
                                         if (entry.messageId <= 0) continue;
                                         if (max_id != 0 && entry.messageId >= max_id) continue;
                                         if (min_id != 0 && entry.messageId <= min_id) continue;
+                                        if (loadedMessageIds.contains(entry.messageId)) continue;
                                         midsToLoad.add(entry.messageId);
                                         if (midsToLoad.size() >= countToLoad) break;
                                     }

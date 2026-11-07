@@ -157,6 +157,7 @@ import org.telegram.messenger.ContactsController;
 import org.telegram.messenger.DialogObject;
 import org.telegram.messenger.DocumentObject;
 import org.telegram.messenger.DownloadController;
+import org.telegram.messenger.DispatchQueue;
 import org.telegram.messenger.Emoji;
 import org.telegram.messenger.EmojiData;
 import org.telegram.messenger.FactCheckController;
@@ -193,15 +194,18 @@ import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
 import org.telegram.secureoverlay.SecureCarrierCodec;
 import org.telegram.secureoverlay.SecureChatEngine;
+import org.telegram.secureoverlay.SecureChatState;
 import org.telegram.secureoverlay.SecureContentCodec;
 import org.telegram.secureoverlay.SecureContentSettings;
 import org.telegram.secureoverlay.SecureMediaCache;
 import org.telegram.secureoverlay.SecureMediaCrypto;
 import org.telegram.secureoverlay.SecureMediaIndex;
+import org.telegram.secureoverlay.SecureSessionManager;
 import org.telegram.secureoverlay.SecureSavedMessagesSettings;
 import org.telegram.secureoverlay.SecureLinkGuard;
 import org.telegram.secureoverlay.SecureSavedMessageCrypto;
 import org.telegram.secureoverlay.SecureSavedMessagesKeyStore;
+import org.telegram.secureoverlay.SecureSavedMessagesPinStore;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.messenger.camera.CameraView;
 import org.telegram.messenger.support.LongSparseIntArray;
@@ -460,10 +464,23 @@ public class ChatActivity extends BaseFragment implements
     private int chatActivityEnterViewAnimateFromTop;
     private boolean chatActivityEnterViewAnimateBeforeSending;
     private ActionBarMenuItem.Item timeItem2;
+    private static final DispatchQueue forkSecureOverlayQueue =
+            new DispatchQueue("ForkSecureOverlayQueue");
+    private static final java.util.Map<String, SecureContentCodec.Decoded> forkSavedMessagesDecodedCache =
+            java.util.Collections.synchronizedMap(
+                    new java.util.LinkedHashMap<String, SecureContentCodec.Decoded>(256, 0.75f, true) {
+                        @Override
+                        protected boolean removeEldestEntry(
+                                java.util.Map.Entry<String, SecureContentCodec.Decoded> eldest) {
+                            return size() > 1024;
+                        }
+                    });
+
     private ActionBarMenuItem secureModeItem;
     private SecureChatEngine secureChatEngine;
     private boolean forkSecureEnginePrewarmQueued;
     private SecureSavedMessagesKeyStore.KeyMaterial savedMessagesKeyMaterial;
+    private SecureSavedMessagesPinStore savedMessagesPinStore;
     private int forkSecureReadyAckScheduledMessageId;
     private boolean forkSecureSuppressedWebPageSearch;
     private final HashSet<Integer> forkSecureDeferredMessages = new HashSet<>();
@@ -471,6 +488,12 @@ public class ChatActivity extends BaseFragment implements
     private final HashSet<String> forkSecureMediaDownloadAttempted = new HashSet<>();
     private final HashSet<String> forkSecureMediaRejected = new HashSet<>();
     private final HashSet<String> forkSecureMediaIndexed = new HashSet<>();
+    private final HashSet<Integer> forkSecureUrlsIndexed = new HashSet<>();
+    private final HashSet<String> forkSecureOverlayInFlight = new HashSet<>();
+    private final java.util.LinkedHashSet<MessageObject> forkSecurePendingRowUpdates =
+            new java.util.LinkedHashSet<>();
+    private boolean forkSecureRowUpdateScheduled;
+    private final Runnable flushForkSecureRowUpdatesRunnable = this::flushForkSecureRowUpdates;
     private ComposeDrawable otherIcon;
     private ActionBarMenu.LazyItem attachItem;
     private ActionBarMenuItem.Item savedChatsItem, savedChatsGap;;
@@ -3525,6 +3548,10 @@ public class ChatActivity extends BaseFragment implements
             AndroidUtilities.removeFromParent(starReactionsOverlay);
             starReactionsOverlay = null;
         }
+        AndroidUtilities.cancelRunOnUIThread(flushForkSecureRowUpdatesRunnable);
+        forkSecureRowUpdateScheduled = false;
+        forkSecurePendingRowUpdates.clear();
+        forkSecureOverlayInFlight.clear();
     }
 
     private static class ChatActivityTextSelectionHelper extends TextSelectionHelper.ChatListTextSelectionHelper {
@@ -14673,7 +14700,7 @@ public class ChatActivity extends BaseFragment implements
             try {
                 targetChat = targetDialogId == dialog_id
                         ? getSecureChatEngine()
-                        : new SecureChatEngine(getContext(), currentAccount, targetDialogId);
+                        : SecureChatEngine.get(getContext(), currentAccount, targetDialogId);
                 if (targetChat == null || targetChat.getMode() != SecureChatEngine.Mode.PROTECTED) {
                     showForkSecureForwardError(R.string.ForkSecureForwardNeedsProtectedChat);
                     return;
@@ -14791,17 +14818,28 @@ public class ChatActivity extends BaseFragment implements
                                 showForkSecureForwardError(R.string.ForkSecureForwardFailed);
                                 return;
                             }
-                            byte[] decrypted = SecureSavedMessageCrypto.decryptRecord(decoded.payload, key);
-                            SecureContentCodec.Decoded content = SecureContentCodec.decode(decrypted);
-                            if (content.contact != null) {
-                                contact = content.contact;
-                            } else if (content.location != null) {
-                                location = content.location;
-                            } else {
-                                plaintext = content.text;
+                            SecureSavedMessagesPinStore pinStore = getSavedMessagesPinStore();
+                            try {
+                                byte[] decrypted = SecureSavedMessageCrypto.decryptRecordBound(
+                                        decoded.payload, key, pinStore, sourceMessage.getId());
+                                SecureContentCodec.Decoded content = SecureContentCodec.decode(decrypted);
+                                if (content.contact != null) {
+                                    contact = content.contact;
+                                } else if (content.location != null) {
+                                    location = content.location;
+                                } else {
+                                    plaintext = content.text;
+                                }
+                            } catch (IllegalArgumentException mediaRecordFailure) {
+                                if (!"Saved Messages media record mismatch".equals(
+                                        mediaRecordFailure.getMessage())) {
+                                    throw mediaRecordFailure;
+                                }
+                                plaintext = SecureSavedMessageCrypto.decryptTextBound(
+                                        decoded.payload, key, pinStore, sourceMessage.getId());
                             }
                         } else {
-                            SecureChatEngine sourceChat = new SecureChatEngine(
+                            SecureChatEngine sourceChat = SecureChatEngine.get(
                                     getContext(), currentAccount, sourceMessage.getDialogId());
                             String sourceText = sourceMessage.isOutOwner()
                                     ? sourceChat.getOutgoingText(sourceCarrier)
@@ -21199,7 +21237,7 @@ public class ChatActivity extends BaseFragment implements
         Trace.beginSection("ForkSecure#getEngine");
         try {
             if (secureChatEngine == null || secureChatEngine.isStale()) {
-                secureChatEngine = new SecureChatEngine(getContext(), currentAccount, dialog_id);
+                secureChatEngine = SecureChatEngine.get(getContext(), currentAccount, dialog_id);
             }
             return secureChatEngine;
         } finally {
@@ -21223,11 +21261,11 @@ public class ChatActivity extends BaseFragment implements
         final Context applicationContext = getContext().getApplicationContext();
         final int account = currentAccount;
         final long peer = dialog_id;
-        Utilities.globalQueue.postRunnable(() -> {
+        forkSecureOverlayQueue.postRunnable(() -> {
             SecureChatEngine prepared = null;
             Trace.beginSection("ForkSecure#enginePrewarm");
             try {
-                prepared = new SecureChatEngine(applicationContext, account, peer);
+                prepared = SecureChatEngine.get(applicationContext, account, peer);
             } catch (RuntimeException error) {
                 FileLog.e(error);
             } finally {
@@ -21244,6 +21282,92 @@ public class ChatActivity extends BaseFragment implements
         });
     }
 
+    private SecureChatEngine peekWarmSecureChatEngine() {
+        if (secureChatEngine != null && !secureChatEngine.isStale()) {
+            return secureChatEngine;
+        }
+        SecureChatEngine peeked = SecureSessionManager.peekEngine(currentAccount, dialog_id);
+        if (peeked != null) {
+            secureChatEngine = peeked;
+        }
+        return peeked;
+    }
+
+    private void maskPendingSecureCarrierOnUi(MessageObject message) {
+        if (message == null || message.messageOwner == null) {
+            return;
+        }
+        message.forkSecureVerified = false;
+        message.forkSecureService = false;
+        if (message.getDocument() != null) {
+            normalizeSecureTransportDocument(message.getDocument());
+        }
+        message.applyNewText(getString(R.string.ForkSecureReplyPreview));
+        syncSecureMediaCaption(message);
+    }
+
+    private static final class ColdSecureOverlayItem {
+        final MessageObject originalMessage;
+        final int messageId;
+        final String carrier;
+        final boolean outgoing;
+        final long senderUserId;
+        final boolean isPairingOffer;
+        final int carrierType;
+        final boolean needsMessageHydration;
+        final int replyMessageId;
+        final String replyCarrier;
+        final boolean replyOutgoing;
+        final long replySenderUserId;
+        final boolean replyIsPairingOffer;
+        final String quoteCarrier;
+        final String inFlightKey;
+
+        SecureChatEngine.PairingOfferResult pairingResult;
+        boolean pairedWithActiveSession;
+        String resolvedText;
+        boolean shouldAckSessionReady;
+        RuntimeException messageError;
+        boolean stateUnavailable;
+        boolean missingSenderKey;
+        String resolvedReplyText;
+        RuntimeException replyError;
+        String resolvedQuoteText;
+
+        ColdSecureOverlayItem(
+                MessageObject originalMessage,
+                int messageId,
+                String carrier,
+                boolean outgoing,
+                long senderUserId,
+                boolean isPairingOffer,
+                int carrierType,
+                boolean needsMessageHydration,
+                int replyMessageId,
+                String replyCarrier,
+                boolean replyOutgoing,
+                long replySenderUserId,
+                boolean replyIsPairingOffer,
+                String quoteCarrier,
+                String inFlightKey) {
+            this.originalMessage = originalMessage;
+            this.messageId = messageId;
+            this.carrier = carrier;
+            this.outgoing = outgoing;
+            this.senderUserId = senderUserId;
+            this.isPairingOffer = isPairingOffer;
+            this.carrierType = carrierType;
+            this.needsMessageHydration = needsMessageHydration;
+            this.replyMessageId = replyMessageId;
+            this.replyCarrier = replyCarrier;
+            this.replyOutgoing = replyOutgoing;
+            this.replySenderUserId = replySenderUserId;
+            this.replyIsPairingOffer = replyIsPairingOffer;
+            this.quoteCarrier = quoteCarrier;
+            this.inFlightKey = inFlightKey;
+        }
+    }
+
     private void applySecureTextOverlay(ArrayList<MessageObject> candidates) {
         Trace.beginSection("ForkSecure#overlay");
         try {
@@ -21255,7 +21379,9 @@ public class ChatActivity extends BaseFragment implements
 
     private void applySecureTextOverlayInternal(ArrayList<MessageObject> candidates) {
         // Telegram Secret Chats keep their native protocol and never enter this overlay.
-        if ((!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) || candidates == null || candidates.isEmpty()) {
+        if ((!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id))
+                || candidates == null
+                || candidates.isEmpty()) {
             return;
         }
         if (isForkSecureSavedMessagesChat()) {
@@ -21267,198 +21393,498 @@ public class ChatActivity extends BaseFragment implements
             }
             return;
         }
-        final SecureChatEngine secureChat;
-        try {
-            secureChat = getSecureChatEngine();
-        } catch (RuntimeException e) {
-            FileLog.e(e);
-            return;
-        }
-        boolean shouldSendPairingAcknowledgement = false;
+        applyPeerSecureOverlayPass(candidates, false);
+    }
+
+    private void applyPeerSecureOverlayPass(
+            ArrayList<MessageObject> candidates, boolean cacheOnly) {
+        SecureChatEngine warmEngine = peekWarmSecureChatEngine();
         int pairingAcknowledgementMessageId = 0;
+        ArrayList<ColdSecureOverlayItem> coldItems = null;
+
         for (int i = 0; i < candidates.size(); i++) {
             MessageObject message = candidates.get(i);
             if (message == null || message.messageOwner == null) {
                 continue;
             }
-            applyForkSecureReplyOverlay(message, secureChat);
+            boolean coldReply = !applySecureReplyOverlayFast(message, warmEngine);
             String carrier = message.messageOwner.message;
-            SecureCarrierCodec.Decoded decoded = null;
-            try {
+            boolean coldMessage = false;
+            boolean isPairingOffer = false;
+            int carrierType = -1;
+
+            if (SecureCarrierCodec.isMarked(carrier)) {
                 message.forkSecureVerified = false;
                 message.forkSecureService = false;
+                SecureCarrierCodec.Decoded decoded = null;
                 try {
                     decoded = SecureCarrierCodec.decode(carrier);
                 } catch (IllegalArgumentException malformedCarrier) {
-                    // Old/truncated marked messages remain fail-closed. Avoid serializing a full
-                    // stack trace to disk on every chat open.
                     message.applyNewText(getString(R.string.ForkSecureMessageFailed));
-                    continue;
+                    syncSecureMediaCaption(message);
+                    decoded = null;
+                    carrier = null;
                 }
-                if (decoded == null) {
-                    continue;
-                }
-                if (message.isForwarded()) {
-                    throw new IllegalStateException("forwarded secure carrier is rejected");
-                }
-                if (decoded.type != SecureCarrierCodec.TYPE_PREKEY_BUNDLE
-                        && restorePreparedSecureSticker(message)) {
-                    continue;
-                }
-                if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
-                    if (message.isOutOwner()) {
-                        message.applyNewText(getString(R.string.ForkSecurePairingOfferSent));
-                    } else {
-                        SecureChatEngine.PairingOfferResult result =
-                                receiveForkSecurePairingOffer(
-                                        secureChat,
-                                        carrier,
-                                        message.getId(),
-                                        message.getFromChatId());
-                        if (result == SecureChatEngine.PairingOfferResult.ACCEPTED_INITIAL) {
-                            message.applyNewText(getString(
-                                    R.string.ForkSecurePairingCompletedConfirming));
-                            shouldSendPairingAcknowledgement = true;
-                        } else if (result
-                                == SecureChatEngine.PairingOfferResult.INITIAL_OFFER_PENDING) {
-                            message.applyNewText(getString(
-                                    R.string.ForkSecureInitialOfferPendingMessage));
-                        } else if (result
-                                == SecureChatEngine.PairingOfferResult.IDENTITY_CHANGE_PENDING) {
-                            message.applyNewText(getString(
-                                    R.string.ForkSecureIdentityChangedMessage));
-                        } else if (result
-                                == SecureChatEngine.PairingOfferResult.RECOVERY_CHANGE_PENDING) {
-                            message.applyNewText(getString(
-                                    R.string.ForkSecureRecoveryChangedMessage));
-                        } else if (result
-                                == SecureChatEngine.PairingOfferResult.RECOVERY_REJECTED) {
-                            message.applyNewText(getString(
-                                    R.string.ForkSecureRecoveryRejectedMessage));
-                        } else if (result
-                                == SecureChatEngine.PairingOfferResult.SAME_IDENTITY) {
-                            if (secureChat.isPaired()) {
-                                message.applyNewText(getString(
-                                        R.string.ForkSecurePairingCompletedConfirming));
-                                shouldSendPairingAcknowledgement = true;
-                            } else {
-                                message.applyNewText(getString(
-                                        R.string.ForkSecurePairingMatches));
-                            }
+                if (decoded != null) {
+                    carrierType = decoded.type;
+                    if (!cacheOnly && message.isForwarded()) {
+                        message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                        syncSecureMediaCaption(message);
+                    } else if (decoded.type != SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                            && restorePreparedSecureSticker(message)) {
+                        // Already restored in memory.
+                    } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
+                        message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                        message.forkSecureVerified = false;
+                        applyForkSecureServiceStyle(message, false);
+                        syncSecureMediaCaption(message);
+                    } else if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+                        if (message.isOutOwner() || cacheOnly) {
+                            message.applyNewText(getString(message.isOutOwner()
+                                    ? R.string.ForkSecurePairingOfferSent
+                                    : R.string.ForkSecurePairingOfferReceived));
+                            applyForkSecureServiceStyle(message, true);
+                            syncSecureMediaCaption(message);
                         } else {
+                            isPairingOffer = true;
+                            coldMessage = true;
+                            message.applyNewText(getString(R.string.ForkSecurePairingOfferReceived));
+                            applyForkSecureServiceStyle(message, true);
+                            syncSecureMediaCaption(message);
+                        }
+                    } else if (message.isOutOwner()) {
+                        SecureChatEngine.CachedText peeked = SecureChatEngine.peekOutgoingText(
+                                currentAccount, dialog_id, carrier, warmEngine);
+                        if (peeked.state == SecureChatEngine.CachedText.STATE_HIT) {
+                            applyResolvedSecureDisplayText(
+                                    message, warmEngine, carrier, peeked.text, true, cacheOnly);
+                        } else if (peeked.state == SecureChatEngine.CachedText.STATE_NEGATIVE) {
+                            message.applyNewText(getString(R.string.ForkSecureOutgoingUnavailable));
+                            syncSecureMediaCaption(message);
+                        } else {
+                            coldMessage = true;
+                            maskPendingSecureCarrierOnUi(message);
+                        }
+                    } else {
+                        SecureChatEngine.CachedText peeked = SecureChatEngine.peekIncomingText(
+                                currentAccount, dialog_id, carrier, warmEngine, cacheOnly);
+                        if (peeked.state == SecureChatEngine.CachedText.STATE_HIT) {
+                            applyResolvedSecureDisplayText(
+                                    message, warmEngine, carrier, peeked.text, false, cacheOnly);
+                            if (!cacheOnly
+                                    && warmEngine != null
+                                    && warmEngine.shouldAcknowledgeSessionReady(
+                                            peeked.text, message.getId())) {
+                                pairingAcknowledgementMessageId = Math.max(
+                                        pairingAcknowledgementMessageId, message.getId());
+                            }
+                        } else if (cacheOnly
+                                && peeked.state == SecureChatEngine.CachedText.STATE_NEGATIVE) {
+                            maskPendingSecureCarrierOnUi(message);
+                        } else if (!cacheOnly
+                                && peeked.state == SecureChatEngine.CachedText.STATE_FAILED) {
                             message.applyNewText(getString(
-                                    R.string.ForkSecurePairingIgnored));
-                        }
-                    }
-                    applyForkSecureServiceStyle(message, true);
-                } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
-                    message.applyNewText(getString(R.string.ForkSecureMessageFailed));
-                    message.forkSecureVerified = false;
-                    applyForkSecureServiceStyle(message, false);
-                } else if (message.isOutOwner()) {
-                    String localText = getForkSecureOutgoingText(secureChat, carrier);
-                    if (localText != null) {
-                        message.applyNewText(formatForkSecureDisplayText(localText));
-                        message.forkSecureVerified = true;
-                        applyForkSecureServiceStyle(
-                                message,
-                                SecureChatEngine.isPairingStatusDisplay(localText)
-                                        || SecureChatEngine.isDuplicateMessageDisplay(localText)
-                                        || SecureChatEngine.isControlDeleteDisplay(localText));
-                        if (SecureChatEngine.isControlDeleteDisplay(localText)) {
-                            message.applyNewText("");
-                            message.deleted = true;
-                            List<byte[]> digests = secureChat != null
-                                    ? secureChat.getDeleteControlDigests(carrier)
-                                    : null;
-                            getMessagesController().applyForkSecureControlDelete(
-                                    dialog_id, message.getId(), digests);
-                        } else if (SecureChatEngine.isDuplicateMessageDisplay(localText)) {
-                            // Duplicate or replayed message: render non-destructive status row only.
-                        } else if (SecureChatEngine.isStaticStickerDisplay(localText)) {
-                            applySecureStickerMedia(message, secureChat, carrier);
-                        } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
-                            applySecureAttachmentMedia(
-                                    message,
-                                    secureChat,
-                                    carrier,
-                                    SecureChatEngine.isPhotoDisplay(localText));
-                        } else if (SecureChatEngine.isContactDisplay(localText)) {
-                            applySecureContactMedia(message, secureChat, carrier);
-                        } else if (SecureChatEngine.isLocationDisplay(localText)) {
-                            applySecureLocationMedia(message, secureChat, carrier);
-                        }
-                    } else {
-                        // Never feed our own outbound message into the inbound ratchet.
-                        message.applyNewText(getString(
-                                R.string.ForkSecureOutgoingUnavailable));
-                    }
-                } else {
-                    String localText = decryptForkSecureText(secureChat, carrier, message.getFromChatId());
-                    message.applyNewText(formatForkSecureDisplayText(localText));
-                    message.forkSecureVerified = true;
-                    applyForkSecureServiceStyle(
-                            message,
-                            SecureChatEngine.isPairingStatusDisplay(localText)
-                                    || SecureChatEngine.isDuplicateMessageDisplay(localText)
-                                    || SecureChatEngine.isControlDeleteDisplay(localText));
-                    if (SecureChatEngine.isControlDeleteDisplay(localText)) {
-                        message.applyNewText("");
-                        message.deleted = true;
-                        List<byte[]> digests = secureChat != null
-                                ? secureChat.getDeleteControlDigests(carrier)
-                                : null;
-                        getMessagesController().applyForkSecureControlDelete(
-                                dialog_id, message.getId(), digests);
-                    } else if (SecureChatEngine.isDuplicateMessageDisplay(localText)) {
-                        // Duplicate or replayed message: render non-destructive status row only.
-                    } else {
-                        if (secureChat.shouldAcknowledgeSessionReady(
-                                localText, message.getId())) {
-                            pairingAcknowledgementMessageId = Math.max(
-                                    pairingAcknowledgementMessageId,
-                                    message.getId());
-                        }
-                        if (SecureChatEngine.isStaticStickerDisplay(localText)) {
-                            applySecureStickerMedia(message, secureChat, carrier);
-                        } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
-                            applySecureAttachmentMedia(
-                                    message,
-                                    secureChat,
-                                    carrier,
-                                    SecureChatEngine.isPhotoDisplay(localText));
-                        } else if (SecureChatEngine.isContactDisplay(localText)) {
-                            applySecureContactMedia(message, secureChat, carrier);
-                        } else if (SecureChatEngine.isLocationDisplay(localText)) {
-                            applySecureLocationMedia(message, secureChat, carrier);
+                                    decoded.type == SecureCarrierCodec.TYPE_SENDERKEY
+                                            ? R.string.ForkSecureGroupKeyMissing
+                                            : R.string.ForkSecureMessageFailed));
+                            syncSecureMediaCaption(message);
+                        } else {
+                            coldMessage = true;
+                            maskPendingSecureCarrierOnUi(message);
                         }
                     }
                 }
-            } catch (RuntimeException e) {
-                // A marked carrier never falls back to rendering as a normal plaintext message.
-                if (SecureChatEngine.isStateTemporarilyUnavailable(getContext())) {
-                    forkSecureDeferredMessages.add(message.getId());
-                    message.applyNewText(getString(R.string.ForkSecureReplyPreview));
-                } else if (decoded != null && decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
-                    forkSecureDeferredMessages.add(message.getId());
-                    FileLog.e(e);
-                    message.applyNewText(getString(R.string.ForkSecureGroupKeyMissing));
-                } else {
-                    FileLog.e(e);
-                    message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+            }
+
+            if (coldMessage || coldReply) {
+                ColdSecureOverlayItem item = buildColdSecureOverlayItem(
+                        message, coldMessage, isPairingOffer, carrierType, coldReply, cacheOnly);
+                if (item != null) {
+                    if (coldItems == null) {
+                        coldItems = new ArrayList<>();
+                    }
+                    coldItems.add(item);
                 }
-            } finally {
-                syncSecureMediaCaption(message);
             }
         }
-        updateSecureModeUi();
-        if (shouldSendPairingAcknowledgement && chatActivityEnterView != null) {
-            sendForkSecurePairingAcknowledgement();
+
+        if (!cacheOnly) {
+            updateSecureModeUi();
+            if (pairingAcknowledgementMessageId > 0 && chatActivityEnterView != null) {
+                sendForkSecureSessionReadyAcknowledgement(pairingAcknowledgementMessageId);
+            }
         }
-        if (pairingAcknowledgementMessageId > 0
-                && chatActivityEnterView != null) {
-            sendForkSecureSessionReadyAcknowledgement(
-                    pairingAcknowledgementMessageId);
+        if (coldItems != null && !coldItems.isEmpty()) {
+            enqueueColdSecureOverlayItems(coldItems, cacheOnly);
+        }
+    }
+
+    private ColdSecureOverlayItem buildColdSecureOverlayItem(
+            MessageObject message,
+            boolean coldMessage,
+            boolean isPairingOffer,
+            int carrierType,
+            boolean coldReply,
+            boolean cacheOnly) {
+        String carrier = message.messageOwner != null ? message.messageOwner.message : null;
+        int replyMsgId = 0;
+        String replyCarrier = null;
+        boolean replyOut = false;
+        long replySender = 0;
+        boolean replyOffer = false;
+        if (coldReply
+                && message.replyMessageObject != null
+                && message.replyMessageObject != message
+                && message.replyMessageObject.messageOwner != null
+                && SecureCarrierCodec.isMarked(message.replyMessageObject.messageOwner.message)) {
+            MessageObject reply = message.replyMessageObject;
+            replyMsgId = reply.getId();
+            replyCarrier = reply.messageOwner.message;
+            replyOut = reply.isOutOwner();
+            replySender = reply.getForkSecureSenderUserId();
+            try {
+                SecureCarrierCodec.Decoded rd = SecureCarrierCodec.decode(replyCarrier);
+                replyOffer = rd != null && rd.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE;
+            } catch (IllegalArgumentException ignore) {
+                replyCarrier = null;
+            }
+        }
+        String quoteCarrier = null;
+        if (coldReply && message.messageOwner != null && message.messageOwner.reply_to != null) {
+            quoteCarrier = message.forkSecureQuoteCarrier;
+        }
+        String key = (cacheOnly ? "c:" : "f:")
+                + message.getId() + ":"
+                + (coldMessage ? carrier : "") + ":"
+                + (replyCarrier != null ? replyCarrier : "") + ":"
+                + (quoteCarrier != null ? quoteCarrier : "");
+        if (!forkSecureOverlayInFlight.add(key)) {
+            return null;
+        }
+        return new ColdSecureOverlayItem(
+                message,
+                message.getId(),
+                carrier,
+                message.isOutOwner(),
+                message.getForkSecureSenderUserId(),
+                isPairingOffer,
+                carrierType,
+                coldMessage,
+                replyMsgId,
+                replyCarrier,
+                replyOut,
+                replySender,
+                replyOffer,
+                quoteCarrier,
+                key);
+    }
+
+    private void enqueueColdSecureOverlayItems(
+            ArrayList<ColdSecureOverlayItem> items, boolean cacheOnly) {
+        Context ctx = getContext() != null ? getContext() : ApplicationLoader.applicationContext;
+        if (ctx == null) {
+            for (int i = 0; i < items.size(); i++) {
+                forkSecureOverlayInFlight.remove(items.get(i).inFlightKey);
+            }
+            return;
+        }
+        final Context appContext = ctx.getApplicationContext();
+        final int account = currentAccount;
+        final long peer = dialog_id;
+        final long localUserId = getUserConfig().getClientUserId();
+        final ArrayList<ColdSecureOverlayItem> ordered = new ArrayList<>(items);
+        java.util.Collections.sort(ordered, (a, b) -> {
+            if (a.messageId > 0 && b.messageId > 0) {
+                return Integer.compare(a.messageId, b.messageId);
+            }
+            return Integer.compare(b.messageId, a.messageId);
+        });
+
+        forkSecureOverlayQueue.postRunnable(() -> {
+            SecureChatEngine engine = null;
+            RuntimeException engineError = null;
+            try {
+                engine = SecureChatEngine.get(appContext, account, peer);
+            } catch (RuntimeException err) {
+                engineError = err;
+            }
+            if (engine != null) {
+                for (int i = 0; i < ordered.size(); i++) {
+                    ColdSecureOverlayItem item = ordered.get(i);
+                    if (item.replyCarrier != null && !item.replyIsPairingOffer) {
+                        try {
+                            String rt = item.replyOutgoing
+                                    ? engine.getOutgoingText(item.replyCarrier)
+                                    : (cacheOnly
+                                            ? engine.getIncomingText(item.replyCarrier)
+                                            : engine.decryptText(item.replyCarrier, item.replySenderUserId));
+                            engine.warmCachedContentForDisplay(item.replyCarrier, item.replyOutgoing, rt);
+                            item.resolvedReplyText = rt;
+                        } catch (RuntimeException err) {
+                            item.replyError = err;
+                        }
+                    }
+                    if (item.quoteCarrier != null) {
+                        try {
+                            String qt = engine.getOutgoingText(item.quoteCarrier);
+                            if (qt == null) {
+                                qt = engine.getIncomingText(item.quoteCarrier);
+                            }
+                            item.resolvedQuoteText = qt;
+                        } catch (RuntimeException ignore) {
+                        }
+                    }
+                    if (item.needsMessageHydration && item.carrier != null) {
+                        try {
+                            if (item.isPairingOffer && !cacheOnly && !item.outgoing) {
+                                item.pairingResult = engine.receivePairingOffer(
+                                        item.carrier,
+                                        item.messageId,
+                                        item.senderUserId,
+                                        localUserId);
+                                if (item.pairingResult == SecureChatEngine.PairingOfferResult.SAME_IDENTITY) {
+                                    item.pairedWithActiveSession =
+                                            engine.isPaired() && engine.hasActiveSession();
+                                }
+                            } else if (item.outgoing) {
+                                String out = engine.getOutgoingText(item.carrier);
+                                engine.warmCachedContentForDisplay(item.carrier, true, out);
+                                item.resolvedText = out;
+                            } else {
+                                String in = cacheOnly
+                                        ? engine.getIncomingText(item.carrier)
+                                        : engine.decryptText(item.carrier, item.senderUserId);
+                                engine.warmCachedContentForDisplay(item.carrier, false, in);
+                                item.resolvedText = in;
+                                if (!cacheOnly
+                                        && in != null
+                                        && engine.shouldAcknowledgeSessionReady(in, item.messageId)) {
+                                    item.shouldAckSessionReady = true;
+                                }
+                            }
+                        } catch (RuntimeException err) {
+                            item.messageError = err;
+                            if (SecureChatEngine.isStateTemporarilyUnavailable(appContext)) {
+                                item.stateUnavailable = true;
+                            } else if (item.carrierType == SecureCarrierCodec.TYPE_SENDERKEY
+                                    && DialogObject.isChatDialog(peer)
+                                    && item.senderUserId > 0
+                                    && !engine.hasSenderKeyFrom(item.senderUserId)
+                                    && SecureChatEngine.hasLocalState(appContext, account, item.senderUserId)) {
+                                item.missingSenderKey = true;
+                            }
+                        }
+                    }
+                }
+            }
+            final SecureChatEngine readyEngine = engine;
+            final RuntimeException readyEngineError = engineError;
+            AndroidUtilities.runOnUIThread(() -> {
+                for (int i = 0; i < ordered.size(); i++) {
+                    forkSecureOverlayInFlight.remove(ordered.get(i).inFlightKey);
+                }
+                if (isFinished || isFinishing() || getContext() == null) {
+                    return;
+                }
+                if (readyEngineError != null || readyEngine == null) {
+                    if (readyEngineError != null) {
+                        FileLog.e(readyEngineError);
+                    }
+                    return;
+                }
+                if (secureChatEngine == null || secureChatEngine.isStale()) {
+                    secureChatEngine = readyEngine;
+                }
+                boolean shouldSendPairingAcknowledgement = false;
+                int pairingAcknowledgementMessageId = 0;
+
+                for (int i = 0; i < ordered.size(); i++) {
+                    ColdSecureOverlayItem item = ordered.get(i);
+                    MessageObject current = findCurrentSecureMessage(
+                            item.messageId, item.carrier, item.originalMessage);
+                    if (current == null || current.messageOwner == null) {
+                        continue;
+                    }
+                    boolean rowChanged = false;
+                    if (item.replyCarrier != null || item.quoteCarrier != null) {
+                        applyHydratedSecureReplyOverlay(current, readyEngine, item, cacheOnly);
+                        rowChanged = true;
+                    }
+                    if (item.needsMessageHydration) {
+                        rowChanged = true;
+                        if (item.messageError != null) {
+                            if (item.stateUnavailable) {
+                                forkSecureDeferredMessages.add(current.getId());
+                                current.applyNewText(getString(R.string.ForkSecureReplyPreview));
+                            } else if (item.carrierType == SecureCarrierCodec.TYPE_SENDERKEY
+                                    && !cacheOnly) {
+                                forkSecureDeferredMessages.add(current.getId());
+                                FileLog.e(item.messageError);
+                                current.applyNewText(getString(R.string.ForkSecureGroupKeyMissing));
+                                if (item.missingSenderKey) {
+                                    getMessagesController().syncForkSecurePeerIncomingMessages(
+                                            item.senderUserId,
+                                            dialog_id,
+                                            this::retryForkSecureDeferredMessages);
+                                }
+                            } else {
+                                FileLog.e(item.messageError);
+                                current.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                            }
+                            syncSecureMediaCaption(current);
+                        } else if (item.isPairingOffer && !cacheOnly && !item.outgoing) {
+                            SecureChatEngine.PairingOfferResult result = item.pairingResult;
+                            if (result == SecureChatEngine.PairingOfferResult.ACCEPTED_INITIAL) {
+                                current.applyNewText(getString(
+                                        R.string.ForkSecurePairingCompletedConfirming));
+                                shouldSendPairingAcknowledgement = true;
+                            } else if (result == SecureChatEngine.PairingOfferResult.INITIAL_OFFER_PENDING) {
+                                current.applyNewText(getString(
+                                        R.string.ForkSecureInitialOfferPendingMessage));
+                            } else if (result == SecureChatEngine.PairingOfferResult.IDENTITY_CHANGE_PENDING) {
+                                current.applyNewText(getString(
+                                        R.string.ForkSecureIdentityChangedMessage));
+                            } else if (result == SecureChatEngine.PairingOfferResult.RECOVERY_CHANGE_PENDING) {
+                                current.applyNewText(getString(
+                                        R.string.ForkSecureRecoveryChangedMessage));
+                            } else if (result == SecureChatEngine.PairingOfferResult.RECOVERY_REJECTED) {
+                                current.applyNewText(getString(
+                                        R.string.ForkSecureRecoveryRejectedMessage));
+                            } else if (result == SecureChatEngine.PairingOfferResult.SAME_IDENTITY) {
+                                if (item.pairedWithActiveSession) {
+                                    current.applyNewText(getString(
+                                            R.string.ForkSecurePairingCompletedConfirming));
+                                    shouldSendPairingAcknowledgement = true;
+                                } else {
+                                    current.applyNewText(getString(
+                                            R.string.ForkSecurePairingMatches));
+                                }
+                            } else {
+                                current.applyNewText(getString(
+                                        R.string.ForkSecurePairingIgnored));
+                            }
+                            applyForkSecureServiceStyle(current, true);
+                            syncSecureMediaCaption(current);
+                        } else if (item.outgoing) {
+                            if (item.resolvedText != null) {
+                                applyResolvedSecureDisplayText(
+                                        current, readyEngine, item.carrier, item.resolvedText, true, cacheOnly);
+                            } else {
+                                current.applyNewText(getString(
+                                        R.string.ForkSecureOutgoingUnavailable));
+                                syncSecureMediaCaption(current);
+                            }
+                        } else {
+                            if (item.resolvedText != null) {
+                                applyResolvedSecureDisplayText(
+                                        current, readyEngine, item.carrier, item.resolvedText, false, cacheOnly);
+                                if (item.shouldAckSessionReady) {
+                                    pairingAcknowledgementMessageId = Math.max(
+                                            pairingAcknowledgementMessageId, current.getId());
+                                }
+                            } else {
+                                current.applyNewText(getString(R.string.ForkSecureReplyPreview));
+                                syncSecureMediaCaption(current);
+                            }
+                        }
+                    }
+                    if (rowChanged) {
+                        scheduleSecureMediaRowUpdate(current);
+                        if (pinnedMessageObjects.containsKey(current.getId())) {
+                            pinnedMessageObjects.put(current.getId(), current);
+                        }
+                        if (current.getId() == currentPinnedMessageId) {
+                            updatePinnedMessageView(false);
+                        }
+                    }
+                }
+                if (!cacheOnly) {
+                    updateSecureModeUi();
+                    if (shouldSendPairingAcknowledgement && chatActivityEnterView != null) {
+                        sendForkSecurePairingAcknowledgement();
+                    }
+                    if (pairingAcknowledgementMessageId > 0 && chatActivityEnterView != null) {
+                        sendForkSecureSessionReadyAcknowledgement(pairingAcknowledgementMessageId);
+                    }
+                }
+            });
+        });
+    }
+
+    private void applyResolvedSecureDisplayText(
+            MessageObject message,
+            SecureChatEngine secureChat,
+            String carrier,
+            String localText,
+            boolean outgoing,
+            boolean displayOnly) {
+        if (message == null || localText == null) {
+            return;
+        }
+        if (SecureChatEngine.isControlDeleteDisplay(localText)) {
+            message.applyNewText("");
+            message.deleted = true;
+            message.forkSecureVerified = true;
+            applyForkSecureServiceStyle(message, true);
+            List<byte[]> digests = secureChat != null
+                    ? secureChat.getDeleteControlDigests(carrier)
+                    : null;
+            long deleterId = outgoing
+                    ? getUserConfig().getClientUserId()
+                    : message.getForkSecureSenderUserId();
+            getMessagesController().applyForkSecureControlDelete(
+                    dialog_id, message.getId(), digests, deleterId);
+            syncSecureMediaCaption(message);
+            return;
+        }
+        message.applyNewText(formatForkSecureDisplayText(localText));
+        message.forkSecureVerified = true;
+        applyForkSecureServiceStyle(
+                message,
+                SecureChatEngine.isPairingStatusDisplay(localText)
+                        || SecureChatEngine.isDuplicateMessageDisplay(localText));
+        if (SecureChatEngine.isDuplicateMessageDisplay(localText)) {
+            // Non-destructive duplicate indicator
+        } else if (SecureChatEngine.isStaticStickerDisplay(localText)) {
+            applySecureStickerMedia(message, secureChat, carrier);
+        } else if (SecureChatEngine.isAttachmentDisplay(localText)) {
+            applySecureAttachmentMedia(
+                    message,
+                    secureChat,
+                    carrier,
+                    SecureChatEngine.isPhotoDisplay(localText));
+        } else if (SecureChatEngine.isContactDisplay(localText)) {
+            applySecureContactMedia(message, secureChat, carrier);
+        } else if (SecureChatEngine.isLocationDisplay(localText)) {
+            applySecureLocationMedia(message, secureChat, carrier);
+        } else {
+            indexForkSecureUrls(message, localText);
+        }
+        syncSecureMediaCaption(message);
+    }
+
+    private void retryForkSecureDeferredMessages() {
+        if (isFinished || isFinishing() || getContext() == null) {
+            return;
+        }
+        if (forkSecureDeferredMessages.isEmpty()
+                || SecureChatEngine.isStateTemporarilyUnavailable(getContext())) {
+            return;
+        }
+        ArrayList<MessageObject> deferred = new ArrayList<>();
+        for (int i = 0; i < messages.size(); i++) {
+            MessageObject message = messages.get(i);
+            if (message != null && forkSecureDeferredMessages.contains(message.getId())) {
+                deferred.add(message);
+            }
+        }
+        forkSecureDeferredMessages.clear();
+        if (!deferred.isEmpty()) {
+            applySecureTextOverlay(deferred);
+            if (chatAdapter != null) {
+                chatAdapter.notifyDataSetChanged();
+            }
+            updateVisibleRows();
         }
     }
 
@@ -21495,10 +21921,6 @@ public class ChatActivity extends BaseFragment implements
         }
     }
 
-    private String decryptForkSecureText(SecureChatEngine secureChat, String carrier) {
-        return decryptForkSecureText(secureChat, carrier, 0);
-    }
-
     private String decryptForkSecureText(SecureChatEngine secureChat, String carrier, long senderId) {
         Trace.beginSection("ForkSecure#decrypt");
         try {
@@ -21508,40 +21930,159 @@ public class ChatActivity extends BaseFragment implements
         }
     }
 
-    private void applySavedMessagesSecureTextOverlay(ArrayList<MessageObject> candidates) {
-        SecureSavedMessagesKeyStore.KeyMaterial key = getSavedMessagesKeyMaterial();
-        if (key == null) return;
-        for (MessageObject message : candidates) {
-            applySavedMessagesSecureTextOverlay(message, key);
+    private static final class ColdSavedOverlayItem {
+        final MessageObject originalMessage;
+        final int messageId;
+        final String carrier;
+        final String cacheKey;
+        final String inFlightKey;
+        SecureContentCodec.Decoded decodedContent;
+        RuntimeException error;
+
+        ColdSavedOverlayItem(
+                MessageObject originalMessage,
+                int messageId,
+                String carrier,
+                String cacheKey,
+                String inFlightKey) {
+            this.originalMessage = originalMessage;
+            this.messageId = messageId;
+            this.carrier = carrier;
+            this.cacheKey = cacheKey;
+            this.inFlightKey = inFlightKey;
         }
     }
 
-    private void applySavedMessagesSecureTextOverlay(
-            MessageObject message, SecureSavedMessagesKeyStore.KeyMaterial key) {
-        if (key == null || message == null || message.messageOwner == null
-                || !SecureCarrierCodec.isMarked(message.messageOwner.message)
-                || !needsCachedSecureTextOverlay(message)) {
+    private void applySavedMessagesSecureTextOverlay(ArrayList<MessageObject> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return;
+        }
+        ArrayList<ColdSavedOverlayItem> coldItems = null;
+        for (int i = 0; i < candidates.size(); i++) {
+            MessageObject message = candidates.get(i);
+            if (message == null || message.messageOwner == null
+                    || !SecureCarrierCodec.isMarked(message.messageOwner.message)
+                    || !needsCachedSecureTextOverlay(message)) {
+                continue;
+            }
+            if (restorePreparedSecureSticker(message)) {
+                continue;
+            }
+            String carrier = message.messageOwner.message;
+            String cacheKey = currentAccount + ":" + message.getId() + ":" + carrier;
+            SecureContentCodec.Decoded cached = forkSavedMessagesDecodedCache.get(cacheKey);
+            if (cached != null) {
+                applySavedMessagesDecodedContent(message, cached);
+                continue;
+            }
+            maskPendingSecureCarrierOnUi(message);
+            String inFlightKey = "s:" + cacheKey;
+            if (forkSecureOverlayInFlight.add(inFlightKey)) {
+                if (coldItems == null) {
+                    coldItems = new ArrayList<>();
+                }
+                coldItems.add(new ColdSavedOverlayItem(
+                        message, message.getId(), carrier, cacheKey, inFlightKey));
+            }
+        }
+        if (coldItems != null && !coldItems.isEmpty()) {
+            enqueueColdSavedMessagesOverlay(coldItems);
+        }
+    }
+
+    private void enqueueColdSavedMessagesOverlay(ArrayList<ColdSavedOverlayItem> items) {
+        Context ctx = getContext() != null ? getContext() : ApplicationLoader.applicationContext;
+        if (ctx == null) {
+            for (int i = 0; i < items.size(); i++) {
+                forkSecureOverlayInFlight.remove(items.get(i).inFlightKey);
+            }
+            return;
+        }
+        final Context appContext = ctx.getApplicationContext();
+        final int account = currentAccount;
+        forkSecureOverlayQueue.postRunnable(() -> {
+            SecureSavedMessagesKeyStore.KeyMaterial key = null;
+            SecureSavedMessagesPinStore pinStore = null;
+            try {
+                key = new SecureSavedMessagesKeyStore(appContext).getOrCreate(account);
+                pinStore = new SecureSavedMessagesPinStore(appContext);
+            } catch (Exception err) {
+                FileLog.e(err);
+            }
+            if (key != null) {
+                for (int i = 0; i < items.size(); i++) {
+                    ColdSavedOverlayItem item = items.get(i);
+                    try {
+                        SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(item.carrier);
+                        if (decoded == null || decoded.type != SecureCarrierCodec.TYPE_SAVED_MESSAGE) {
+                            continue;
+                        }
+                        byte[] plaintext;
+                        try {
+                            plaintext = SecureSavedMessageCrypto.decryptRecordBound(
+                                    decoded.payload, key, pinStore, item.messageId);
+                        } catch (IllegalArgumentException mediaRecordFailure) {
+                            if (!"Saved Messages media record mismatch".equals(
+                                    mediaRecordFailure.getMessage())) {
+                                throw mediaRecordFailure;
+                            }
+                            String legacyText = SecureSavedMessageCrypto.decryptTextBound(
+                                    decoded.payload, key, pinStore, item.messageId);
+                            plaintext = SecureContentCodec.encodeText(legacyText);
+                        }
+                        SecureContentCodec.Decoded content = SecureContentCodec.decode(plaintext);
+                        forkSavedMessagesDecodedCache.put(item.cacheKey, content);
+                        item.decodedContent = content;
+                    } catch (RuntimeException err) {
+                        item.error = err;
+                    }
+                }
+            }
+            final SecureSavedMessagesKeyStore.KeyMaterial readyKey = key;
+            final SecureSavedMessagesPinStore readyPinStore = pinStore;
+            AndroidUtilities.runOnUIThread(() -> {
+                for (int i = 0; i < items.size(); i++) {
+                    forkSecureOverlayInFlight.remove(items.get(i).inFlightKey);
+                }
+                if (isFinished || isFinishing() || getContext() == null) {
+                    return;
+                }
+                if (readyKey != null && savedMessagesKeyMaterial == null) {
+                    savedMessagesKeyMaterial = readyKey;
+                }
+                if (readyPinStore != null && savedMessagesPinStore == null) {
+                    savedMessagesPinStore = readyPinStore;
+                }
+                for (int i = 0; i < items.size(); i++) {
+                    ColdSavedOverlayItem item = items.get(i);
+                    MessageObject current = findCurrentSecureMessage(
+                            item.messageId, item.carrier, item.originalMessage);
+                    if (current == null || current.messageOwner == null) {
+                        continue;
+                    }
+                    if (item.error != null) {
+                        FileLog.e(item.error);
+                        current.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                        syncSecureMediaCaption(current);
+                        scheduleSecureMediaRowUpdate(current);
+                    } else if (item.decodedContent != null) {
+                        applySavedMessagesDecodedContent(current, item.decodedContent);
+                        scheduleSecureMediaRowUpdate(current);
+                    }
+                }
+            });
+        });
+    }
+
+    private void applySavedMessagesDecodedContent(
+            MessageObject message, SecureContentCodec.Decoded content) {
+        if (message == null || message.messageOwner == null || content == null) {
             return;
         }
         try {
             if (restorePreparedSecureSticker(message)) {
                 return;
             }
-            SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(
-                    message.messageOwner.message);
-            if (decoded == null || decoded.type != SecureCarrierCodec.TYPE_SAVED_MESSAGE) {
-                return;
-            }
-            byte[] plaintext;
-            try {
-                plaintext = SecureSavedMessageCrypto.decryptRecord(decoded.payload, key);
-            } catch (RuntimeException mediaRecordFailure) {
-                message.applyNewText(SecureSavedMessageCrypto.decryptText(decoded.payload, key));
-                message.forkSecureVerified = true;
-                applyForkSecureServiceStyle(message, false);
-                return;
-            }
-            SecureContentCodec.Decoded content = SecureContentCodec.decode(plaintext);
             message.forkSecureVerified = true;
             applyForkSecureServiceStyle(message, false);
             if (content.staticSticker != null) {
@@ -21580,9 +22121,11 @@ public class ChatActivity extends BaseFragment implements
             } else {
                 message.applyNewText(content.text);
             }
+            syncSecureMediaCaption(message);
         } catch (RuntimeException error) {
             FileLog.e(error);
             message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+            syncSecureMediaCaption(message);
         }
     }
 
@@ -21600,9 +22143,215 @@ public class ChatActivity extends BaseFragment implements
         }
     }
 
+    private SecureSavedMessagesPinStore getSavedMessagesPinStore() {
+        if (savedMessagesPinStore != null) {
+            return savedMessagesPinStore;
+        }
+        Context ctx = getContext() != null ? getContext() : ApplicationLoader.applicationContext;
+        if (ctx == null) {
+            return null;
+        }
+        try {
+            savedMessagesPinStore = new SecureSavedMessagesPinStore(ctx);
+            return savedMessagesPinStore;
+        } catch (Exception error) {
+            FileLog.e(error);
+            return null;
+        }
+    }
+
     public boolean isSavedMessagesSecureModeEnabled() {
         return isSavedMessagesSecureUiEligible()
                 && SecureSavedMessagesSettings.isSecureByDefault(getContext(), currentAccount);
+    }
+
+    private boolean applySecureReplyOverlayFast(
+            MessageObject parentMessage, SecureChatEngine warmEngine) {
+        if (parentMessage == null || parentMessage.messageOwner == null) {
+            return true;
+        }
+        boolean needsColdReply = false;
+        MessageObject reply = parentMessage.replyMessageObject;
+        if (reply != null
+                && reply != parentMessage
+                && reply.messageOwner != null
+                && SecureCarrierCodec.isMarked(reply.messageOwner.message)) {
+            if (applySecureMessageDisplayOnlyFast(reply, warmEngine)) {
+                if (reply.messageText != null) {
+                    CharSequence secureReplyLabel = getForkSecureReplyLabel(reply);
+                    parentMessage.forkSecureReplyText = secureReplyLabel != null
+                            ? secureReplyLabel : reply.messageText;
+                }
+            } else {
+                maskPendingSecureCarrierOnUi(reply);
+                if (TextUtils.isEmpty(parentMessage.forkSecureReplyText)) {
+                    parentMessage.forkSecureReplyText = getString(R.string.ForkSecureReplyPreview);
+                }
+                needsColdReply = true;
+            }
+        }
+
+        boolean needsColdQuote = false;
+        if (parentMessage.messageOwner.reply_to != null) {
+            if (SecureCarrierCodec.isMarked(parentMessage.messageOwner.reply_to.quote_text)) {
+                parentMessage.forkSecureQuoteCarrier =
+                        parentMessage.messageOwner.reply_to.quote_text;
+            }
+            String quoteCarrier = parentMessage.forkSecureQuoteCarrier;
+            if (!TextUtils.isEmpty(quoteCarrier)) {
+                if (TextUtils.isEmpty(parentMessage.forkSecureReplyText)
+                        || TextUtils.equals(
+                                parentMessage.forkSecureReplyText,
+                                getString(R.string.ForkSecureReplyPreview))) {
+                    SecureChatEngine.CachedText outPeek = SecureChatEngine.peekOutgoingText(
+                            currentAccount, dialog_id, quoteCarrier, warmEngine);
+                    if (outPeek.state == SecureChatEngine.CachedText.STATE_HIT) {
+                        parentMessage.forkSecureReplyText =
+                                formatForkSecureDisplayText(outPeek.text);
+                    } else {
+                        SecureChatEngine.CachedText inPeek = SecureChatEngine.peekIncomingText(
+                                currentAccount, dialog_id, quoteCarrier, warmEngine, true);
+                        if (inPeek.state == SecureChatEngine.CachedText.STATE_HIT) {
+                            parentMessage.forkSecureReplyText =
+                                    formatForkSecureDisplayText(inPeek.text);
+                        } else if (outPeek.state == SecureChatEngine.CachedText.STATE_COLD
+                                || inPeek.state == SecureChatEngine.CachedText.STATE_COLD) {
+                            needsColdQuote = true;
+                        }
+                    }
+                }
+                if (TextUtils.isEmpty(parentMessage.forkSecureReplyText)) {
+                    parentMessage.forkSecureReplyText =
+                            getString(R.string.ForkSecureReplyPreview);
+                }
+                parentMessage.messageOwner.reply_to.quote_text =
+                        parentMessage.forkSecureReplyText.toString();
+                if (parentMessage.messageOwner.reply_to.quote_entities != null) {
+                    parentMessage.messageOwner.reply_to.quote_entities.clear();
+                }
+            }
+        }
+        return !(needsColdReply || needsColdQuote);
+    }
+
+    private boolean applySecureMessageDisplayOnlyFast(
+            MessageObject message, SecureChatEngine warmEngine) {
+        if (message == null || message.messageOwner == null) {
+            return true;
+        }
+        String carrier = message.messageOwner.message;
+        if (!SecureCarrierCodec.isMarked(carrier)) {
+            return true;
+        }
+        SecureCarrierCodec.Decoded decoded;
+        try {
+            decoded = SecureCarrierCodec.decode(carrier);
+        } catch (IllegalArgumentException malformed) {
+            message.forkSecureVerified = false;
+            message.forkSecureService = false;
+            message.applyNewText(getString(R.string.ForkSecureMessageFailed));
+            syncSecureMediaCaption(message);
+            return true;
+        }
+        if (decoded == null) {
+            return true;
+        }
+        if (decoded.type != SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                && restorePreparedSecureSticker(message)) {
+            return true;
+        }
+        if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+            message.forkSecureVerified = false;
+            message.applyNewText(getString(message.isOutOwner()
+                    ? R.string.ForkSecurePairingOfferSent
+                    : R.string.ForkSecurePairingOfferReceived));
+            applyForkSecureServiceStyle(message, true);
+            syncSecureMediaCaption(message);
+            return true;
+        }
+        if (message.isOutOwner()) {
+            SecureChatEngine.CachedText peeked = SecureChatEngine.peekOutgoingText(
+                    currentAccount, dialog_id, carrier, warmEngine);
+            if (peeked.state == SecureChatEngine.CachedText.STATE_HIT) {
+                applyResolvedSecureDisplayText(
+                        message, warmEngine, carrier, peeked.text, true, true);
+                return true;
+            }
+            if (peeked.state == SecureChatEngine.CachedText.STATE_NEGATIVE) {
+                message.forkSecureVerified = false;
+                message.forkSecureService = false;
+                message.applyNewText(getString(R.string.ForkSecureOutgoingUnavailable));
+                syncSecureMediaCaption(message);
+                return true;
+            }
+            return false;
+        } else {
+            SecureChatEngine.CachedText peeked = SecureChatEngine.peekIncomingText(
+                    currentAccount, dialog_id, carrier, warmEngine, true);
+            if (peeked.state == SecureChatEngine.CachedText.STATE_HIT) {
+                applyResolvedSecureDisplayText(
+                        message, warmEngine, carrier, peeked.text, false, true);
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private void applyHydratedSecureReplyOverlay(
+            MessageObject parentMessage,
+            SecureChatEngine secureChat,
+            ColdSecureOverlayItem item,
+            boolean cacheOnly) {
+        if (parentMessage == null || parentMessage.messageOwner == null) {
+            return;
+        }
+        MessageObject reply = parentMessage.replyMessageObject;
+        if (reply != null && reply != parentMessage && reply.messageOwner != null
+                && item.replyCarrier != null
+                && TextUtils.equals(item.replyCarrier, reply.messageOwner.message)) {
+            if (item.replyError != null) {
+                if (SecureChatEngine.isStateTemporarilyUnavailable(getContext())) {
+                    reply.applyNewText(getString(R.string.ForkSecureReplyPreview));
+                } else {
+                    FileLog.e(item.replyError);
+                    reply.applyNewText(getString(R.string.ForkSecureMessageFailed));
+                }
+                syncSecureMediaCaption(reply);
+            } else if (item.resolvedReplyText != null) {
+                applyResolvedSecureDisplayText(
+                        reply,
+                        secureChat,
+                        item.replyCarrier,
+                        item.resolvedReplyText,
+                        item.replyOutgoing,
+                        true);
+            } else if (item.replyOutgoing) {
+                reply.applyNewText(getString(R.string.ForkSecureOutgoingUnavailable));
+                syncSecureMediaCaption(reply);
+            } else {
+                reply.applyNewText(getString(R.string.ForkSecureReplyPreview));
+                syncSecureMediaCaption(reply);
+            }
+            if (reply.messageText != null) {
+                CharSequence secureReplyLabel = getForkSecureReplyLabel(reply);
+                parentMessage.forkSecureReplyText = secureReplyLabel != null
+                        ? secureReplyLabel : reply.messageText;
+            }
+        }
+        if (parentMessage.messageOwner.reply_to != null && item.quoteCarrier != null) {
+            if (item.resolvedQuoteText != null) {
+                parentMessage.forkSecureReplyText =
+                        formatForkSecureDisplayText(item.resolvedQuoteText);
+            }
+            if (TextUtils.isEmpty(parentMessage.forkSecureReplyText)) {
+                parentMessage.forkSecureReplyText = getString(R.string.ForkSecureReplyPreview);
+            }
+            parentMessage.messageOwner.reply_to.quote_text =
+                    parentMessage.forkSecureReplyText.toString();
+            if (parentMessage.messageOwner.reply_to.quote_entities != null) {
+                parentMessage.messageOwner.reply_to.quote_entities.clear();
+            }
+        }
     }
 
     /**
@@ -21712,7 +22461,7 @@ public class ChatActivity extends BaseFragment implements
                             ? secureChat.getDeleteControlDigests(carrier)
                             : null;
                     getMessagesController().applyForkSecureControlDelete(
-                            dialog_id, message.getId(), digests);
+                            dialog_id, message.getId(), digests, getUserConfig().getClientUserId());
                     return true;
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
@@ -21740,9 +22489,10 @@ public class ChatActivity extends BaseFragment implements
                     }
                 }
             } else {
+                long senderId = message.getForkSecureSenderUserId();
                 String localText = cacheOnly
                         ? secureChat.getIncomingText(carrier)
-                        : decryptForkSecureText(secureChat, carrier, message.getFromChatId());
+                        : decryptForkSecureText(secureChat, carrier, senderId);
                 if (localText == null) {
                     // A replacement received before its original bubble is authenticated must
                     // never expose the marked Telegram carrier.
@@ -21755,7 +22505,7 @@ public class ChatActivity extends BaseFragment implements
                             ? secureChat.getDeleteControlDigests(carrier)
                             : null;
                     getMessagesController().applyForkSecureControlDelete(
-                            dialog_id, message.getId(), digests);
+                            dialog_id, message.getId(), digests, senderId);
                     return true;
                 } else {
                     message.applyNewText(formatForkSecureDisplayText(localText));
@@ -21968,7 +22718,7 @@ public class ChatActivity extends BaseFragment implements
         final Context applicationContext = getContext().getApplicationContext();
         final int account = currentAccount;
         final long peer = dialog_id;
-        final long senderUserId = message.getFromChatId();
+        final long senderUserId = message.getForkSecureSenderUserId();
         Utilities.globalQueue.postRunnable(() -> {
             SecureContentCodec.Attachment manifest = null;
             String authenticatedAlbumId = "";
@@ -21981,7 +22731,7 @@ public class ChatActivity extends BaseFragment implements
                     manifest = savedManifest;
                 } else {
                     SecureChatEngine backgroundEngine =
-                            new SecureChatEngine(applicationContext, account, peer);
+                            SecureChatEngine.get(applicationContext, account, peer);
                     manifest = outgoing
                             ? backgroundEngine.getOutgoingAttachment(carrier)
                             : backgroundEngine.decryptAttachmentManifest(carrier, senderUserId);
@@ -22108,7 +22858,7 @@ public class ChatActivity extends BaseFragment implements
                     // Recalculate the album now, while ciphertext is still downloading, so the
                     // grid does not temporarily collapse into generic document rows.
                     applySecureAlbumGrouping(current);
-                    updateSecureStickerRow(current);
+                    scheduleSecureMediaRowUpdate(current);
                     if (!downloadAlreadyAttempted) {
                         forkSecureMediaDownloadAttempted.add(prepareKey);
                         FileLoader.getInstance(account).loadFile(
@@ -22126,7 +22876,7 @@ public class ChatActivity extends BaseFragment implements
                         readyManifest,
                         readyDestination,
                         readyCiphertext);
-                updateSecureStickerRow(current);
+                scheduleSecureMediaRowUpdate(current);
                 if (current != null) {
                     if (pinnedMessageObjects.containsKey(current.getId())) {
                         pinnedMessageObjects.put(current.getId(), current);
@@ -22198,7 +22948,7 @@ public class ChatActivity extends BaseFragment implements
         final Context applicationContext = getContext().getApplicationContext();
         final int account = currentAccount;
         final long peer = dialog_id;
-        final long senderUserId = message.getFromChatId();
+        final long senderUserId = message.getForkSecureSenderUserId();
         Utilities.globalQueue.postRunnable(() -> {
             SecureContentCodec.StaticSticker manifest = null;
             File destination = null;
@@ -22210,7 +22960,7 @@ public class ChatActivity extends BaseFragment implements
                     manifest = savedManifest;
                 } else {
                     SecureChatEngine backgroundEngine =
-                            new SecureChatEngine(applicationContext, account, peer);
+                            SecureChatEngine.get(applicationContext, account, peer);
                     manifest = outgoing
                             ? backgroundEngine.getOutgoingStaticSticker(carrier)
                             : backgroundEngine.decryptStaticStickerManifest(carrier, senderUserId);
@@ -22309,7 +23059,7 @@ public class ChatActivity extends BaseFragment implements
                             readyManifest.width, readyManifest.height);
                     FileLog.e("ForkSecure rejected sticker ciphertext after one server download"
                             + " message=" + messageId);
-                    updateSecureStickerRow(current);
+                    scheduleSecureMediaRowUpdate(current);
                     return;
                 }
                 if (readyDestination == null
@@ -22317,7 +23067,7 @@ public class ChatActivity extends BaseFragment implements
                         || readyDestination.length() != readyManifest.plaintextSize) {
                     current.markForkSecureMediaPending(
                             readyManifest.width, readyManifest.height);
-                    updateSecureStickerRow(current);
+                    scheduleSecureMediaRowUpdate(current);
                     if (!downloadAlreadyAttempted) {
                         forkSecureMediaDownloadAttempted.add(prepareKey);
                         FileLoader.getInstance(account).loadFile(
@@ -22329,7 +23079,7 @@ public class ChatActivity extends BaseFragment implements
                 }
                 applyPreparedSecureSticker(
                         current, readyManifest, readyDestination, readyCiphertext);
-                updateSecureStickerRow(current);
+                scheduleSecureMediaRowUpdate(current);
                 if (current != null) {
                     if (pinnedMessageObjects.containsKey(current.getId())) {
                         pinnedMessageObjects.put(current.getId(), current);
@@ -22349,7 +23099,9 @@ public class ChatActivity extends BaseFragment implements
             return false;
         }
         if (message.forkSecureVerified
-                && message.photoThumbs != null && !message.photoThumbs.isEmpty()) {
+                && ((message.photoThumbs != null && !message.photoThumbs.isEmpty())
+                        || (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_STICKER
+                                && !TextUtils.isEmpty(message.forkSecureMediaPath)))) {
             return true;
         }
         normalizeSecureTransportDocument(message.getDocument());
@@ -22389,10 +23141,55 @@ public class ChatActivity extends BaseFragment implements
         return carrierMatch != null ? carrierMatch : fallback;
     }
 
+    private boolean needsViewTypeReplaceForSecureRow(MessageObject messageObject) {
+        if (messageObject == null || chatListView == null) {
+            return false;
+        }
+        int count = chatListView.getChildCount();
+        for (int i = 0; i < count; i++) {
+            View child = chatListView.getChildAt(i);
+            if (child instanceof ChatMessageCell
+                    && ((ChatMessageCell) child).getMessageObject() == messageObject) {
+                return messageObject.contentType != 0;
+            }
+            if (child instanceof ChatActionCell
+                    && ((ChatActionCell) child).getMessageObject() == messageObject) {
+                return messageObject.contentType == 0;
+            }
+        }
+        return false;
+    }
+
+    private void scheduleSecureMediaRowUpdate(MessageObject message) {
+        if (message == null || isFinished || isFinishing() || fragmentView == null || chatAdapter == null) {
+            return;
+        }
+        forkSecurePendingRowUpdates.add(message);
+        if (!forkSecureRowUpdateScheduled) {
+            forkSecureRowUpdateScheduled = true;
+            AndroidUtilities.runOnUIThread(flushForkSecureRowUpdatesRunnable, 16);
+        }
+    }
+
+    private void flushForkSecureRowUpdates() {
+        forkSecureRowUpdateScheduled = false;
+        if (isFinished || isFinishing() || fragmentView == null || chatAdapter == null
+                || forkSecurePendingRowUpdates.isEmpty()) {
+            forkSecurePendingRowUpdates.clear();
+            return;
+        }
+        ArrayList<MessageObject> batch = new ArrayList<>(forkSecurePendingRowUpdates);
+        forkSecurePendingRowUpdates.clear();
+        for (int i = 0; i < batch.size(); i++) {
+            updateSecureStickerRow(batch.get(i));
+        }
+    }
+
     private void updateSecureStickerRow(MessageObject message) {
-        if (fragmentView != null && chatAdapter != null && messages.indexOf(message) >= 0) {
+        if (message != null && fragmentView != null && chatAdapter != null && messages.indexOf(message) >= 0) {
+            message.forceUpdate = true;
             chatAdapter.updateRowWithMessageObject(
-                    message, false, message != null && message.getGroupId() == 0);
+                    message, false, needsViewTypeReplaceForSecureRow(message));
         }
     }
 
@@ -22458,6 +23255,10 @@ public class ChatActivity extends BaseFragment implements
                 || message.messageOwner == null
                 || TextUtils.isEmpty(message.messageOwner.message)
                 || TextUtils.isEmpty(message.forkSecureMediaPath)
+                || message.forkSecureMediaPath.contains("fork-secure-media-in")
+                || message.isAnyKindOfSticker()
+                || !(message.messageOwner.media instanceof TLRPC.TL_messageMediaDocument
+                        || message.messageOwner.media instanceof TLRPC.TL_messageMediaPhoto)
                 || !(message.forkSecureMediaKind
                                 == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO
                         || message.forkSecureMediaKind
@@ -22508,7 +23309,8 @@ public class ChatActivity extends BaseFragment implements
                 indexKind = SecureMediaIndex.KIND_MUSIC;
             } else if (secureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_PHOTO) {
                 indexKind = SecureMediaIndex.KIND_PHOTO;
-            } else if (secureVideo) {
+            } else if (secureVideo
+                    && secureMediaPresentation != SecureContentCodec.ATTACHMENT_PRESENTATION_FILE) {
                 indexKind = SecureMediaIndex.KIND_VIDEO;
             } else {
                 indexKind = SecureMediaIndex.KIND_FILE;
@@ -22561,6 +23363,9 @@ public class ChatActivity extends BaseFragment implements
 
     private void indexForkSecureUrls(MessageObject message, String text) {
         if (message == null || message.messageOwner == null || TextUtils.isEmpty(text)) {
+            return;
+        }
+        if (message.getId() > 0 && !forkSecureUrlsIndexed.add(message.getId())) {
             return;
         }
         ArrayList<TLRPC.MessageEntity> entities = MediaDataController.extractUrlEntities(text);
@@ -23003,6 +23808,9 @@ public class ChatActivity extends BaseFragment implements
         if ("image/webp".equals(mimeType)) {
             return ".webp";
         }
+        if ("image/heic".equals(mimeType) || "image/heif".equals(mimeType)) {
+            return ".heic";
+        }
         if ("image/gif".equals(mimeType)) {
             return ".gif";
         }
@@ -23075,39 +23883,24 @@ public class ChatActivity extends BaseFragment implements
                 || candidates.isEmpty()) {
             return;
         }
-        boolean containsSecureDisplay = false;
+        ArrayList<MessageObject> pending = null;
         for (int i = 0; i < candidates.size(); i++) {
-            if (needsCachedSecureTextOverlay(candidates.get(i))) {
-                containsSecureDisplay = true;
-                break;
+            MessageObject candidate = candidates.get(i);
+            if (needsCachedSecureTextOverlay(candidate)) {
+                if (pending == null) {
+                    pending = new ArrayList<>();
+                }
+                pending.add(candidate);
             }
         }
-        if (!containsSecureDisplay) {
+        if (pending == null || pending.isEmpty()) {
             return;
         }
         if (isForkSecureSavedMessagesChat()) {
-            SecureSavedMessagesKeyStore.KeyMaterial key = getSavedMessagesKeyMaterial();
-            if (key != null) {
-                for (MessageObject message : candidates) {
-                    applySavedMessagesSecureTextOverlay(message, key);
-                }
-            }
+            applySavedMessagesSecureTextOverlay(pending);
             return;
         }
-        final SecureChatEngine secureChat;
-        try {
-            secureChat = getSecureChatEngine();
-        } catch (RuntimeException error) {
-            FileLog.e(error);
-            return;
-        }
-        for (int i = 0; i < candidates.size(); i++) {
-            MessageObject message = candidates.get(i);
-            if (message == null || message.messageOwner == null) {
-                continue;
-            }
-            applyCachedSecureTextOverlay(message, secureChat);
-        }
+        applyPeerSecureOverlayPass(pending, true);
     }
 
     private void applyCachedSecureTextOverlay(MessageObject message) {
@@ -23120,18 +23913,17 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void applyCachedSecureTextOverlayInternal(MessageObject message) {
-        if ((!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) || !needsCachedSecureTextOverlay(message)) {
+        if ((!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id))
+                || !needsCachedSecureTextOverlay(message)) {
             return;
         }
+        ArrayList<MessageObject> single = new ArrayList<>(1);
+        single.add(message);
         if (isForkSecureSavedMessagesChat()) {
-            applySavedMessagesSecureTextOverlay(message, getSavedMessagesKeyMaterial());
+            applySavedMessagesSecureTextOverlay(single);
             return;
         }
-        try {
-            applyCachedSecureTextOverlay(message, getSecureChatEngine());
-        } catch (RuntimeException error) {
-            FileLog.e(error);
-        }
+        applyPeerSecureOverlayPass(single, true);
     }
 
     private void applyCachedSecureTextOverlay(
@@ -23192,7 +23984,7 @@ public class ChatActivity extends BaseFragment implements
                 return true;
             }
             if (message.forkSecureMediaKind == MessageObject.FORK_SECURE_MEDIA_KIND_STICKER
-                    && message.type != MessageObject.TYPE_STICKER) {
+                    && TextUtils.isEmpty(message.forkSecureMediaPath)) {
                 return true;
             }
             if (message.forkSecureMediaPresentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO
@@ -23328,13 +24120,19 @@ public class ChatActivity extends BaseFragment implements
     }
 
     private void applySecureReplyOverlay(MessageObject parentMessage) {
-        if (!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) {
+        if ((!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id))
+                || parentMessage == null) {
             return;
         }
-        try {
-            applySecureReplyOverlay(parentMessage, getSecureChatEngine());
-        } catch (RuntimeException error) {
-            FileLog.e(error);
+        SecureChatEngine warmEngine = peekWarmSecureChatEngine();
+        if (!applySecureReplyOverlayFast(parentMessage, warmEngine)) {
+            ColdSecureOverlayItem item = buildColdSecureOverlayItem(
+                    parentMessage, false, false, -1, true, false);
+            if (item != null) {
+                ArrayList<ColdSecureOverlayItem> single = new ArrayList<>(1);
+                single.add(item);
+                enqueueColdSecureOverlayItems(single, false);
+            }
         }
     }
 
@@ -23441,16 +24239,14 @@ public class ChatActivity extends BaseFragment implements
         return plaintext;
     }
 
-    private void purgeForkSecureMessagesByDigests(long dialogId, List<byte[]> digests) {
-        getMessagesController().purgeForkSecureMessagesByDigests(dialogId, digests);
-    }
-
     public boolean isForkSecureActive() {
         if (!isSecureModeUiEligible()) {
             return false;
         }
         try {
-            return getSecureChatEngine().isPaired();
+            Context context = getContext() != null ? getContext() : ApplicationLoader.applicationContext;
+            return SecureChatState.getMode(context, currentAccount, dialog_id)
+                    == SecureChatEngine.Mode.PROTECTED;
         } catch (Throwable ignore) {
             return false;
         }
@@ -23545,8 +24341,17 @@ public class ChatActivity extends BaseFragment implements
         if (!DialogObject.isUserDialog(dialog_id) && !DialogObject.isChatDialog(dialog_id)) {
             return false;
         }
+        if (DialogObject.isChatDialog(dialog_id)) {
+            TLRPC.Chat chat = currentChat != null
+                    ? currentChat
+                    : (getMessagesController() != null ? getMessagesController().getChat(-dialog_id) : null);
+            if (chat != null && ChatObject.isChannelAndNotMegaGroup(chat)) {
+                return false;
+            }
+        }
         try {
-            SecureChatEngine.Mode mode = getSecureChatEngine().getMode();
+            Context context = getContext() != null ? getContext() : ApplicationLoader.applicationContext;
+            SecureChatEngine.Mode mode = SecureChatState.getMode(context, currentAccount, dialog_id);
             return mode == SecureChatEngine.Mode.PROTECTED
                     || mode == SecureChatEngine.Mode.IDENTITY_CHANGED
                     || mode == SecureChatEngine.Mode.RECOVERY_CHANGED;
@@ -23619,13 +24424,20 @@ public class ChatActivity extends BaseFragment implements
             return;
         }
         try {
-            SecureChatEngine.Mode mode = getSecureChatEngine().getMode();
+            Context context = getContext() != null ? getContext() : ApplicationLoader.applicationContext;
+            SecureChatEngine.Mode mode = SecureChatState.getMode(context, currentAccount, dialog_id);
             if (mode == SecureChatEngine.Mode.PROTECTED) {
                 if (chatActivityEnterView != null) {
                     chatActivityEnterView.setOverrideHint(null, true);
                 }
                 suppressForkSecureLinkPreview();
                 clearForkSecureCloudDraft();
+                if (DialogObject.isChatDialog(dialog_id)
+                        && currentChat != null
+                        && ChatObject.isChannel(currentChat)
+                        && !ChatObject.isChannelAndNotMegaGroup(currentChat)) {
+                    getMessagesController().loadChannelParticipants(-dialog_id, null, 200);
+                }
                 secureModeItem.setIcon(R.drawable.outline_shield_check, true);
                 secureModeItem.setContentDescription(
                         getString(DialogObject.isChatDialog(dialog_id)
@@ -23649,7 +24461,7 @@ public class ChatActivity extends BaseFragment implements
                         getString(R.string.ForkSecurePausedDescription));
             } else if (mode == SecureChatEngine.Mode.INITIAL_PAIRING_PENDING) {
                 if (chatActivityEnterView != null) {
-                    chatActivityEnterView.setOverrideHint(null, true);
+                    chatActivityEnterView.setOverrideHint(getString(R.string.ForkSecureStatusUnencryptedWaiting), true);
                 }
                 restoreForkSecureLinkPreviewSearch();
                 secureModeItem.setIcon(R.drawable.outline_header_lock_24, true);
@@ -23720,7 +24532,18 @@ public class ChatActivity extends BaseFragment implements
                         .show();
                 return;
             }
-            if (secureChat.resumeIfPaused()) {
+            if ((DialogObject.isChatDialog(dialog_id) || secureChat.hasActiveSession())
+                    && secureChat.resumeIfPaused()) {
+                if (DialogObject.isChatDialog(dialog_id)) {
+                    Utilities.globalQueue.postRunnable(() -> {
+                        try {
+                            getSendMessagesHelper()
+                                    .ensureForkSecureGroupSenderKeyDistributedSync(dialog_id, false);
+                        } catch (Throwable e) {
+                            FileLog.e(e);
+                        }
+                    });
+                }
                 updateSecureModeUi();
                 BulletinFactory.of(this)
                         .createSimpleBulletin(
@@ -25998,7 +26821,7 @@ public class ChatActivity extends BaseFragment implements
                 messagesDict[0].put(newMsgId, obj);
                 obj.messageOwner.id = newMsgId;
                 obj.messageOwner.send_state = MessageObject.MESSAGE_SEND_STATE_SENT;
-                obj.forceUpdate = mediaUpdated;
+                obj.forceUpdate = mediaUpdated || obj.isForkSecureCarrier();
                 addReplyMessageOwner(obj, msgId);
                 if (args.length >= 6) {
                     obj.applyMediaExistanceFlags((Integer) args[5]);
@@ -26028,7 +26851,7 @@ public class ChatActivity extends BaseFragment implements
                     chatAdapter.updateRowWithMessageObject(
                             obj,
                             animateSendingViews.contains(cell),
-                            obj.isForkSecureCarrier() && obj.getGroupId() == 0);
+                            needsViewTypeReplaceForSecureRow(obj));
                 }
                 if (chatLayoutManager != null) {
                     if (mediaUpdated && chatLayoutManager.findFirstVisibleItemPosition() == 0) {
@@ -26049,13 +26872,14 @@ public class ChatActivity extends BaseFragment implements
                 obj.messageOwner.send_state = MessageObject.MESSAGE_SEND_STATE_SENT;
                 if (obj.isForkSecureCarrier()) {
                     applyCachedSecureTextOverlay(obj);
+                    obj.forceUpdate = true;
                 }
                 if (obj.hasEntitiesFromServer()) {
                     obj.generateLayout(null);
                 }
                 if (chatAdapter != null) {
                     chatAdapter.updateRowWithMessageObject(
-                            obj, false, obj.isForkSecureCarrier() && obj.getGroupId() == 0);
+                            obj, false, needsViewTypeReplaceForSecureRow(obj));
                 }
             }
         } else if (id == NotificationCenter.messageSendError) {
@@ -33464,18 +34288,7 @@ public class ChatActivity extends BaseFragment implements
         } else if (isSecureModeUiEligible()) {
             updateSecureModeUi();
         }
-        if (!forkSecureDeferredMessages.isEmpty()
-                && !SecureChatEngine.isStateTemporarilyUnavailable(getContext())) {
-            ArrayList<MessageObject> deferred = new ArrayList<>();
-            for (int i = 0; i < messages.size(); i++) {
-                MessageObject message = messages.get(i);
-                if (message != null && forkSecureDeferredMessages.contains(message.getId())) {
-                    deferred.add(message);
-                }
-            }
-            forkSecureDeferredMessages.clear();
-            applySecureTextOverlay(deferred);
-        }
+        retryForkSecureDeferredMessages();
         checkShowBlur(false);
         activityResumeTime = System.currentTimeMillis();
         if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {

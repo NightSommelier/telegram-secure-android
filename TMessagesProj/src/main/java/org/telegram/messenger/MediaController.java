@@ -87,6 +87,7 @@ import org.telegram.secureoverlay.SecureMediaCrypto;
 import org.telegram.secureoverlay.SecureMediaIndex;
 import org.telegram.secureoverlay.SecureSavedMessageCrypto;
 import org.telegram.secureoverlay.SecureSavedMessagesKeyStore;
+import org.telegram.secureoverlay.SecureSavedMessagesPinStore;
 import com.google.android.gms.cast.MediaMetadata;
 import com.google.android.gms.common.images.WebImage;
 
@@ -3789,29 +3790,44 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 SecureSavedMessagesKeyStore.KeyMaterial key = new SecureSavedMessagesKeyStore(
                         ApplicationLoader.applicationContext).getOrCreate(messageObject.currentAccount);
                 if (key != null) {
-                    byte[] plaintext = SecureSavedMessageCrypto.decryptRecord(decoded.payload, key);
+                    byte[] plaintext = SecureSavedMessageCrypto.decryptRecordBound(
+                            decoded.payload,
+                            key,
+                            new SecureSavedMessagesPinStore(ApplicationLoader.applicationContext),
+                            messageObject.getId());
                     SecureContentCodec.Decoded content = SecureContentCodec.decode(plaintext);
                     if (content != null) {
                         manifest = content.attachment;
                     }
                 }
             } else {
-                SecureChatEngine engine = new SecureChatEngine(
+                SecureChatEngine engine = SecureChatEngine.get(
                         ApplicationLoader.applicationContext,
                         messageObject.currentAccount,
                         messageObject.getDialogId());
                 manifest = messageObject.isOutOwner()
                         ? engine.getOutgoingAttachment(carrier)
-                        : engine.decryptAttachmentManifest(carrier, messageObject.getFromChatId());
+                        : engine.decryptAttachmentManifest(carrier, messageObject.getForkSecureSenderUserId());
             }
             if (manifest == null) {
                 return null;
             }
-            String ext = manifest.mimeType != null && manifest.mimeType.toLowerCase(Locale.ROOT).startsWith("video/")
+            String lowerMime = manifest.mimeType != null ? manifest.mimeType.toLowerCase(Locale.ROOT) : "";
+            String ext = lowerMime.startsWith("video/")
                     ? ".mp4"
-                    : (manifest.mimeType != null && manifest.mimeType.toLowerCase(Locale.ROOT).startsWith("audio/")
+                    : (lowerMime.startsWith("audio/")
                             ? ".ogg"
-                            : ("image/gif".equalsIgnoreCase(manifest.mimeType) ? ".gif" : ".bin"));
+                            : ("image/gif".equals(lowerMime)
+                                    ? ".gif"
+                                    : ("image/jpeg".equals(lowerMime)
+                                            ? ".jpg"
+                                            : ("image/png".equals(lowerMime)
+                                                    ? ".png"
+                                                    : ("image/webp".equals(lowerMime)
+                                                            ? ".webp"
+                                                            : (("image/heic".equals(lowerMime) || "image/heif".equals(lowerMime))
+                                                                    ? ".heic"
+                                                                    : ".bin"))))));
             File destinationDir = safeChildFile(ApplicationLoader.applicationContext.getCacheDir(), "fork-secure-attachments-in");
             if (destinationDir == null) {
                 destinationDir = new File(ApplicationLoader.applicationContext.getCacheDir(), "fork-secure-attachments-in");
@@ -3839,16 +3855,20 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                             ApplicationLoader.applicationContext,
                             messageObject.currentAccount,
                             messageObject.getDialogId());
-                    int indexKind = manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
-                            ? SecureMediaIndex.KIND_VOICE
-                            : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO
-                                    ? SecureMediaIndex.KIND_ROUND_VIDEO
-                                    : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
-                                            ? SecureMediaIndex.KIND_MUSIC
-                                            : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION || "image/gif".equalsIgnoreCase(manifest.mimeType)
-                                                    ? SecureMediaIndex.KIND_GIF
-                                                    : (manifest.mimeType != null && manifest.mimeType.toLowerCase(Locale.ROOT).startsWith("video/")
-                                                            ? SecureMediaIndex.KIND_VIDEO : SecureMediaIndex.KIND_FILE))));
+                    int indexKind = manifest.photo
+                            ? SecureMediaIndex.KIND_PHOTO
+                            : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE
+                                    ? SecureMediaIndex.KIND_VOICE
+                                    : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO
+                                            ? SecureMediaIndex.KIND_ROUND_VIDEO
+                                            : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO
+                                                    ? SecureMediaIndex.KIND_MUSIC
+                                                    : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION || "image/gif".equalsIgnoreCase(manifest.mimeType)
+                                                            ? SecureMediaIndex.KIND_GIF
+                                                            : (manifest.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_FILE
+                                                                    ? SecureMediaIndex.KIND_FILE
+                                                                    : (lowerMime.startsWith("video/")
+                                                                            ? SecureMediaIndex.KIND_VIDEO : SecureMediaIndex.KIND_FILE))))));
                     SecureMediaIndex.Entry entry = new SecureMediaIndex.Entry(
                             messageObject.getId(),
                             messageObject.messageOwner.date,
@@ -6040,7 +6060,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     private static void writeMotionPhoto(File photoFile, File videoFile, OutputStream out, boolean[] cancelled) throws IOException {
         final long videoLength = videoFile.length();
         final String xmp = buildMotionPhotoXmp(videoLength);
-        final byte[] xmpHeader = "http://ns.adobe.com/xap/1.0/ ".getBytes("UTF-8");
+        final byte[] xmpHeader = "http://ns.adobe.com/xap/1.0/\0".getBytes("UTF-8");
         final byte[] xmpBytes = xmp.getBytes("UTF-8");
         final int segLen = xmpHeader.length + xmpBytes.length + 2;
         if (segLen > 65535) {
