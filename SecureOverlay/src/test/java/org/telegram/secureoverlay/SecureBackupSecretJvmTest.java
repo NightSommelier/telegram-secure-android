@@ -47,9 +47,15 @@ public final class SecureBackupSecretJvmTest {
         flaggedNoPassword[9] = 1;
         try {
             SecureIdentityBackupCodec.decrypt(flaggedNoPassword, password);
-            fail("Identity backup must reject FLAG_NO_PASSWORD header");
-        } catch (IllegalArgumentException expected) {
-            assertEquals("unsupported identity backup header", expected.getMessage());
+            fail("Identity backup must reject non-empty password with FLAG_NO_PASSWORD header");
+        } catch (SecurityException expected) {
+            assertTrue(expected.getMessage().contains("empty password"));
+        }
+        try {
+            SecureIdentityBackupCodec.decrypt(flaggedNoPassword, new char[0]);
+            fail("Identity backup must reject tampered FLAG_NO_PASSWORD header via AEAD AAD");
+        } catch (SecurityException expected) {
+            assertTrue(expected.getMessage().contains("modified"));
         }
     }
 
@@ -91,9 +97,15 @@ public final class SecureBackupSecretJvmTest {
         flaggedNoPassword[9] = 1;
         try {
             SecureHistoryBackupCodec.decrypt(flaggedNoPassword, password);
-            fail("History backup must reject FLAG_NO_PASSWORD header");
-        } catch (IllegalArgumentException expected) {
-            assertEquals("unsupported secure history header", expected.getMessage());
+            fail("History backup must reject non-empty password with FLAG_NO_PASSWORD header");
+        } catch (SecurityException expected) {
+            assertTrue(expected.getMessage().contains("empty password"));
+        }
+        try {
+            SecureHistoryBackupCodec.decrypt(flaggedNoPassword, new char[0]);
+            fail("History backup must reject tampered FLAG_NO_PASSWORD header via AEAD AAD");
+        } catch (SecurityException expected) {
+            assertTrue(expected.getMessage().contains("modified"));
         }
     }
 }

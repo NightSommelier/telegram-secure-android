@@ -208,8 +208,15 @@ public final class SecureTrustStateAndMediaDbJvmTest {
         assertEquals("Hello secure encrypted text", new String(extractedContent, StandardCharsets.UTF_8));
 
         // Key mask checks
-        String key = SecureLocalTextStore.key(SecureLocalTextStore.INCOMING_PREFIX, 0, peerUserId, "TGS1:some-carrier-message");
+        byte[] maskKey = SecureNameMask.getOrGenerateKey(KeystoreEncryptedBlobStore.createInMemoryForTesting());
+        String key = SecureLocalTextStore.key(
+                maskKey, SecureLocalTextStore.INCOMING_PREFIX, 0, peerUserId, "TGS1:some-carrier-message");
         assertFalse("Record name must not embed peer ID: " + key, key.contains(String.valueOf(peerUserId)));
         assertTrue("Record name must start with prefix: " + key, key.startsWith(SecureLocalTextStore.INCOMING_PREFIX));
+
+        String contentKey = SecureLocalContentStore.key(
+                maskKey, SecureLocalContentStore.INCOMING_PREFIX, 0, peerUserId, "TGS1:some-carrier-message");
+        assertFalse("Content record name must not embed peer ID: " + contentKey, contentKey.contains(String.valueOf(peerUserId)));
+        assertTrue("Content record name must start with prefix: " + contentKey, contentKey.startsWith(SecureLocalContentStore.INCOMING_PREFIX));
     }
 }

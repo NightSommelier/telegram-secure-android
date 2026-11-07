@@ -149,8 +149,8 @@ public final class SecureMediaCrypto {
             int height,
             String emoji,
             int format) {
-        source = requireSafeFile(source, "source");
-        destination = requireSafeFile(destination, "destination");
+        source = requireSafeFile(source, source != null ? source.getParentFile() : null, "source");
+        destination = requireSafeFile(destination, destination != null ? destination.getParentFile() : null, "destination");
         if (!source.isFile()) {
             throw new IllegalArgumentException("secure sticker source is unavailable");
         }
@@ -264,8 +264,22 @@ public final class SecureMediaCrypto {
             File ciphertextFile,
             File destination,
             SecureContentCodec.StaticSticker manifest) {
-        ciphertextFile = requireSafeFile(ciphertextFile, "ciphertextFile");
-        destination = requireSafeFile(destination, "destination");
+        decryptStickerFile(ciphertextFile, destination, destination != null ? destination.getParentFile() : null, manifest);
+    }
+
+    public static void decryptStickerFile(
+            File ciphertextFile,
+            File destination,
+            File allowedDestinationRoot,
+            SecureContentCodec.StaticSticker manifest) {
+        ciphertextFile = requireSafeFile(
+                ciphertextFile,
+                ciphertextFile != null ? ciphertextFile.getParentFile() : null,
+                "ciphertextFile");
+        destination = requireSafeFile(
+                destination,
+                allowedDestinationRoot != null ? allowedDestinationRoot : (destination != null ? destination.getParentFile() : null),
+                "destination");
         if (!ciphertextFile.isFile()) {
             throw new IllegalArgumentException("secure sticker ciphertext is unavailable");
         }
@@ -429,8 +443,8 @@ public final class SecureMediaCrypto {
             String title,
             String performer,
             byte[] waveform) {
-        source = requireSafeFile(source, "source");
-        destination = requireSafeFile(destination, "destination");
+        source = requireSafeFile(source, source != null ? source.getParentFile() : null, "source");
+        destination = requireSafeFile(destination, destination != null ? destination.getParentFile() : null, "destination");
         if (!source.isFile()) {
             throw new IllegalArgumentException("secure attachment source is unavailable");
         }
@@ -556,8 +570,26 @@ public final class SecureMediaCrypto {
             File ciphertextFile,
             File destination,
             SecureContentCodec.Attachment manifest) {
-        ciphertextFile = requireSafeFile(ciphertextFile, "ciphertextFile");
-        destination = requireSafeFile(destination, "destination");
+        decryptAttachmentFile(
+                ciphertextFile,
+                destination,
+                destination != null ? destination.getParentFile() : null,
+                manifest);
+    }
+
+    public static void decryptAttachmentFile(
+            File ciphertextFile,
+            File destination,
+            File allowedDestinationRoot,
+            SecureContentCodec.Attachment manifest) {
+        ciphertextFile = requireSafeFile(
+                ciphertextFile,
+                ciphertextFile != null ? ciphertextFile.getParentFile() : null,
+                "ciphertextFile");
+        destination = requireSafeFile(
+                destination,
+                allowedDestinationRoot != null ? allowedDestinationRoot : (destination != null ? destination.getParentFile() : null),
+                "destination");
         if (manifest == null
                 || manifest.plaintextSize <= 0
                 || manifest.plaintextSize > MAX_ATTACHMENT_BYTES
@@ -586,7 +618,16 @@ public final class SecureMediaCrypto {
 
         File temporary = createSafeTemporaryFile(destination);
         if (isSegmented) {
-            decryptSegmented(ciphertextFile, temporary, destination, manifest, targetPaddedPlaintextSize);
+            try {
+                decryptSegmented(ciphertextFile, temporary, destination, manifest, targetPaddedPlaintextSize);
+            } catch (IllegalArgumentException e) {
+                if (isLegacy) {
+                    File fallbackTemporary = createSafeTemporaryFile(destination);
+                    decryptLegacy(ciphertextFile, fallbackTemporary, destination, manifest);
+                } else {
+                    throw e;
+                }
+            }
         } else {
             decryptLegacy(ciphertextFile, temporary, destination, manifest);
         }
@@ -754,9 +795,26 @@ public final class SecureMediaCrypto {
         }
     }
 
+    private static boolean hasTraversalSegment(String rawPath) {
+        if (rawPath == null) {
+            return false;
+        }
+        String normalized = rawPath.replace('\\', '/');
+        String[] parts = normalized.split("/");
+        for (String part : parts) {
+            if ("..".equals(part)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static File requireSafeFile(File file, File allowedRoot, String label) {
         if (file == null) {
             throw new IllegalArgumentException(label + " is null");
+        }
+        if (hasTraversalSegment(file.getPath())) {
+            throw new IllegalArgumentException(label + " escapes allowed root via traversal segment");
         }
         try {
             File canonical = file.getCanonicalFile();
@@ -773,9 +831,10 @@ public final class SecureMediaCrypto {
                     throw new IllegalArgumentException(label + " escapes allowed root directory");
                 }
             } else {
-                File parent = canonical.getParentFile();
-                if (parent != null) {
-                    String parentCanonicalPath = parent.getCanonicalPath();
+                File uncanonicalParent = file.getParentFile();
+                if (uncanonicalParent != null) {
+                    File parentCanonical = uncanonicalParent.getCanonicalFile();
+                    String parentCanonicalPath = parentCanonical.getPath();
                     String canonicalPath = canonical.getPath();
                     if (!canonicalPath.startsWith(parentCanonicalPath + File.separator)
                             && !canonicalPath.equals(parentCanonicalPath)) {
@@ -814,12 +873,15 @@ public final class SecureMediaCrypto {
     }
 
     private static File createSafeTemporaryFile(File destination) {
-        File safeDestination = requireSafeFile(destination, "destination");
+        File safeDestination = requireSafeFile(
+                destination,
+                destination != null ? destination.getParentFile() : null,
+                "destination");
         File parent = safeDestination.getParentFile();
         if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
             throw new SecureMediaException("cannot create media directory", null);
         }
-        return requireSafeFile(new File(parent, safeDestination.getName() + ".tmp"), "temporary");
+        return requireSafeFile(new File(parent, safeDestination.getName() + ".tmp"), parent, "temporary");
     }
 
     private static byte[] crypt(
@@ -900,7 +962,7 @@ public final class SecureMediaCrypto {
     }
 
     private static boolean matchesStickerFormat(File source, int format) {
-        source = requireSafeFile(source, "source");
+        source = requireSafeFile(source, source != null ? source.getParentFile() : null, "source");
         int headerSize = format == SecureContentCodec.STICKER_FORMAT_WEBP ? 12
                 : format == SecureContentCodec.STICKER_FORMAT_TGS ? 2
                 : format == SecureContentCodec.STICKER_FORMAT_WEBM ? 4 : 0;
@@ -934,7 +996,7 @@ public final class SecureMediaCrypto {
     }
 
     private static byte[] sha256File(File source, int maximum) {
-        source = requireSafeFile(source, "source");
+        source = requireSafeFile(source, source != null ? source.getParentFile() : null, "source");
         long size = source.length();
         if (size <= 0 || size > maximum) {
             throw new IllegalArgumentException("secure media size is invalid");

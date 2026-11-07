@@ -7,13 +7,19 @@ import org.junit.Test;
 
 public final class SecurePeerBindingJvmTest {
     @Test
-    public void acceptsMatchingOrUnspecifiedOneToOneSender() {
+    public void acceptsMatchingOneToOneSenderAndRejectsUnspecified() {
         SecureChatEngine.requireValidInboundSender(1001L, 1001L);
-        SecureChatEngine.requireValidInboundSender(1001L, 0L);
+
+        try {
+            SecureChatEngine.requireValidInboundSender(1001L, 0L);
+            fail("1:1 chat must reject zero/unspecified senderUserId (SA-37)");
+        } catch (SecureChatEngine.SecureChatException expected) {
+            assertEquals("1:1 message requires positive sender user ID", expected.getMessage());
+        }
     }
 
     @Test
-    public void rejectsMismatchedSenderInOneToOneChat() {
+    public void rejectsMismatchedOrNegativeSenderInOneToOneChat() {
         try {
             SecureChatEngine.requireValidInboundSender(1001L, 2002L);
             fail("1:1 chat must reject mismatched positive senderUserId");
@@ -25,7 +31,7 @@ public final class SecurePeerBindingJvmTest {
             SecureChatEngine.requireValidInboundSender(1001L, -100555L);
             fail("1:1 chat must reject negative senderUserId");
         } catch (SecureChatEngine.SecureChatException expected) {
-            assertEquals("1:1 message sender does not match peer dialog", expected.getMessage());
+            assertEquals("1:1 message requires positive sender user ID", expected.getMessage());
         }
     }
 

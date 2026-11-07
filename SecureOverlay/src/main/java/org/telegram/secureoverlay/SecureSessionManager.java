@@ -14,8 +14,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class SecureSessionManager {
 
-    /** Group encryption feature flag (disabled by default per SA-19). */
-    public static volatile boolean GROUPS_ENABLED = false;
+    /**
+     * Group encryption feature flag. Enabled now that SenderKey distribution is strictly
+     * authenticated over verified 1:1 Double Ratchet sessions and bound per group dialog ID.
+     */
+    public static volatile boolean GROUPS_ENABLED = true;
 
     private static final Map<Integer, SecureSessionManager> managers = new ConcurrentHashMap<>();
 
@@ -39,6 +42,18 @@ public final class SecureSessionManager {
 
     public static SecureChatEngine getEngine(Context context, int account, long peerUserId) {
         return getInstance(context, account).getEngineForPeer(peerUserId);
+    }
+
+    public static SecureChatEngine peekEngine(int account, long peerUserId) {
+        if (account < 0 || peerUserId == 0) {
+            return null;
+        }
+        SecureSessionManager manager = managers.get(account);
+        if (manager == null) {
+            return null;
+        }
+        SecureChatEngine existing = manager.engineCache.get(peerUserId);
+        return (existing != null && !existing.isStale()) ? existing : null;
     }
 
     /**
@@ -91,8 +106,10 @@ public final class SecureSessionManager {
             throw new SecureChatEngine.SecureChatException("secure groups are disabled", null);
         }
         ensureInitialized();
-        return engineCache.computeIfAbsent(peerUserId,
-                id -> new SecureChatEngine(appContext, account, id));
+        return engineCache.compute(peerUserId, (id, existing) ->
+                (existing == null || existing.isStale())
+                        ? new SecureChatEngine(appContext, account, id)
+                        : existing);
     }
 
     public void clear() {

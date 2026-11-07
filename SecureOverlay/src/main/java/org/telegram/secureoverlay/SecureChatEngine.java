@@ -74,8 +74,22 @@ public final class SecureChatEngine {
                 }
             };
 
-    private static String failedDecryptKey(int account, long peerUserId, String carrier) {
-        return account + ":" + peerUserId + ":" + (carrier != null ? carrier.hashCode() : 0);
+    static String failedDecryptKey(int account, long peerUserId, String carrier) {
+        if (carrier == null) {
+            return account + ":" + peerUserId + ":null";
+        }
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(carrier.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(account + ":" + peerUserId + ":");
+            for (byte b : digest) {
+                sb.append(Character.forDigit((b >>> 4) & 0x0f, 16));
+                sb.append(Character.forDigit(b & 0x0f, 16));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            throw new AssertionError("SHA-256 is unavailable", e);
+        }
     }
 
     /**
@@ -100,8 +114,35 @@ public final class SecureChatEngine {
         if (context == null || account < 0 || peerUserId == 0) {
             return false;
         }
+        Boolean peeked = SecureChatState.peekHasStateForPeer(account, peerUserId);
+        if (peeked != null) {
+            return peeked;
+        }
         return new SecureChatState(context.getApplicationContext())
                 .hasStateForPeer(account, peerUserId);
+    }
+
+    public static final class CachedText {
+        public static final int STATE_HIT = 0;
+        public static final int STATE_NEGATIVE = 1;
+        public static final int STATE_FAILED = 2;
+        public static final int STATE_COLD = 3;
+
+        public static final CachedText NEGATIVE = new CachedText(STATE_NEGATIVE, null);
+        public static final CachedText FAILED = new CachedText(STATE_FAILED, null);
+        public static final CachedText COLD = new CachedText(STATE_COLD, null);
+
+        public final int state;
+        public final String text;
+
+        private CachedText(int state, String text) {
+            this.state = state;
+            this.text = text;
+        }
+
+        public static CachedText hit(String text) {
+            return new CachedText(STATE_HIT, text);
+        }
     }
 
     public enum Mode {
@@ -145,8 +186,10 @@ public final class SecureChatEngine {
         AttachmentEditTransport(
                 String attachmentCarrier, byte[] previousSession, byte[] nextSession) {
             this.attachmentCarrier = attachmentCarrier;
-            this.previousSession = Arrays.copyOf(previousSession, previousSession.length);
-            this.nextSession = Arrays.copyOf(nextSession, nextSession.length);
+            this.previousSession = previousSession != null
+                    ? Arrays.copyOf(previousSession, previousSession.length) : null;
+            this.nextSession = nextSession != null
+                    ? Arrays.copyOf(nextSession, nextSession.length) : null;
         }
     }
 
@@ -158,8 +201,10 @@ public final class SecureChatEngine {
         TextEditTransport(
                 String textCarrier, byte[] previousSession, byte[] nextSession) {
             this.textCarrier = textCarrier;
-            this.previousSession = Arrays.copyOf(previousSession, previousSession.length);
-            this.nextSession = Arrays.copyOf(nextSession, nextSession.length);
+            this.previousSession = previousSession != null
+                    ? Arrays.copyOf(previousSession, previousSession.length) : null;
+            this.nextSession = nextSession != null
+                    ? Arrays.copyOf(nextSession, nextSession.length) : null;
         }
     }
 
@@ -180,7 +225,7 @@ public final class SecureChatEngine {
         return SecureSessionManager.getEngine(context, account, peerUserId);
     }
 
-    public SecureChatEngine(Context context, int account, long peerUserId) {
+    SecureChatEngine(Context context, int account, long peerUserId) {
         if (account < 0 || peerUserId == 0) throw new IllegalArgumentException("secure chats require an account and valid peer");
         if (peerUserId < 0 && !SecureSessionManager.GROUPS_ENABLED) {
             throw new SecureChatException("secure groups are disabled", null);
@@ -200,20 +245,41 @@ public final class SecureChatEngine {
         localContent =
                 new SecureLocalContentStore(appContext, account, peerUserId);
         identityEpoch = state.getIdentityEpoch(account);
+        repairBogusPairedStateIfNeeded();
     }
 
-    /** Creates a public pairing offer to send as a normal Telegram text message. */
-    public String createPairingOffer() {
-        return createPairingOffer(0);
+    private void repairBogusPairedStateIfNeeded() {
+        if (peerUserId <= 0) {
+            return;
+        }
+        synchronized (SESSION_LOCK) {
+            if (state.isPaired(account, peerUserId)
+                    && store.getIdentity(peerAddress) == null
+                    && (!store.containsSession(peerAddress)
+                            || !store.loadSession(peerAddress).hasSenderChain())) {
+                if (store.containsSession(peerAddress)) {
+                    store.deleteSession(peerAddress);
+                }
+                state.markWaiting(account, peerUserId);
+                clearFailedDecryptCache(account, peerUserId);
+            }
+        }
     }
 
+    /** Creates a participant-bound v3 public pairing offer to send as a normal Telegram text message. */
     public String createPairingOffer(long ownerUserId) {
         synchronized (SESSION_LOCK) {
             requireCurrentIdentity();
+            if (peerUserId <= 0) {
+                throw new IllegalArgumentException("pairing offer requires positive peer user ID");
+            }
+            if (ownerUserId <= 0) {
+                throw new IllegalArgumentException("pairing offer requires positive owner user ID");
+            }
             if (state.isIdentityPending(account, peerUserId)) {
                 throw new SecureChatException("new contact identity requires verification", null);
             }
-            if (ownerUserId > 0 && peerUserId > 0 && ownerUserId == peerUserId) {
+            if (ownerUserId == peerUserId) {
                 throw new IllegalArgumentException("pairing offer owner cannot equal peer");
             }
             String carrier = SecureCarrierCodec.encode(
@@ -227,6 +293,19 @@ public final class SecureChatEngine {
 
     /** Creates a SenderKey distribution carrier for a group (dialogId < 0) encrypted over this 1:1 pairwise channel. */
     public String createGroupSenderKeyDistributionCarrier(long groupChatId) {
+        return createGroupSenderKeyDistributionCarrier(groupChatId, true);
+    }
+
+    /**
+     * Creates a pairwise SenderKey distribution carrier only if this 1:1 peer has not yet been
+     * sent the current local SenderKey chain for {@code groupChatId}. Returns {@code null} when
+     * already up-to-date.
+     */
+    public String createGroupSenderKeyDistributionCarrierIfNeeded(long groupChatId) {
+        return createGroupSenderKeyDistributionCarrier(groupChatId, false);
+    }
+
+    private String createGroupSenderKeyDistributionCarrier(long groupChatId, boolean force) {
         if (groupChatId >= 0) {
             throw new IllegalArgumentException("group dialog id must be negative");
         }
@@ -245,15 +324,24 @@ public final class SecureChatEngine {
             throw new SecureChatException("new contact identity requires verification", null);
         }
         synchronized (SESSION_LOCK) {
+            if (!store.containsSession(peerAddress)) {
+                throw new SecureChatException("1:1 session is missing for group key distribution", null);
+            }
             try {
-                java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
-                        ("telegram-group-" + groupChatId).getBytes(StandardCharsets.UTF_8));
+                java.util.UUID distributionId = groupDistributionId(groupChatId);
                 byte[] distributionBytes = sessions.createGroupDistributionMessage(distributionId);
+                byte[] senderKeyTag = senderKeyDistributionTag(distributionId, distributionBytes);
+                if (!force && state.hasDistributedGroupSenderKey(
+                        account, peerUserId, groupChatId, senderKeyTag)) {
+                    return null;
+                }
                 byte[] content = SecureContentCodec.encodeSenderKeyDistribution(
                         groupChatId, distributionBytes);
                 String carrier = encryptAndRemember(
                         sessions, content, GROUP_KEY_DISTRIBUTED_DISPLAY);
                 localContent.rememberOutgoing(carrier, content);
+                state.recordDistributedGroupSenderKey(
+                        account, peerUserId, groupChatId, senderKeyTag);
                 return carrier;
             } catch (SecureChatException e) {
                 throw e;
@@ -264,19 +352,45 @@ public final class SecureChatEngine {
         }
     }
 
+    public static java.util.UUID groupDistributionId(long groupChatId) {
+        if (groupChatId >= 0) {
+            throw new IllegalArgumentException("group dialog id must be negative");
+        }
+        return java.util.UUID.nameUUIDFromBytes(
+                ("telegram-group-" + groupChatId).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static byte[] senderKeyDistributionTag(
+            java.util.UUID distributionId, byte[] serializedDistributionMessage)
+            throws Exception {
+        org.signal.libsignal.protocol.message.SenderKeyDistributionMessage msg =
+                new org.signal.libsignal.protocol.message.SenderKeyDistributionMessage(
+                        serializedDistributionMessage);
+        MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+        ByteBuffer header = ByteBuffer.allocate(20);
+        header.putLong(distributionId.getMostSignificantBits());
+        header.putLong(distributionId.getLeastSignificantBits());
+        header.putInt(msg.getChainId());
+        sha256.update(header.array());
+        sha256.update(msg.getSignatureKey().serialize());
+        return sha256.digest();
+    }
+
     /** Rejects unencrypted SenderKey distribution carriers; distribution must be 1:1 Double Ratchet encrypted. */
     public void processGroupSenderKeyDistributionCarrier(long senderUserId, String carrier) {
         throw new SecureChatException(
                 "unencrypted group sender key distribution is rejected", null);
     }
 
-    /** Enables encryption for a group dialog (dialogId < 0). */
+    /** Enables encryption for a group dialog (dialogId < 0) and flags initial key distribution. */
     public void enableGroup() {
         if (peerUserId >= 0) {
             throw new IllegalArgumentException("peer dialog id must be negative for groups");
         }
         synchronized (SESSION_LOCK) {
+            requireCurrentIdentity();
             state.markPaired(account, peerUserId);
+            state.setGroupKeyNeedsDistribution(account, peerUserId, true);
         }
     }
 
@@ -286,10 +400,46 @@ public final class SecureChatEngine {
             throw new IllegalArgumentException("peer dialog id must be negative for groups");
         }
         synchronized (SESSION_LOCK) {
-            java.util.UUID distributionId = java.util.UUID.nameUUIDFromBytes(
-                    ("telegram-group-" + peerUserId).getBytes(StandardCharsets.UTF_8));
-            store.deleteSenderKey(localAddress, distributionId);
+            store.deleteSenderKey(localAddress, groupDistributionId(peerUserId));
             state.setGroupKeyNeedsDistribution(account, peerUserId, true);
+        }
+    }
+
+    /** Revokes a departed or removed member's inbound SenderKey for this group chat. */
+    public void revokeGroupMemberSenderKey(long memberUserId) {
+        if (peerUserId >= 0) {
+            throw new IllegalArgumentException("peer dialog id must be negative for groups");
+        }
+        if (memberUserId <= 0) {
+            return;
+        }
+        synchronized (SESSION_LOCK) {
+            SignalProtocolAddress memberAddress =
+                    new SignalProtocolAddress("telegram-user-" + memberUserId, 1);
+            store.deleteSenderKey(memberAddress, groupDistributionId(peerUserId));
+            state.clearDistributedGroupSenderKey(account, memberUserId, peerUserId);
+        }
+    }
+
+    /** True when this group engine already holds a SenderKey state from {@code senderUserId}. */
+    public boolean hasSenderKeyFrom(long senderUserId) {
+        if (peerUserId >= 0 || senderUserId <= 0) {
+            return false;
+        }
+        synchronized (SESSION_LOCK) {
+            SignalProtocolAddress senderAddress =
+                    new SignalProtocolAddress("telegram-user-" + senderUserId, 1);
+            return store.loadSenderKey(senderAddress, groupDistributionId(peerUserId)) != null;
+        }
+    }
+
+    /** True when the underlying 1:1 Double Ratchet session (or local group SenderKey) exists in the store. */
+    public boolean hasActiveSession() {
+        synchronized (SESSION_LOCK) {
+            if (peerUserId < 0) {
+                return store.loadSenderKey(localAddress, groupDistributionId(peerUserId)) != null;
+            }
+            return store.containsSession(peerAddress);
         }
     }
 
@@ -317,14 +467,11 @@ public final class SecureChatEngine {
      * session is established. A changed identity is similarly persisted as pending and secure
      * sending remains blocked until the user compares fingerprints and explicitly approves it.</p>
      */
-    public PairingOfferResult receivePairingOffer(String carrier, int messageId) {
-        return receivePairingOffer(carrier, messageId, 0, 0);
-    }
-
     public PairingOfferResult receivePairingOffer(
             String carrier, int messageId, long senderUserId, long localUserId) {
         synchronized (SESSION_LOCK) {
             requireCurrentIdentity();
+            repairBogusPairedStateIfNeeded();
             if (messageId <= 0) {
                 throw new IllegalArgumentException("pairing message id must be positive");
             }
@@ -397,12 +544,21 @@ public final class SecureChatEngine {
                     if (bootstrapRecovery) {
                         recoveryStore.recordVerifiedPeer(account, peerUserId, offer.recovery);
                     }
-                    if (getMode() == Mode.WAITING) {
-                        if (!store.containsSession(peerAddress)) {
+                    boolean missingSession = !store.containsSession(peerAddress);
+                    boolean freshBoundRepair = messageId > lastPairingMessageId
+                            && (getMode() == Mode.WAITING
+                                    || state.isPaused(account, peerUserId)
+                                    || offer.ownerUserId == peerUserId);
+                    if (getMode() == Mode.WAITING || missingSession || freshBoundRepair) {
+                        if (missingSession || freshBoundRepair) {
                             store.saveIdentity(peerAddress, remote.getIdentityKey());
                             sessions.establish(peerAddress, remote);
+                            state.clearMemberGroupKeyDistributions(account, peerUserId);
+                            clearFailedDecryptCache(account, peerUserId);
                         }
-                        state.markPaired(account, peerUserId);
+                        if (getMode() == Mode.WAITING || isPaired() || freshBoundRepair) {
+                            state.markPaired(account, peerUserId);
+                        }
                     }
                     state.recordPairingMessage(account, peerUserId, messageId);
                 } catch (Exception e) {
@@ -449,21 +605,29 @@ public final class SecureChatEngine {
         if (offer == null) {
             throw new IllegalArgumentException("pairing offer is required");
         }
-        if (offer.ownerUserId > 0) {
-            if (peerUserId > 0 && offer.ownerUserId != peerUserId) {
-                throw new IllegalArgumentException("pairing offer owner does not match peer");
-            }
-            if (senderUserId > 0 && offer.ownerUserId != senderUserId) {
-                throw new IllegalArgumentException("pairing offer owner does not match sender");
-            }
+        if (peerUserId <= 0) {
+            throw new IllegalArgumentException("pairing offer requires a 1:1 peer dialog");
         }
-        if (offer.recipientUserId > 0) {
-            if (localUserId > 0 && offer.recipientUserId != localUserId) {
-                throw new IllegalArgumentException("pairing offer recipient does not match local user");
-            }
-            if (peerUserId > 0 && offer.recipientUserId == peerUserId) {
-                throw new IllegalArgumentException("pairing offer recipient cannot equal peer");
-            }
+        if (senderUserId <= 0) {
+            throw new IllegalArgumentException("pairing offer requires positive sender user ID");
+        }
+        if (localUserId <= 0) {
+            throw new IllegalArgumentException("pairing offer requires positive local user ID");
+        }
+        if (offer.ownerUserId <= 0 || offer.recipientUserId <= 0) {
+            throw new IllegalArgumentException("pairing offer lacks participant user ID binding");
+        }
+        if (offer.ownerUserId != peerUserId) {
+            throw new IllegalArgumentException("pairing offer owner does not match peer");
+        }
+        if (offer.ownerUserId != senderUserId) {
+            throw new IllegalArgumentException("pairing offer owner does not match sender");
+        }
+        if (offer.recipientUserId != localUserId) {
+            throw new IllegalArgumentException("pairing offer recipient does not match local user");
+        }
+        if (offer.recipientUserId == peerUserId) {
+            throw new IllegalArgumentException("pairing offer recipient cannot equal peer");
         }
     }
 
@@ -505,7 +669,7 @@ public final class SecureChatEngine {
     }
 
     public boolean isStale() {
-        return identityEpoch != state.getIdentityEpoch();
+        return identityEpoch != state.getIdentityEpoch(account);
     }
 
     /** Encrypts a nonempty text message only after an explicit pairing step. */
@@ -544,10 +708,6 @@ public final class SecureChatEngine {
         }
     }
 
-    public SecureContentCodec.StaticSticker decryptStaticStickerManifest(String carrier) {
-        return decryptStaticStickerManifest(carrier, 0);
-    }
-
     public SecureContentCodec.StaticSticker decryptStaticStickerManifest(String carrier, long senderUserId) {
         synchronized (SESSION_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
@@ -566,28 +726,7 @@ public final class SecureChatEngine {
             try {
                 byte[] content = localContent.loadIncoming(carrier);
                 if (content == null) {
-                    int libsignalType;
-                    if (decoded.type == SecureCarrierCodec.TYPE_PREKEY) {
-                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY;
-                    } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
-                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY;
-                    } else {
-                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
-                    }
-                    SignalProtocolAddress decryptAddress = (peerUserId < 0)
-                            ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
-                            : peerAddress;
-                    requireInboundSessionAllowed(
-                            peerUserId,
-                            isPaired(),
-                            state.isWaiting(account, peerUserId),
-                            state.isIdentityPending(account, peerUserId),
-                            store.containsSession(peerAddress),
-                            store.getIdentity(peerAddress) != null);
-                    content = sessions.decrypt(
-                            decryptAddress,
-                            new LibsignalSessionAdapter.EncryptedMessage(
-                                    libsignalType, decoded.payload));
+                    content = decryptInboundPayload(decoded, senderUserId);
                     SecureContentCodec.StaticSticker sticker = requireStaticSticker(content);
                     localContent.rememberIncoming(carrier, content);
                     localText.rememberIncoming(carrier, STATIC_STICKER_DISPLAY);
@@ -631,10 +770,11 @@ public final class SecureChatEngine {
         byte[] content = SecureContentCodec.encodeAttachment(attachment);
         String display = attachment.photo ? PHOTO_DISPLAY : FILE_DISPLAY;
         synchronized (SESSION_LOCK) {
+            boolean hadSession = peerUserId >= 0 && store.containsSession(peerAddress);
             SessionRecord previousSession = null;
             String firstCarrier = null;
             try {
-                if (peerUserId >= 0) {
+                if (hadSession) {
                     previousSession = new SessionRecord(
                             store.loadSession(peerAddress).serialize());
                 }
@@ -647,8 +787,12 @@ public final class SecureChatEngine {
                 return new AttachmentTransport(firstCarrier);
             } catch (Exception error) {
                 try {
-                    if (previousSession != null) {
-                        store.storeSession(peerAddress, previousSession);
+                    if (peerUserId >= 0) {
+                        if (hadSession && previousSession != null) {
+                            store.storeSession(peerAddress, previousSession);
+                        } else if (!hadSession && store.containsSession(peerAddress)) {
+                            store.deleteSession(peerAddress);
+                        }
                     }
                     if (firstCarrier != null) {
                         localText.forgetOutgoing(firstCarrier);
@@ -679,10 +823,11 @@ public final class SecureChatEngine {
         byte[] content = SecureContentCodec.encodeAttachment(attachment);
         String display = attachment.photo ? PHOTO_DISPLAY : FILE_DISPLAY;
         synchronized (SESSION_LOCK) {
+            boolean hadSession = peerUserId >= 0 && store.containsSession(peerAddress);
             byte[] previousSession = null;
             String carrier = null;
             try {
-                if (peerUserId >= 0) {
+                if (hadSession) {
                     previousSession = store.loadSession(peerAddress).serialize();
                 }
                 carrier = encryptAndRemember(content, display);
@@ -696,8 +841,12 @@ public final class SecureChatEngine {
                 return new AttachmentEditTransport(carrier, previousSession, nextSession);
             } catch (Exception error) {
                 try {
-                    if (previousSession != null) {
-                        store.storeSession(peerAddress, new SessionRecord(previousSession));
+                    if (peerUserId >= 0) {
+                        if (hadSession && previousSession != null) {
+                            store.storeSession(peerAddress, new SessionRecord(previousSession));
+                        } else if (!hadSession && store.containsSession(peerAddress)) {
+                            store.deleteSession(peerAddress);
+                        }
                     }
                     if (carrier != null) {
                         localText.forgetOutgoing(carrier);
@@ -738,10 +887,11 @@ public final class SecureChatEngine {
         }
         byte[] content = SecureContentCodec.encodeText(plaintext);
         synchronized (SESSION_LOCK) {
+            boolean hadSession = peerUserId >= 0 && store.containsSession(peerAddress);
             byte[] previousSession = null;
             String carrier = null;
             try {
-                if (peerUserId >= 0) {
+                if (hadSession) {
                     previousSession = store.loadSession(peerAddress).serialize();
                 }
                 carrier = encryptAndRemember(content, plaintext);
@@ -754,8 +904,12 @@ public final class SecureChatEngine {
                 return new TextEditTransport(carrier, previousSession, nextSession);
             } catch (Exception error) {
                 try {
-                    if (previousSession != null) {
-                        store.storeSession(peerAddress, new SessionRecord(previousSession));
+                    if (peerUserId >= 0) {
+                        if (hadSession && previousSession != null) {
+                            store.storeSession(peerAddress, new SessionRecord(previousSession));
+                        } else if (!hadSession && store.containsSession(peerAddress)) {
+                            store.deleteSession(peerAddress);
+                        }
                     }
                     if (carrier != null) {
                         localText.forgetOutgoing(carrier);
@@ -812,6 +966,94 @@ public final class SecureChatEngine {
         } catch (Exception ignore) {
         }
         return null;
+    }
+
+    /**
+     * Verifies and refines a {@link SecureMediaIndex} kind against authenticated local caches
+     * without advancing any cryptographic ratchet. Returns {@code -1} if the carrier is a
+     * non-attachment (pairing offer, sender-key distribution, control event, sticker, text,
+     * contact, or location) that must not appear in shared media/file tabs.
+     */
+    public int resolveCachedMediaIndexKind(String carrier, boolean outgoing, int currentKind) {
+        if (carrier == null || carrier.isEmpty()) {
+            return currentKind;
+        }
+        SecureCarrierCodec.Decoded carrierDecoded = SecureCarrierCodec.decode(carrier);
+        if (carrierDecoded == null
+                || carrierDecoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE
+                || carrierDecoded.type == SecureCarrierCodec.TYPE_SENDERKEY_DISTRIBUTION) {
+            return -1;
+        }
+        try {
+            String display = outgoing
+                    ? localText.loadOutgoing(carrier)
+                    : localText.loadIncoming(carrier);
+            if (display == null) {
+                display = outgoing
+                        ? localText.loadIncoming(carrier)
+                        : localText.loadOutgoing(carrier);
+            }
+            if (display != null) {
+                if (isStaticStickerDisplay(display)
+                        || isControlDisplay(display)
+                        || isPairingStatusDisplay(display)
+                        || isContactDisplay(display)
+                        || isLocationDisplay(display)) {
+                    return -1;
+                }
+                if (isPhotoDisplay(display)) {
+                    return SecureMediaIndex.KIND_PHOTO;
+                }
+                if (!isFileDisplay(display)) {
+                    return -1;
+                }
+            }
+        } catch (Exception ignore) {
+        }
+        try {
+            byte[] raw = outgoing
+                    ? localContent.loadOutgoing(carrier)
+                    : localContent.loadIncoming(carrier);
+            if (raw == null) {
+                raw = outgoing
+                        ? localContent.loadIncoming(carrier)
+                        : localContent.loadOutgoing(carrier);
+            }
+            if (raw != null) {
+                SecureContentCodec.Decoded decoded = SecureContentCodec.decode(raw);
+                if (decoded != null) {
+                    if (decoded.type == SecureContentCodec.TYPE_PHOTO) {
+                        return SecureMediaIndex.KIND_PHOTO;
+                    }
+                    if (decoded.type != SecureContentCodec.TYPE_FILE || decoded.attachment == null) {
+                        return -1;
+                    }
+                    SecureContentCodec.Attachment att = decoded.attachment;
+                    if (att.photo) {
+                        return SecureMediaIndex.KIND_PHOTO;
+                    }
+                    if (att.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ANIMATION
+                            || "image/gif".equalsIgnoreCase(att.mimeType)) {
+                        return SecureMediaIndex.KIND_GIF;
+                    }
+                    if (att.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_ROUND_VIDEO) {
+                        return SecureMediaIndex.KIND_ROUND_VIDEO;
+                    }
+                    if (att.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VOICE) {
+                        return SecureMediaIndex.KIND_VOICE;
+                    }
+                    if (att.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_AUDIO) {
+                        return SecureMediaIndex.KIND_MUSIC;
+                    }
+                    if (att.presentation == SecureContentCodec.ATTACHMENT_PRESENTATION_VIDEO) {
+                        return SecureMediaIndex.KIND_VIDEO;
+                    }
+                    return SecureMediaIndex.KIND_FILE;
+                }
+            }
+        } catch (Exception ignore) {
+        }
+        return currentKind;
     }
 
     public String encryptContact(SecureContentCodec.Contact contact) {
@@ -882,10 +1124,6 @@ public final class SecureChatEngine {
         }
     }
 
-    public SecureContentCodec.Attachment decryptAttachmentManifest(String carrier) {
-        return decryptAttachmentManifest(carrier, 0);
-    }
-
     public SecureContentCodec.Attachment decryptAttachmentManifest(String carrier, long senderUserId) {
         synchronized (SESSION_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
@@ -904,28 +1142,7 @@ public final class SecureChatEngine {
             try {
                 byte[] content = localContent.loadIncoming(carrier);
                 if (content == null) {
-                    int libsignalType;
-                    if (decoded.type == SecureCarrierCodec.TYPE_PREKEY) {
-                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY;
-                    } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
-                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY;
-                    } else {
-                        libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
-                    }
-                    SignalProtocolAddress decryptAddress = (peerUserId < 0)
-                            ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
-                            : peerAddress;
-                    requireInboundSessionAllowed(
-                            peerUserId,
-                            isPaired(),
-                            state.isWaiting(account, peerUserId),
-                            state.isIdentityPending(account, peerUserId),
-                            store.containsSession(peerAddress),
-                            store.getIdentity(peerAddress) != null);
-                    content = sessions.decrypt(
-                            decryptAddress,
-                            new LibsignalSessionAdapter.EncryptedMessage(
-                                    libsignalType, decoded.payload));
+                    content = decryptInboundPayload(decoded, senderUserId);
                     SecureContentCodec.Attachment attachment =
                             requireAttachment(content);
                     localContent.rememberIncoming(carrier, content);
@@ -967,9 +1184,11 @@ public final class SecureChatEngine {
 
     public boolean shouldAcknowledgeSessionReady(
             String plaintext, int messageId) {
-        return isPairingAcknowledgementDisplay(plaintext)
+        return peerUserId > 0
+                && isPairingAcknowledgementDisplay(plaintext)
                 && state.shouldAcknowledgeSessionReady(
-                        account, peerUserId, messageId);
+                        account, peerUserId, messageId)
+                && store.containsSession(peerAddress);
     }
 
     public void recordSessionReadyAcknowledgement(int messageId) {
@@ -1034,6 +1253,7 @@ public final class SecureChatEngine {
             byte[] protocolPlaintext,
             String localDisplayText) {
         synchronized (SESSION_LOCK) {
+            repairBogusPairedStateIfNeeded();
             try {
                 LibsignalSessionAdapter.EncryptedMessage encrypted;
                 if (peerUserId < 0) {
@@ -1101,6 +1321,107 @@ public final class SecureChatEngine {
         }
     }
 
+    public CachedText peekOutgoingText(String carrier) {
+        return peekOutgoingText(account, peerUserId, carrier, this);
+    }
+
+    public CachedText peekIncomingText(String carrier, boolean cacheOnly) {
+        return peekIncomingText(account, peerUserId, carrier, this, cacheOnly);
+    }
+
+    public static CachedText peekOutgoingText(
+            int account, long peerUserId, String carrier, SecureChatEngine engine) {
+        SecureLocalTextStore.LookupResult res = engine != null
+                ? engine.localText.peekOutgoing(carrier)
+                : SecureLocalTextStore.peekStatic(account, peerUserId, true, carrier);
+        if (res.state == SecureLocalTextStore.LookupResult.HIT) {
+            if (isPairingRejectionDisplay(res.text)) {
+                Mode mode = engine != null ? engine.getMode() : SecureChatState.peekMode(account, peerUserId);
+                if (mode == null || mode == Mode.PAUSED) {
+                    return CachedText.COLD;
+                }
+            }
+            if (isContactDisplay(res.text)
+                    || isLocationDisplay(res.text)
+                    || isControlDeleteDisplay(res.text)) {
+                if (engine == null || !engine.localContent.hasCachedOutgoing(carrier)) {
+                    return CachedText.COLD;
+                }
+            }
+            return CachedText.hit(res.text);
+        }
+        if (res.state == SecureLocalTextStore.LookupResult.NEGATIVE) {
+            return CachedText.NEGATIVE;
+        }
+        return CachedText.COLD;
+    }
+
+    public static CachedText peekIncomingText(
+            int account, long peerUserId, String carrier, SecureChatEngine engine, boolean cacheOnly) {
+        SecureLocalTextStore.LookupResult res = engine != null
+                ? engine.localText.peekIncoming(carrier)
+                : SecureLocalTextStore.peekStatic(account, peerUserId, false, carrier);
+        if (res.state == SecureLocalTextStore.LookupResult.HIT) {
+            if (!cacheOnly) {
+                Mode mode = engine != null ? engine.getMode() : SecureChatState.peekMode(account, peerUserId);
+                if (mode == null) {
+                    return CachedText.COLD;
+                }
+                if (isPairingAcknowledgementDisplay(res.text) && peerUserId > 0 && engine == null) {
+                    return CachedText.COLD;
+                }
+            }
+            if (isContactDisplay(res.text)
+                    || isLocationDisplay(res.text)
+                    || isControlDeleteDisplay(res.text)) {
+                if (engine == null || !engine.localContent.hasCachedIncoming(carrier)) {
+                    return CachedText.COLD;
+                }
+            }
+            return CachedText.hit(res.text);
+        }
+        if (cacheOnly && res.state == SecureLocalTextStore.LookupResult.NEGATIVE) {
+            return CachedText.NEGATIVE;
+        }
+        if (!cacheOnly && hasRecentFailedDecrypt(account, peerUserId, carrier)) {
+            return CachedText.FAILED;
+        }
+        return CachedText.COLD;
+    }
+
+    public static boolean hasRecentFailedDecrypt(int account, long peerUserId, String carrier) {
+        String cacheKey = failedDecryptKey(account, peerUserId, carrier);
+        synchronized (failedDecryptCarriers) {
+            FailedDecryptEntry entry = failedDecryptCarriers.get(cacheKey);
+            if (entry == null) {
+                return false;
+            }
+            if (System.currentTimeMillis() - entry.timestamp < FAILED_DECRYPT_TTL_MS) {
+                return true;
+            }
+            failedDecryptCarriers.remove(cacheKey);
+            return false;
+        }
+    }
+
+    public void warmCachedContentForDisplay(String carrier, boolean outgoing, String displayText) {
+        if (displayText == null) {
+            return;
+        }
+        try {
+            if (isContactDisplay(displayText)
+                    || isLocationDisplay(displayText)
+                    || isControlDeleteDisplay(displayText)) {
+                if (outgoing) {
+                    localContent.loadOutgoing(carrier);
+                } else {
+                    localContent.loadIncoming(carrier);
+                }
+            }
+        } catch (Exception ignore) {
+        }
+    }
+
     public static void clearFailedDecryptCache() {
         synchronized (failedDecryptCarriers) {
             failedDecryptCarriers.clear();
@@ -1120,10 +1441,6 @@ public final class SecureChatEngine {
     }
 
     /** Decrypts a recognized message. Successful first contact activates secure mode for the recipient. */
-    public String decryptText(String carrier) {
-        return decryptText(carrier, 0);
-    }
-
     public String decryptText(String carrier, long senderUserId) {
         synchronized (SESSION_LOCK) {
             SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(carrier);
@@ -1145,11 +1462,6 @@ public final class SecureChatEngine {
             try {
                 String cached = localText.loadIncoming(carrier);
                 if (cached != null) {
-                    if (isPairingRejectionDisplay(cached)) {
-                        pauseAfterPairingRejection();
-                    } else if (peerUserId > 0 && state.isWaiting(account, peerUserId)) {
-                        state.markPaired(account, peerUserId);
-                    }
                     return cached;
                 }
                 String cacheKey = failedDecryptKey(account, peerUserId, carrier);
@@ -1163,25 +1475,7 @@ public final class SecureChatEngine {
                         }
                     }
                 }
-                int libsignalType;
-                if (decoded.type == SecureCarrierCodec.TYPE_PREKEY) {
-                    libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY;
-                } else if (decoded.type == SecureCarrierCodec.TYPE_SENDERKEY) {
-                    libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY;
-                } else {
-                    libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
-                }
-                SignalProtocolAddress decryptAddress = (peerUserId < 0)
-                        ? new SignalProtocolAddress("telegram-user-" + senderUserId, 1)
-                        : peerAddress;
-                requireInboundSessionAllowed(
-                        peerUserId,
-                        isPaired(),
-                        state.isWaiting(account, peerUserId),
-                        state.isIdentityPending(account, peerUserId),
-                        store.containsSession(peerAddress),
-                        store.getIdentity(peerAddress) != null);
-                byte[] plain = sessions.decrypt(decryptAddress, new LibsignalSessionAdapter.EncryptedMessage(libsignalType, decoded.payload));
+                byte[] plain = decryptInboundPayload(decoded, senderUserId);
                 String result;
                 if (SecureContentCodec.isVersioned(plain)) {
                     SecureContentCodec.Decoded content = SecureContentCodec.decode(plain);
@@ -1239,15 +1533,18 @@ public final class SecureChatEngine {
                         result = LOCATION_DISPLAY;
                     } else if (content.type == SecureContentCodec.TYPE_SENDER_KEY_DISTRIBUTION) {
                         if (peerUserId <= 0
-                                || (senderUserId > 0 && senderUserId != peerUserId)
+                                || senderUserId != peerUserId
                                 || content.senderKeyDistribution == null
                                 || content.senderKeyDistribution.groupChatId >= 0) {
                             throw new SecureChatException(
                                     "sender key distribution requires 1:1 peer session", null);
                         }
                         sessions.processGroupDistributionMessage(
-                                peerAddress, content.senderKeyDistribution.distributionBytes);
+                                peerAddress,
+                                groupDistributionId(content.senderKeyDistribution.groupChatId),
+                                content.senderKeyDistribution.distributionBytes);
                         clearFailedDecryptCache(account, peerUserId);
+                        clearFailedDecryptCache(account, content.senderKeyDistribution.groupChatId);
                         localContent.rememberIncoming(carrier, plain);
                         result = GROUP_KEY_RECEIVED_DISPLAY;
                     } else {
@@ -1294,10 +1591,6 @@ public final class SecureChatEngine {
      * ciphertext is never fed to the inbound ratchet and can only use this installation's
      * Keystore-encrypted display copy.</p>
      */
-    public DialogPreview resolveDialogPreview(String carrier, boolean outgoing) {
-        return resolveDialogPreview(carrier, outgoing, 0);
-    }
-
     public DialogPreview resolveDialogPreview(String carrier, boolean outgoing, long senderUserId) {
         return resolveDialogPreview(carrier, outgoing, senderUserId, false);
     }
@@ -1309,6 +1602,9 @@ public final class SecureChatEngine {
             return null;
         }
         if (decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+            if (!outgoing) {
+                requireValidInboundSender(peerUserId, senderUserId);
+            }
             return new DialogPreview(
                     outgoing
                             ? DialogPreview.Kind.PAIRING_OFFER_SENT
@@ -1555,10 +1851,16 @@ public final class SecureChatEngine {
     public boolean resumeIfPaused() {
         synchronized (SESSION_LOCK) {
             requireCurrentIdentity();
-            if (!state.isPaused(account, peerUserId) || !store.containsSession(peerAddress)) {
+            if (!state.isPaused(account, peerUserId)) {
+                return false;
+            }
+            if (peerUserId > 0 && !store.containsSession(peerAddress)) {
                 return false;
             }
             state.markPaired(account, peerUserId);
+            if (peerUserId < 0) {
+                state.setGroupKeyNeedsDistribution(account, peerUserId, true);
+            }
             return true;
         }
     }
@@ -1622,6 +1924,12 @@ public final class SecureChatEngine {
                     requireCarrier(carrier, SecureCarrierCodec.TYPE_PREKEY_BUNDLE);
             SecurePreKeyBundleCodec.DecodedOffer offer =
                     SecurePreKeyBundleCodec.decodeOffer(decoded.payload);
+            if (peerUserId <= 0
+                    || offer.ownerUserId != peerUserId
+                    || offer.recipientUserId <= 0
+                    || offer.recipientUserId == peerUserId) {
+                throw new SecureChatException("pending pairing offer failed participant binding", null);
+            }
             PreKeyBundle remote = offer.preKeyBundle;
             SecureChatState.PendingKind pendingKind =
                     state.getPendingKind(account, peerUserId);
@@ -1647,6 +1955,8 @@ public final class SecureChatEngine {
                 store.saveIdentity(peerAddress, remote.getIdentityKey());
                 sessions.establish(peerAddress, remote);
                 state.approvePendingIdentity(account, peerUserId);
+                state.clearMemberGroupKeyDistributions(account, peerUserId);
+                clearFailedDecryptCache(account, peerUserId);
             } catch (Exception error) {
                 try {
                     store.deleteSession(peerAddress);
@@ -1709,6 +2019,7 @@ public final class SecureChatEngine {
             SecureChatState chatState = new SecureChatState(appContext);
             chatState.resetForNewIdentity(account);
             clearFailedDecryptCache();
+            SecureSessionManager.getInstance(appContext, account).clear();
             new SecureRecoveryGenerationStore(appContext, account)
                     .advanceLocalIdentity(generationForEpoch(chatState.getIdentityEpoch(account)));
             return fingerprint(new KeystoreSignalProtocolStore(appContext, account)
@@ -1726,6 +2037,46 @@ public final class SecureChatEngine {
     private void requireCurrentIdentity() {
         if (isStale()) {
             throw new SecureChatException("secure identity was reset; recreate chat engine", null);
+        }
+    }
+
+    private byte[] decryptInboundPayload(
+            SecureCarrierCodec.Decoded decoded, long senderUserId) throws Exception {
+        if (peerUserId < 0) {
+            SignalProtocolAddress senderAddress =
+                    new SignalProtocolAddress("telegram-user-" + senderUserId, 1);
+            requireInboundGroupSenderAllowed(
+                    state.isIdentityPending(account, senderUserId),
+                    store.getIdentity(senderAddress) != null);
+            return sessions.decryptGroup(
+                    senderAddress, groupDistributionId(peerUserId), decoded.payload);
+        }
+        int libsignalType;
+        if (decoded.type == SecureCarrierCodec.TYPE_PREKEY) {
+            libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY;
+        } else {
+            libsignalType = LibsignalSessionAdapter.MESSAGE_TYPE_WHISPER;
+        }
+        repairBogusPairedStateIfNeeded();
+        requireInboundSessionAllowed(
+                peerUserId,
+                isPaired(),
+                state.isWaiting(account, peerUserId),
+                state.isIdentityPending(account, peerUserId),
+                store.containsSession(peerAddress),
+                store.getIdentity(peerAddress) != null);
+        return sessions.decrypt(
+                peerAddress,
+                new LibsignalSessionAdapter.EncryptedMessage(libsignalType, decoded.payload));
+    }
+
+    static void requireInboundGroupSenderAllowed(
+            boolean senderIdentityPending, boolean hasTrustedSenderIdentity) {
+        if (senderIdentityPending) {
+            throw new SecureChatException("group sender identity requires verification", null);
+        }
+        if (!hasTrustedSenderIdentity) {
+            throw new SecureChatException("group sender identity is not verified", null);
         }
     }
 
@@ -1767,11 +2118,19 @@ public final class SecureChatEngine {
     }
 
     static void requireValidInboundSender(long peerUserId, long senderUserId) {
+        if (peerUserId == 0) {
+            throw new SecureChatException("invalid peer dialog ID", null);
+        }
         if (peerUserId < 0 && senderUserId <= 0) {
             throw new SecureChatException("group message requires positive sender user ID", null);
         }
-        if (peerUserId > 0 && senderUserId != 0 && senderUserId != peerUserId) {
-            throw new SecureChatException("1:1 message sender does not match peer dialog", null);
+        if (peerUserId > 0) {
+            if (senderUserId <= 0) {
+                throw new SecureChatException("1:1 message requires positive sender user ID", null);
+            }
+            if (senderUserId != peerUserId) {
+                throw new SecureChatException("1:1 message sender does not match peer dialog", null);
+            }
         }
     }
 

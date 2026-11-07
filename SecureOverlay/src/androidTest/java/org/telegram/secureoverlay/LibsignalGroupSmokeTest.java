@@ -33,7 +33,7 @@ public final class LibsignalGroupSmokeTest {
 
     @org.junit.After
     public void tearDown() {
-        SecureSessionManager.GROUPS_ENABLED = false;
+        SecureSessionManager.GROUPS_ENABLED = true;
     }
 
     @Test

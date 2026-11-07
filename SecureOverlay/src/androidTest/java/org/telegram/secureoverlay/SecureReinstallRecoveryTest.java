@@ -57,7 +57,7 @@ public final class SecureReinstallRecoveryTest {
 
             SecureChatEngine pairing =
                     new SecureChatEngine(context, 0, peer);
-            pairing.createPairingOffer();
+            pairing.createPairingOffer(930000001L);
             org.junit.Assert.assertEquals(
                     SecureChatEngine.Mode.WAITING, pairing.getMode());
         } finally {

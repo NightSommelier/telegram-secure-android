@@ -49,6 +49,9 @@ public final class SecureIdentityBackupCodec {
     private static final int MAX_PASSWORD_BYTES = 512;
     private static final int MAX_IDENTITY_BYTES = 512;
     private static final int MAX_REGISTRATION_ID = 16_380;
+    private static final byte[] NO_PASSWORD_KDF_INPUT =
+            "Fork-Secure unprotected identity backup v1"
+                    .getBytes(StandardCharsets.US_ASCII);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private SecureIdentityBackupCodec() {
@@ -107,7 +110,7 @@ public final class SecureIdentityBackupCodec {
             throw new IllegalArgumentException("invalid identity backup encryption input");
         }
         byte[] plaintext = encodePlaintext(payload);
-        byte[] passwordBytes = encodePassword(password);
+        byte[] passwordBytes = encodePasswordForExport(password);
         byte[] key = null;
         try {
             byte[] header = encodeHeader(
@@ -141,7 +144,7 @@ public final class SecureIdentityBackupCodec {
 
     public static Payload decrypt(byte[] archive, char[] password) {
         ParsedContainer parsed = parseContainer(archive);
-        byte[] passwordBytes = encodePassword(password);
+        byte[] passwordBytes = encodePasswordForImport(password, parsed.noPassword);
         byte[] key = null;
         byte[] plaintext = null;
         try {
@@ -324,7 +327,7 @@ public final class SecureIdentityBackupCodec {
                     || version != FORMAT_VERSION
                     || kdf != KDF_PBKDF2_HMAC_SHA256
                     || aead != AEAD_AES_256_GCM
-                    || flags != 0
+                    || (flags != 0 && flags != FLAG_NO_PASSWORD)
                     || kdfParameter1 != PBKDF2_ITERATIONS
                     || kdfParameter2 != 0
                     || parallelism != 1
@@ -396,11 +399,24 @@ public final class SecureIdentityBackupCodec {
         if (password == null || password.length < MIN_PASSWORD_CHARS) {
             return false;
         }
+        boolean hasUpper = false;
+        boolean hasLower = false;
+        boolean hasDigit = false;
+        boolean hasSymbol = false;
         int distinctCount = 0;
-        char[] seen = new char[MIN_DISTINCT_PASSWORD_CHARS];
+        char[] seen = new char[password.length];
         for (char c : password) {
             if (Character.isWhitespace(c)) {
                 continue;
+            }
+            if (Character.isUpperCase(c)) {
+                hasUpper = true;
+            } else if (Character.isLowerCase(c)) {
+                hasLower = true;
+            } else if (Character.isDigit(c)) {
+                hasDigit = true;
+            } else {
+                hasSymbol = true;
             }
             boolean alreadySeen = false;
             for (int i = 0; i < distinctCount; i++) {
@@ -411,17 +427,14 @@ public final class SecureIdentityBackupCodec {
             }
             if (!alreadySeen) {
                 seen[distinctCount++] = c;
-                if (distinctCount >= MIN_DISTINCT_PASSWORD_CHARS) {
-                    Arrays.fill(seen, '\0');
-                    return true;
-                }
             }
         }
         Arrays.fill(seen, '\0');
-        return false;
+        int classCount = (hasUpper ? 1 : 0) + (hasLower ? 1 : 0) + (hasDigit ? 1 : 0) + (hasSymbol ? 1 : 0);
+        return distinctCount >= 6 && (classCount >= 3 || distinctCount >= 8);
     }
 
-    private static byte[] encodePassword(char[] password) {
+    private static byte[] encodePasswordForExport(char[] password) {
         if (password == null || password.length == 0) {
             throw new IllegalArgumentException("identity backup password is required");
         }
@@ -431,6 +444,27 @@ public final class SecureIdentityBackupCodec {
                             + MIN_PASSWORD_CHARS
                             + " characters with sufficient entropy");
         }
+        return encodePasswordBytes(password);
+    }
+
+    private static byte[] encodePasswordForImport(char[] password, boolean noPassword) {
+        if (noPassword) {
+            if (password != null && password.length != 0) {
+                throw new SecurityException("unprotected identity backup requires an empty password");
+            }
+            return NO_PASSWORD_KDF_INPUT.clone();
+        }
+        if (password == null || password.length == 0) {
+            throw new IllegalArgumentException("identity backup password is required");
+        }
+        return encodePasswordBytes(password);
+    }
+
+    private static byte[] encodePassword(char[] password) {
+        return encodePasswordForExport(password);
+    }
+
+    private static byte[] encodePasswordBytes(char[] password) {
         try {
             ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()
                     .onMalformedInput(CodingErrorAction.REPORT)

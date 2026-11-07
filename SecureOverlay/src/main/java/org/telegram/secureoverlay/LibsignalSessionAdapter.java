@@ -53,14 +53,23 @@ public final class LibsignalSessionAdapter {
     }
 
     public void processGroupDistributionMessage(
-            SignalProtocolAddress senderAddress, byte[] serializedDistributionMessage)
+            SignalProtocolAddress senderAddress,
+            java.util.UUID expectedDistributionId,
+            byte[] serializedDistributionMessage)
             throws Exception {
+        if (expectedDistributionId == null) {
+            throw new IllegalArgumentException("expected group distributionId is required");
+        }
+        org.signal.libsignal.protocol.message.SenderKeyDistributionMessage distributionMessage =
+                new org.signal.libsignal.protocol.message.SenderKeyDistributionMessage(
+                        serializedDistributionMessage);
+        if (!expectedDistributionId.equals(distributionMessage.getDistributionId())) {
+            throw new SecurityException(
+                    "sender key distribution UUID does not match group dialog");
+        }
         org.signal.libsignal.protocol.groups.GroupSessionBuilder builder =
                 new org.signal.libsignal.protocol.groups.GroupSessionBuilder(store);
-        builder.process(
-                senderAddress,
-                new org.signal.libsignal.protocol.message.SenderKeyDistributionMessage(
-                        serializedDistributionMessage));
+        builder.process(senderAddress, distributionMessage);
     }
 
     public EncryptedMessage encryptGroup(java.util.UUID distributionId, byte[] plaintext)
@@ -76,6 +85,25 @@ public final class LibsignalSessionAdapter {
         return new EncryptedMessage(MESSAGE_TYPE_SENDERKEY, ciphertext.serialize());
     }
 
+    public byte[] decryptGroup(
+            SignalProtocolAddress remoteAddress,
+            java.util.UUID expectedDistributionId,
+            byte[] serialized)
+            throws Exception {
+        if (expectedDistributionId == null) {
+            throw new IllegalArgumentException("expected group distributionId is required");
+        }
+        org.signal.libsignal.protocol.message.SenderKeyMessage senderKeyMessage =
+                new org.signal.libsignal.protocol.message.SenderKeyMessage(serialized);
+        if (!expectedDistributionId.equals(senderKeyMessage.getDistributionId())) {
+            throw new SecurityException(
+                    "group sender key message distributionId does not match group dialog");
+        }
+        org.signal.libsignal.protocol.groups.GroupCipher groupCipher =
+                new org.signal.libsignal.protocol.groups.GroupCipher(store, remoteAddress);
+        return groupCipher.decrypt(serialized);
+    }
+
     public byte[] decrypt(SignalProtocolAddress remoteAddress, EncryptedMessage encrypted)
             throws Exception {
         SessionCipher cipher = new SessionCipher(store, remoteAddress);
@@ -86,9 +114,8 @@ public final class LibsignalSessionAdapter {
             return cipher.decrypt(new SignalMessage(encrypted.serialized));
         }
         if (encrypted.type == MESSAGE_TYPE_SENDERKEY) {
-            org.signal.libsignal.protocol.groups.GroupCipher groupCipher =
-                    new org.signal.libsignal.protocol.groups.GroupCipher(store, remoteAddress);
-            return groupCipher.decrypt(encrypted.serialized);
+            throw new IllegalArgumentException(
+                    "group sender key messages require decryptGroup with expectedDistributionId");
         }
         throw new IllegalArgumentException("unsupported secure ciphertext type");
     }

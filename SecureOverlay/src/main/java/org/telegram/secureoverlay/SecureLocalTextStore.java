@@ -21,7 +21,8 @@ import java.util.Map;
 final class SecureLocalTextStore {
     static final String OUTGOING_PREFIX = "outgoing-text.v1.";
     static final String INCOMING_PREFIX = "incoming-text.v1.";
-    private static final int DISPLAY_CACHE_LIMIT = 512;
+    private static final int DISPLAY_CACHE_LIMIT = 2048;
+    private static final String NEGATIVE_SENTINEL = "\u0000fork-secure-missing\u0000";
     private static final LinkedHashMap<String, String> displayCache =
             new LinkedHashMap<String, String>(DISPLAY_CACHE_LIMIT, 0.75f, true) {
                 @Override
@@ -29,6 +30,27 @@ final class SecureLocalTextStore {
                     return size() > DISPLAY_CACHE_LIMIT;
                 }
             };
+
+    static final class LookupResult {
+        static final int HIT = 0;
+        static final int NEGATIVE = 1;
+        static final int COLD = 2;
+
+        static final LookupResult NEGATIVE_RESULT = new LookupResult(NEGATIVE, null);
+        static final LookupResult COLD_RESULT = new LookupResult(COLD, null);
+
+        final int state;
+        final String text;
+
+        private LookupResult(int state, String text) {
+            this.state = state;
+            this.text = text;
+        }
+
+        static LookupResult hit(String text) {
+            return new LookupResult(HIT, text);
+        }
+    }
 
     static final byte MAGIC_1 = (byte) 0x7E;
     static final byte MAGIC_2 = (byte) 0x54; // ~T
@@ -82,9 +104,59 @@ final class SecureLocalTextStore {
         return load(INCOMING_PREFIX, carrier);
     }
 
+    LookupResult peekOutgoing(String carrier) {
+        return peek(nameMaskKey, OUTGOING_PREFIX, account, peerUserId, carrier);
+    }
+
+    LookupResult peekIncoming(String carrier) {
+        return peek(nameMaskKey, INCOMING_PREFIX, account, peerUserId, carrier);
+    }
+
+    static LookupResult peekStatic(int account, long peerUserId, boolean outgoing, String carrier) {
+        byte[] maskKey = SecureNameMask.peekCachedKey();
+        if (maskKey == null || account < 0 || peerUserId == 0) {
+            return LookupResult.COLD_RESULT;
+        }
+        return peek(
+                maskKey,
+                outgoing ? OUTGOING_PREFIX : INCOMING_PREFIX,
+                account,
+                peerUserId,
+                carrier);
+    }
+
+    private static LookupResult peek(
+            byte[] maskKey, String prefix, int account, long peerUserId, String carrier) {
+        SecureCarrierCodec.Decoded decoded;
+        try {
+            decoded = SecureCarrierCodec.decode(carrier);
+        } catch (IllegalArgumentException malformed) {
+            return LookupResult.NEGATIVE_RESULT;
+        }
+        if (decoded == null || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
+            return LookupResult.NEGATIVE_RESULT;
+        }
+        String storageKey = key(maskKey, prefix, account, peerUserId, carrier);
+        synchronized (displayCache) {
+            String cached = displayCache.get(storageKey);
+            if (cached == null) {
+                return LookupResult.COLD_RESULT;
+            }
+            return NEGATIVE_SENTINEL.equals(cached)
+                    ? LookupResult.NEGATIVE_RESULT
+                    : LookupResult.hit(cached);
+        }
+    }
+
+    static void clearMemoryCache() {
+        synchronized (displayCache) {
+            displayCache.clear();
+        }
+    }
+
     void forgetOutgoing(String carrier)
             throws KeystoreEncryptedBlobStore.StateStoreException {
-        String storageKey = key(OUTGOING_PREFIX, account, peerUserId, carrier);
+        String storageKey = key(nameMaskKey, OUTGOING_PREFIX, account, peerUserId, carrier);
         String legacy = legacyKey(OUTGOING_PREFIX, account, peerUserId, carrier);
         blobs.deleteAll(storageKey, legacy);
         evictDisplayCopies(storageKey, legacy);
@@ -99,7 +171,7 @@ final class SecureLocalTextStore {
         if (plaintext == null || plaintext.isEmpty()) {
             throw new IllegalArgumentException("local secure plaintext is empty");
         }
-        String storageKey = key(prefix, account, peerUserId, carrier);
+        String storageKey = key(nameMaskKey, prefix, account, peerUserId, carrier);
         byte[] payload = plaintext.getBytes(StandardCharsets.UTF_8);
         byte[] digest = sha256Bytes(carrier);
         byte[] encoded = encodeRecord(peerUserId, digest, payload);
@@ -115,11 +187,11 @@ final class SecureLocalTextStore {
         if (decoded == null || decoded.type == SecureCarrierCodec.TYPE_PREKEY_BUNDLE) {
             return null;
         }
-        String storageKey = key(prefix, account, peerUserId, carrier);
+        String storageKey = key(nameMaskKey, prefix, account, peerUserId, carrier);
         synchronized (displayCache) {
             String cached = displayCache.get(storageKey);
             if (cached != null) {
-                return cached;
+                return NEGATIVE_SENTINEL.equals(cached) ? null : cached;
             }
         }
         byte[] data = blobs.get(storageKey);
@@ -133,6 +205,9 @@ final class SecureLocalTextStore {
                 blobs.delete(legacy);
                 data = payload;
             } else {
+                synchronized (displayCache) {
+                    displayCache.put(storageKey, NEGATIVE_SENTINEL);
+                }
                 return null;
             }
         } else {
@@ -187,12 +262,12 @@ final class SecureLocalTextStore {
         return new RecordHeader(peerUserId, digest, payload);
     }
 
-    static String key(String prefix, int account, long peerUserId, String carrier) {
-        return keyByDigest(prefix, account, peerUserId, sha256Hex(carrier));
+    static String key(byte[] maskKey, String prefix, int account, long peerUserId, String carrier) {
+        return keyByDigest(maskKey, prefix, account, peerUserId, sha256Hex(carrier));
     }
 
-    static String keyByDigest(String prefix, int account, long peerUserId, String digestHex) {
-        byte[] maskKey = SecureNameMask.getOrGenerateKey((Context) null);
+    static String keyByDigest(
+            byte[] maskKey, String prefix, int account, long peerUserId, String digestHex) {
         String peerMask = SecureNameMask.maskPeer(maskKey, account, peerUserId);
         String carrierMask = SecureNameMask.maskCarrier(maskKey, account, peerUserId, digestHex);
         return prefix + account + '.' + peerMask + '.' + carrierMask;

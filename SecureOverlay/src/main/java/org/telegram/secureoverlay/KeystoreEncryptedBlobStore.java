@@ -50,13 +50,30 @@ public final class KeystoreEncryptedBlobStore implements KeystoreSignalProtocolS
             "telegram_secure_overlay_installation_v1";
     private static final Object keyHandleLock = new Object();
     private static final Object installationLock = new Object();
+    private static final Object dbHelperLock = new Object();
     private static volatile SecretKey cachedKeyHandle;
     private static volatile boolean installationChecked;
+    private static volatile DatabaseHelper sharedDbHelper;
 
     private final Context appContext;
     private final SharedPreferences preferences;
     private final DatabaseHelper dbHelper;
     private final Map<String, byte[]> testStorage = new ConcurrentHashMap<>();
+
+    private static DatabaseHelper getOrCreateDatabaseHelper(Context appContext) {
+        DatabaseHelper existing = sharedDbHelper;
+        if (existing != null) {
+            return existing;
+        }
+        synchronized (dbHelperLock) {
+            existing = sharedDbHelper;
+            if (existing == null) {
+                existing = new DatabaseHelper(appContext);
+                sharedDbHelper = existing;
+            }
+            return existing;
+        }
+    }
 
     private static final class DatabaseHelper extends SQLiteOpenHelper {
         DatabaseHelper(Context context) {
@@ -80,28 +97,28 @@ public final class KeystoreEncryptedBlobStore implements KeystoreSignalProtocolS
     }
 
     public KeystoreEncryptedBlobStore(Context context) {
-        if (context != null) {
-            Context app = context.getApplicationContext();
-            this.appContext = app != null ? app : context;
-            SharedPreferences prefs = null;
-            DatabaseHelper helper = null;
-            try {
-                prefs = this.appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-                helper = new DatabaseHelper(this.appContext);
-                ensureInstallationState(this.appContext, helper, prefs);
-                migrateLegacyPreferences(helper.getWritableDatabase(), prefs);
-            } catch (Exception e) {
-                // In headless JVM unit tests without Android SQLite/SharedPreferences runtime
-                helper = null;
-                prefs = null;
-            }
-            this.preferences = prefs;
-            this.dbHelper = helper;
-        } else {
-            this.appContext = null;
-            this.preferences = null;
-            this.dbHelper = null;
+        if (context == null) {
+            throw new IllegalArgumentException("context is required for KeystoreEncryptedBlobStore");
         }
+        Context app = context.getApplicationContext();
+        this.appContext = app != null ? app : context;
+        this.preferences = this.appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        this.dbHelper = getOrCreateDatabaseHelper(this.appContext);
+        ensureInstallationState(this.appContext, this.dbHelper, this.preferences);
+    }
+
+    private KeystoreEncryptedBlobStore() {
+        this.appContext = null;
+        this.preferences = null;
+        this.dbHelper = null;
+    }
+
+    static KeystoreEncryptedBlobStore createInMemoryForTesting() {
+        return new KeystoreEncryptedBlobStore();
+    }
+
+    boolean isPersistent() {
+        return dbHelper != null;
     }
 
     private static void migrateLegacyPreferences(SQLiteDatabase db, SharedPreferences prefs) {
@@ -112,6 +129,7 @@ public final class KeystoreEncryptedBlobStore implements KeystoreSignalProtocolS
         if (all == null || all.isEmpty()) {
             return;
         }
+        boolean committed = false;
         db.beginTransaction();
         try {
             for (Map.Entry<String, ?> entry : all.entrySet()) {
@@ -120,13 +138,20 @@ public final class KeystoreEncryptedBlobStore implements KeystoreSignalProtocolS
                     cv.put(COL_NAME, entry.getKey());
                     cv.put(COL_VALUE, (String) entry.getValue());
                     cv.put(COL_UPDATED_AT, System.currentTimeMillis());
-                    db.insertWithOnConflict(TABLE_NAME, null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+                    long res = db.insertWithOnConflict(
+                            TABLE_NAME, null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+                    if (res == -1) {
+                        throw new IllegalStateException("failed to migrate legacy encrypted state");
+                    }
                 }
             }
             db.setTransactionSuccessful();
-            prefs.edit().clear().commit();
+            committed = true;
         } finally {
             db.endTransaction();
+        }
+        if (committed) {
+            prefs.edit().clear().commit();
         }
     }
 
@@ -781,6 +806,7 @@ public final class KeystoreEncryptedBlobStore implements KeystoreSignalProtocolS
                 }
                 SecureChatState.clearForMissingKeystore(context);
                 cachedKeyHandle = null;
+                SecureNameMask.clearCachedKey();
             }
             if (!sentinel.isFile()) {
                 try {
@@ -795,6 +821,9 @@ public final class KeystoreEncryptedBlobStore implements KeystoreSignalProtocolS
                     throw new IllegalStateException(
                             "cannot establish Fork-Secure installation state", error);
                 }
+            }
+            if (helper != null) {
+                migrateLegacyPreferences(helper.getWritableDatabase(), encryptedPreferences);
             }
             installationChecked = true;
         }
@@ -815,6 +844,19 @@ public final class KeystoreEncryptedBlobStore implements KeystoreSignalProtocolS
         synchronized (installationLock) {
             installationChecked = false;
             cachedKeyHandle = null;
+            SecureNameMask.clearCachedKey();
+            SecureChatState.clearSharedCache();
+            SecureLocalContentStore.clearMemoryCache();
+            SecureMediaIndex.clearMemoryCache();
+            synchronized (dbHelperLock) {
+                if (sharedDbHelper != null) {
+                    try {
+                        sharedDbHelper.close();
+                    } catch (Exception ignored) {
+                    }
+                    sharedDbHelper = null;
+                }
+            }
         }
     }
 

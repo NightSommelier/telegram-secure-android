@@ -28,7 +28,7 @@ public final class SecureArchitecturePhase4JvmTest {
 
     @Test
     public void sa16TransactionalStoreOperations() throws Exception {
-        KeystoreEncryptedBlobStore store = new KeystoreEncryptedBlobStore(null);
+        KeystoreEncryptedBlobStore store = KeystoreEncryptedBlobStore.createInMemoryForTesting();
 
         // put & get
         String key1 = "test/record1";
@@ -183,25 +183,24 @@ public final class SecureArchitecturePhase4JvmTest {
     @Test
     public void sa19SecureSessionManagerLifecycleAndGroupGuard() {
         SecureSessionManager.resetAll();
-        assertFalse(SecureSessionManager.GROUPS_ENABLED);
+        assertTrue(SecureSessionManager.GROUPS_ENABLED);
 
-        // Group peer dialog IDs (< 0) must be rejected when GROUPS_ENABLED is false
         long groupChatId = -100123456789L;
+        SecureSessionManager.GROUPS_ENABLED = false;
         try {
-            SecureSessionManager.getInstance(null, 0).getEngineForPeer(groupChatId);
-            fail("expected disabled groups rejection");
-        } catch (SecureChatEngine.SecureChatException expected) {
-            assertTrue(expected.getMessage().contains("groups are disabled"));
-        }
+            // Group peer dialog IDs (< 0) must be rejected when GROUPS_ENABLED is false
+            try {
+                SecureSessionManager.getInstance(null, 0).getEngineForPeer(groupChatId);
+                fail("expected disabled groups rejection");
+            } catch (SecureChatEngine.SecureChatException expected) {
+                assertTrue(expected.getMessage().contains("groups are disabled"));
+            }
 
-        // Enable groups flag
-        SecureSessionManager.GROUPS_ENABLED = true;
-        try {
-            // When enabled, it does not throw the feature flag exception
-            // (May fail on initialization or peer binding, but not the flag)
+            // Re-enable groups flag
+            SecureSessionManager.GROUPS_ENABLED = true;
             assertNotNull(SecureSessionManager.getInstance(null, 0));
         } finally {
-            SecureSessionManager.GROUPS_ENABLED = false;
+            SecureSessionManager.GROUPS_ENABLED = true;
         }
     }
 
@@ -413,5 +412,185 @@ public final class SecureArchitecturePhase4JvmTest {
         assertTrue(analysisArmenian.isSuspicious);
         assertTrue(analysisArmenian.hasConfusableTarget);
         assertEquals("google.com", analysisArmenian.targetSpoofedDomain);
+    }
+
+    @Test
+    public void groupDistributionIdBindingRejectsCrossGroupReplay() throws Exception {
+        org.signal.libsignal.protocol.IdentityKeyPair aliceIdentity =
+                org.signal.libsignal.protocol.IdentityKeyPair.generate();
+        org.signal.libsignal.protocol.IdentityKeyPair bobIdentity =
+                org.signal.libsignal.protocol.IdentityKeyPair.generate();
+        org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore aliceStore =
+                new org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore(aliceIdentity, 101);
+        org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore bobStore =
+                new org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore(bobIdentity, 202);
+
+        org.signal.libsignal.protocol.SignalProtocolAddress aliceLocal =
+                new org.signal.libsignal.protocol.SignalProtocolAddress("local-account-0", 1);
+        org.signal.libsignal.protocol.SignalProtocolAddress bobLocal =
+                new org.signal.libsignal.protocol.SignalProtocolAddress("local-account-0", 1);
+        org.signal.libsignal.protocol.SignalProtocolAddress aliceRemoteFromBob =
+                new org.signal.libsignal.protocol.SignalProtocolAddress("telegram-user-10001", 1);
+
+        LibsignalSessionAdapter aliceSessions = new LibsignalSessionAdapter(aliceStore, aliceLocal);
+        LibsignalSessionAdapter bobSessions = new LibsignalSessionAdapter(bobStore, bobLocal);
+
+        java.util.UUID groupAUuid = SecureChatEngine.groupDistributionId(-4434456985L);
+        java.util.UUID groupBUuid = SecureChatEngine.groupDistributionId(-9998887776L);
+
+        byte[] distA = aliceSessions.createGroupDistributionMessage(groupAUuid);
+        assertNotNull(distA);
+
+        // Reject distribution bound to group A when claimed for group B
+        try {
+            bobSessions.processGroupDistributionMessage(aliceRemoteFromBob, groupBUuid, distA);
+            fail("cross-group SenderKeyDistributionMessage must be rejected");
+        } catch (SecurityException expected) {
+            assertTrue(expected.getMessage().contains("does not match group dialog"));
+        }
+
+        // Accept distribution for matching group A
+        bobSessions.processGroupDistributionMessage(aliceRemoteFromBob, groupAUuid, distA);
+
+        // Encrypt message in group A BEFORE any mismatch test
+        byte[] plaintext = "Secret supergroup message".getBytes(StandardCharsets.UTF_8);
+        LibsignalSessionAdapter.EncryptedMessage encryptedA = aliceSessions.encryptGroup(groupAUuid, plaintext);
+        assertEquals(LibsignalSessionAdapter.MESSAGE_TYPE_SENDERKEY, encryptedA.type);
+
+        // Generic 1:1 decrypt() must reject MESSAGE_TYPE_SENDERKEY
+        try {
+            bobSessions.decrypt(aliceRemoteFromBob, encryptedA);
+            fail("1:1 decrypt() must reject SenderKey message");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("decryptGroup"));
+        }
+
+        // Cross-group replay of group A ciphertext into group B must fail closed WITHOUT advancing ratchet
+        try {
+            bobSessions.decryptGroup(aliceRemoteFromBob, groupBUuid, encryptedA.serialized);
+            fail("cross-group SenderKeyMessage replay must be rejected");
+        } catch (SecurityException expected) {
+            assertTrue(expected.getMessage().contains("distributionId"));
+        }
+
+        // Valid decryption in group A still succeeds because rejected replay did not mutate Bob's ratchet
+        byte[] decrypted = bobSessions.decryptGroup(aliceRemoteFromBob, groupAUuid, encryptedA.serialized);
+        assertArrayEquals(plaintext, decrypted);
+    }
+
+    @Test
+    public void groupInboundSenderIdentityAndEditTransportGuards() {
+        try {
+            SecureChatEngine.requireInboundGroupSenderAllowed(true, true);
+            fail("pending sender identity must be rejected in group");
+        } catch (SecureChatEngine.SecureChatException expected) {
+            assertTrue(expected.getMessage().contains("verification"));
+        }
+
+        try {
+            SecureChatEngine.requireInboundGroupSenderAllowed(false, false);
+            fail("unverified sender identity must be rejected in group");
+        } catch (SecureChatEngine.SecureChatException expected) {
+            assertTrue(expected.getMessage().contains("not verified"));
+        }
+
+        SecureChatEngine.requireInboundGroupSenderAllowed(false, true);
+
+        try {
+            SecureChatEngine.requireValidInboundSender(-4434456985L, 0L);
+            fail("missing senderUserId must be rejected in group");
+        } catch (SecureChatEngine.SecureChatException expected) {
+            assertTrue(expected.getMessage().contains("positive sender"));
+        }
+        SecureChatEngine.requireValidInboundSender(-4434456985L, 286601771L);
+
+        // Group edit transports do not have a 1:1 SessionRecord and must be null-safe
+        SecureChatEngine.TextEditTransport textEdit =
+                new SecureChatEngine.TextEditTransport("TGS1:carrier", null, null);
+        assertEquals("TGS1:carrier", textEdit.textCarrier);
+
+        SecureChatEngine.AttachmentEditTransport attachEdit =
+                new SecureChatEngine.AttachmentEditTransport("TGS1:attach", null, null);
+        assertEquals("TGS1:attach", attachEdit.attachmentCarrier);
+    }
+
+    @Test
+    public void groupSenderKeyTagTrackingAndSa43AccountIsolation() {
+        KeystoreEncryptedBlobStore store = KeystoreEncryptedBlobStore.createInMemoryForTesting();
+        SecureChatState state = SecureChatState.forTest(store);
+
+        long memberId = 286601771L;
+        long groupA = -4434456985L;
+        long groupB = -5556667778L;
+        byte[] tagV1 = new byte[] {1, 2, 3, 4, 5};
+        byte[] tagV2 = new byte[] {9, 8, 7, 6, 5};
+
+        assertFalse(state.hasDistributedGroupSenderKey(0, memberId, groupA, tagV1));
+        state.recordDistributedGroupSenderKey(0, memberId, groupA, tagV1);
+        state.recordDistributedGroupSenderKey(0, memberId, groupB, tagV1);
+        state.recordDistributedGroupSenderKey(1, memberId, groupA, tagV1);
+
+        assertTrue(state.hasDistributedGroupSenderKey(0, memberId, groupA, tagV1));
+        assertFalse("rotated key tag must require redistribution",
+                state.hasDistributedGroupSenderKey(0, memberId, groupA, tagV2));
+
+        // Clearing one group leaves other groups intact
+        state.clearDistributedGroupSenderKey(0, memberId, groupA);
+        assertFalse(state.hasDistributedGroupSenderKey(0, memberId, groupA, tagV1));
+        assertTrue(state.hasDistributedGroupSenderKey(0, memberId, groupB, tagV1));
+
+        // Re-record and clear all distributions for re-paired member in account 0
+        state.recordDistributedGroupSenderKey(0, memberId, groupA, tagV2);
+        state.clearMemberGroupKeyDistributions(0, memberId);
+        assertFalse(state.hasDistributedGroupSenderKey(0, memberId, groupA, tagV2));
+        assertFalse(state.hasDistributedGroupSenderKey(0, memberId, groupB, tagV1));
+        assertTrue("account 1 distribution state must remain isolated",
+                state.hasDistributedGroupSenderKey(1, memberId, groupA, tagV1));
+
+        // SA-43: resetForNewIdentity(0) wipes account 0 state and group-dist-v1/0 without touching account 1
+        state.markPaired(0, memberId);
+        state.markPaired(1, memberId);
+        state.recordDistributedGroupSenderKey(0, memberId, groupA, tagV2);
+
+        state.resetForNewIdentity(0);
+        assertFalse(state.isPaired(0, memberId));
+        assertFalse(state.hasStateForPeer(0, memberId));
+        assertFalse(state.hasDistributedGroupSenderKey(0, memberId, groupA, tagV2));
+        assertTrue("account 1 peer state must survive account 0 reset", state.isPaired(1, memberId));
+        assertTrue("account 1 group dist must survive account 0 reset",
+                state.hasDistributedGroupSenderKey(1, memberId, groupA, tagV1));
+    }
+
+    @Test
+    public void sa36FailedDecryptKeySha256AndSa39Sa40FailClosed() {
+        // "Aa" and "BB" collide under 32-bit String.hashCode() (both equal 2112)
+        assertEquals("Aa".hashCode(), "BB".hashCode());
+        String key1 = SecureChatEngine.failedDecryptKey(0, -4434456985L, "Aa");
+        String key2 = SecureChatEngine.failedDecryptKey(0, -4434456985L, "BB");
+        org.junit.Assert.assertNotEquals(key1, key2);
+        assertTrue(key1.startsWith("0:-4434456985:"));
+        assertEquals("0:-4434456985:".length() + 64, key1.length());
+
+        // SA-39: null Context must fail closed rather than falling back to plaintext volatile RAM
+        try {
+            new KeystoreEncryptedBlobStore(null);
+            fail("KeystoreEncryptedBlobStore(null) must fail closed");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("context"));
+        }
+
+        // SA-40: null Context or null storage must fail closed rather than caching an all-zero HMAC key
+        try {
+            SecureNameMask.getOrGenerateKey((android.content.Context) null);
+            fail("SecureNameMask.getOrGenerateKey((Context) null) must fail closed");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("context"));
+        }
+        try {
+            SecureNameMask.getOrGenerateKey((KeystoreSignalProtocolStore.EncryptedStateStorage) null);
+            fail("SecureNameMask.getOrGenerateKey((EncryptedStateStorage) null) must fail closed");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("storage"));
+        }
     }
 }

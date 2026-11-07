@@ -26,6 +26,7 @@ public final class SecureChatState {
     private static final String PREFS = "telegram_secure_chat_state_v1";
     private static final String STATE_PREFIX = "chat-state.v1.";
     private static final String EPOCH_PREFIX = "chat-epoch.v1.";
+    private static final String GROUP_DIST_ROOT = "group-dist-v1";
     private static final byte MAGIC = (byte) 0xC5;
     private static final byte FORMAT_VERSION = 1;
 
@@ -101,11 +102,17 @@ public final class SecureChatState {
         }
     }
 
+    private static final Object SHARED_STATE_LOCK = new Object();
+    private static final Map<String, PeerState> SHARED_PEERS_CACHE = new ConcurrentHashMap<>();
+    private static final Map<Integer, Long> SHARED_EPOCH_CACHE = new ConcurrentHashMap<>();
+    private static volatile boolean sharedStateLoaded;
+
     private final KeystoreSignalProtocolStore.EncryptedStateStorage storage;
     private final SharedPreferences legacyPreferences;
     private final byte[] nameMaskKey;
-    private final Map<String, PeerState> peersCache = new ConcurrentHashMap<>();
-    private final Map<Integer, Long> epochCache = new ConcurrentHashMap<>();
+    private final Map<String, PeerState> peersCache;
+    private final Map<Integer, Long> epochCache;
+    private final boolean useSharedCache;
 
     public SecureChatState(Context context) {
         this(new KeystoreEncryptedBlobStore(context.getApplicationContext()),
@@ -120,7 +127,40 @@ public final class SecureChatState {
         this.storage = storage;
         this.legacyPreferences = legacyPreferences;
         this.nameMaskKey = SecureNameMask.getOrGenerateKey(storage);
-        initAndMigrate();
+        this.useSharedCache = storage instanceof KeystoreEncryptedBlobStore
+                && ((KeystoreEncryptedBlobStore) storage).isPersistent();
+        if (this.useSharedCache) {
+            this.peersCache = SHARED_PEERS_CACHE;
+            this.epochCache = SHARED_EPOCH_CACHE;
+            ensureSharedStateLoaded();
+        } else {
+            this.peersCache = new ConcurrentHashMap<>();
+            this.epochCache = new ConcurrentHashMap<>();
+            initAndMigrate();
+        }
+    }
+
+    private void ensureSharedStateLoaded() {
+        if (sharedStateLoaded) {
+            return;
+        }
+        synchronized (SHARED_STATE_LOCK) {
+            if (sharedStateLoaded) {
+                return;
+            }
+            SHARED_PEERS_CACHE.clear();
+            SHARED_EPOCH_CACHE.clear();
+            initAndMigrate();
+            sharedStateLoaded = true;
+        }
+    }
+
+    static void clearSharedCache() {
+        synchronized (SHARED_STATE_LOCK) {
+            sharedStateLoaded = false;
+            SHARED_PEERS_CACHE.clear();
+            SHARED_EPOCH_CACHE.clear();
+        }
     }
 
     private void initAndMigrate() {
@@ -232,6 +272,12 @@ public final class SecureChatState {
     }
 
     static void clearForMissingKeystore(Context context) {
+        clearSharedCache();
+        SecureLocalTextStore.clearMemoryCache();
+        SecureLocalContentStore.clearMemoryCache();
+        SecureSavedMessagesKeyStore.clearMemoryCache();
+        SecureSavedMessagesPinStore.clearMemoryCache();
+        SecureMediaIndex.clearMemoryCache();
         if (!context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
                 .clear()
@@ -239,15 +285,16 @@ public final class SecureChatState {
             throw new IllegalStateException(
                     "failed to clear orphaned secure chat state");
         }
-        SecureLocalTextStore.evictDisplayPrefixes(
-                SecureLocalTextStore.OUTGOING_PREFIX,
-                SecureLocalTextStore.INCOMING_PREFIX);
     }
 
     static boolean hasStoredState(Context context) {
-        return !context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getAll()
-                .isEmpty();
+                .isEmpty()) {
+            return true;
+        }
+        java.io.File dbFile = context.getDatabasePath("telegram_secure_overlay_v2.db");
+        return dbFile != null && dbFile.isFile() && dbFile.length() > 0;
     }
 
     public boolean isPaired(int account, long peerUserId) {
@@ -355,6 +402,63 @@ public final class SecureChatState {
         persistPeer(account, p);
     }
 
+    public boolean hasDistributedGroupSenderKey(
+            int account, long memberUserId, long groupChatId, byte[] senderKeyTag) {
+        if (memberUserId <= 0 || groupChatId >= 0 || senderKeyTag == null || senderKeyTag.length == 0) {
+            return false;
+        }
+        try {
+            byte[] stored = storage.get(groupDistKey(account, memberUserId, groupChatId));
+            return stored != null && java.security.MessageDigest.isEqual(stored, senderKeyTag);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public void recordDistributedGroupSenderKey(
+            int account, long memberUserId, long groupChatId, byte[] senderKeyTag) {
+        if (memberUserId <= 0 || groupChatId >= 0) {
+            throw new IllegalArgumentException("valid 1:1 member and negative group id are required");
+        }
+        if (senderKeyTag == null || senderKeyTag.length == 0) {
+            throw new IllegalArgumentException("sender key tag is required");
+        }
+        try {
+            storage.put(groupDistKey(account, memberUserId, groupChatId), senderKeyTag.clone());
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to record group sender key distribution", e);
+        }
+    }
+
+    public void clearDistributedGroupSenderKey(int account, long memberUserId, long groupChatId) {
+        if (memberUserId <= 0 || groupChatId >= 0) {
+            return;
+        }
+        try {
+            storage.delete(groupDistKey(account, memberUserId, groupChatId));
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to clear group sender key distribution", e);
+        }
+    }
+
+    public void clearMemberGroupKeyDistributions(int account, long memberUserId) {
+        if (memberUserId <= 0) {
+            return;
+        }
+        String memberMask = SecureNameMask.maskPeer(nameMaskKey, account, memberUserId);
+        try {
+            storage.deleteRoots(GROUP_DIST_ROOT + "/" + account + "/" + memberMask);
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to clear member group key distributions", e);
+        }
+    }
+
+    private String groupDistKey(int account, long memberUserId, long groupChatId) {
+        String memberMask = SecureNameMask.maskPeer(nameMaskKey, account, memberUserId);
+        String groupMask = SecureNameMask.maskPeer(nameMaskKey, account, groupChatId);
+        return GROUP_DIST_ROOT + "/" + account + "/" + memberMask + "/" + groupMask;
+    }
+
     public long getIdentityEpoch() {
         return getIdentityEpoch(0);
     }
@@ -387,6 +491,89 @@ public final class SecureChatState {
         return p != null && (p.status != STATUS_NONE
                 || p.lastPairingMessageId > 0
                 || p.lastReadyMessageId > 0);
+    }
+
+    public static Boolean peekHasStateForPeer(int account, long peerUserId) {
+        if (account < 0 || peerUserId == 0) {
+            return Boolean.FALSE;
+        }
+        if (!sharedStateLoaded) {
+            return null;
+        }
+        PeerState p = SHARED_PEERS_CACHE.get(account + "." + peerUserId);
+        return p != null && (p.status != STATUS_NONE
+                || p.lastPairingMessageId > 0
+                || p.lastReadyMessageId > 0);
+    }
+
+    public SecureChatEngine.Mode getMode(int account, long peerUserId) {
+        if (account < 0 || peerUserId == 0) {
+            return SecureChatEngine.Mode.OFF;
+        }
+        if (isIdentityPending(account, peerUserId)) {
+            PendingKind pendingKind = getPendingKind(account, peerUserId);
+            if (pendingKind == PendingKind.RECOVERY_ADVANCE) {
+                return SecureChatEngine.Mode.RECOVERY_CHANGED;
+            }
+            if (pendingKind == PendingKind.INITIAL_OFFER) {
+                return SecureChatEngine.Mode.INITIAL_PAIRING_PENDING;
+            }
+            return SecureChatEngine.Mode.IDENTITY_CHANGED;
+        }
+        if (isPaired(account, peerUserId)) {
+            return SecureChatEngine.Mode.PROTECTED;
+        }
+        if (isWaiting(account, peerUserId)) {
+            return SecureChatEngine.Mode.WAITING;
+        }
+        if (isPaused(account, peerUserId)) {
+            return SecureChatEngine.Mode.PAUSED;
+        }
+        return SecureChatEngine.Mode.OFF;
+    }
+
+    public static SecureChatEngine.Mode getMode(Context context, int account, long peerUserId) {
+        if (context == null || account < 0 || peerUserId == 0) {
+            return SecureChatEngine.Mode.OFF;
+        }
+        SecureChatEngine.Mode peeked = peekMode(account, peerUserId);
+        if (peeked != null) {
+            return peeked;
+        }
+        return new SecureChatState(context.getApplicationContext()).getMode(account, peerUserId);
+    }
+
+    public static SecureChatEngine.Mode peekMode(int account, long peerUserId) {
+        if (account < 0 || peerUserId == 0) {
+            return SecureChatEngine.Mode.OFF;
+        }
+        if (!sharedStateLoaded) {
+            return null;
+        }
+        PeerState p = SHARED_PEERS_CACHE.get(account + "." + peerUserId);
+        if (p == null) {
+            return SecureChatEngine.Mode.OFF;
+        }
+        if (p.status == STATUS_IDENTITY_PENDING) {
+            PendingKind pendingKind = PendingKind.fromValue(p.pendingKind);
+            if (pendingKind == PendingKind.RECOVERY_ADVANCE) {
+                return SecureChatEngine.Mode.RECOVERY_CHANGED;
+            }
+            if (pendingKind == PendingKind.INITIAL_OFFER) {
+                return SecureChatEngine.Mode.INITIAL_PAIRING_PENDING;
+            }
+            return SecureChatEngine.Mode.IDENTITY_CHANGED;
+        }
+        if (p.status == STATUS_PAIRED) {
+            return SecureChatEngine.Mode.PROTECTED;
+        }
+        if (p.status == STATUS_WAITING) {
+            return SecureChatEngine.Mode.WAITING;
+        }
+        if (p.status == STATUS_PAUSED) {
+            return SecureChatEngine.Mode.PAUSED;
+        }
+        return SecureChatEngine.Mode.OFF;
     }
 
     public Summary getSummary(int account) {
@@ -442,7 +629,10 @@ public final class SecureChatState {
         }
         peersCache.keySet().removeIf(k -> k.startsWith(account + "."));
         try {
-            storage.deleteRoots(STATE_PREFIX + account);
+            if (storage instanceof KeystoreEncryptedBlobStore) {
+                ((KeystoreEncryptedBlobStore) storage).deletePrefixes(STATE_PREFIX + account + ".");
+            }
+            storage.deleteRoots(STATE_PREFIX + account, GROUP_DIST_ROOT + "/" + account);
         } catch (Exception e) {
             throw new IllegalStateException("failed to delete secure history chat states", e);
         }
@@ -568,7 +758,10 @@ public final class SecureChatState {
         long nextEpoch = getIdentityEpoch(account) + 1;
         peersCache.keySet().removeIf(k -> k.startsWith(account + "."));
         try {
-            storage.deleteRoots(STATE_PREFIX + account);
+            if (storage instanceof KeystoreEncryptedBlobStore) {
+                ((KeystoreEncryptedBlobStore) storage).deletePrefixes(STATE_PREFIX + account + ".");
+            }
+            storage.deleteRoots(STATE_PREFIX + account, GROUP_DIST_ROOT + "/" + account);
         } catch (Exception e) {
             throw new IllegalStateException("failed to reset secure chat states", e);
         }
@@ -586,7 +779,10 @@ public final class SecureChatState {
         long epoch = generation - 1;
         peersCache.keySet().removeIf(k -> k.startsWith(account + "."));
         try {
-            storage.deleteRoots(STATE_PREFIX + account);
+            if (storage instanceof KeystoreEncryptedBlobStore) {
+                ((KeystoreEncryptedBlobStore) storage).deletePrefixes(STATE_PREFIX + account + ".");
+            }
+            storage.deleteRoots(STATE_PREFIX + account, GROUP_DIST_ROOT + "/" + account);
         } catch (Exception e) {
             throw new IllegalStateException("failed to reset recovered secure chat states", e);
         }

@@ -59,14 +59,15 @@ public final class SecureLocalMessageCache {
             return false;
         }
         String hex = hex(carrierDigest);
+        byte[] maskKey = SecureNameMask.getOrGenerateKey(blobs);
         String outgoingText = SecureLocalTextStore.keyByDigest(
-                SecureLocalTextStore.OUTGOING_PREFIX, account, peerUserId, hex);
+                maskKey, SecureLocalTextStore.OUTGOING_PREFIX, account, peerUserId, hex);
         String incomingText = SecureLocalTextStore.keyByDigest(
-                SecureLocalTextStore.INCOMING_PREFIX, account, peerUserId, hex);
+                maskKey, SecureLocalTextStore.INCOMING_PREFIX, account, peerUserId, hex);
         String outgoingContent = SecureLocalContentStore.keyByDigest(
-                SecureLocalContentStore.OUTGOING_PREFIX, account, peerUserId, hex);
+                maskKey, SecureLocalContentStore.OUTGOING_PREFIX, account, peerUserId, hex);
         String incomingContent = SecureLocalContentStore.keyByDigest(
-                SecureLocalContentStore.INCOMING_PREFIX, account, peerUserId, hex);
+                maskKey, SecureLocalContentStore.INCOMING_PREFIX, account, peerUserId, hex);
 
         String legacyOutgoingText = SecureLocalTextStore.legacyKeyByDigest(
                 SecureLocalTextStore.OUTGOING_PREFIX, account, peerUserId, hex);

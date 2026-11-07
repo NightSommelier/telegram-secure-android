@@ -75,7 +75,8 @@ public final class SecureChatEngineStateTest {
                 new LibsignalSessionAdapter(remoteStore, peerAddress);
 
         SecureChatEngine localEngine = new SecureChatEngine(context, 0, peerId);
-        String offerCarrier = localEngine.createPairingOffer();
+        long localUserId = peerId == 900_000_001L ? 900_000_002L : 900_000_001L;
+        String offerCarrier = localEngine.createPairingOffer(localUserId);
         SecureCarrierCodec.Decoded decodedOffer = SecureCarrierCodec.decode(offerCarrier);
         org.signal.libsignal.protocol.state.PreKeyBundle localBundle =
                 SecurePreKeyBundleCodec.decode(decodedOffer.payload);
@@ -88,7 +89,7 @@ public final class SecureChatEngineStateTest {
                 bootstrapMsg.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
                         ? SecureCarrierCodec.TYPE_PREKEY : SecureCarrierCodec.TYPE_WHISPER,
                 bootstrapMsg.serialized);
-        assertEquals("bootstrap", localEngine.decryptText(bootstrapCarrier));
+        assertEquals("bootstrap", localEngine.decryptText(bootstrapCarrier, peerId));
 
         // Pre-generate 10 inbound carriers from remote
         final int count = 10;
@@ -121,7 +122,7 @@ public final class SecureChatEngineStateTest {
             try {
                 startGate.await();
                 for (int i = 0; i < count; i++) {
-                    assertEquals("in-" + i, localEngine.decryptText(inboundCarriers[i]));
+                    assertEquals("in-" + i, localEngine.decryptText(inboundCarriers[i], peerId));
                 }
             } catch (Throwable t) {
                 failure[1] = t;

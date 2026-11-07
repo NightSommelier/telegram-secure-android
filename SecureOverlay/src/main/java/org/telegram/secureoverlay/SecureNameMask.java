@@ -22,27 +22,41 @@ public final class SecureNameMask {
     private SecureNameMask() {
     }
 
+    private static boolean shouldCacheKey(KeystoreSignalProtocolStore.EncryptedStateStorage storage) {
+        return storage instanceof KeystoreEncryptedBlobStore
+                && ((KeystoreEncryptedBlobStore) storage).isPersistent();
+    }
+
     public static byte[] getOrGenerateKey(KeystoreSignalProtocolStore.EncryptedStateStorage storage) {
-        byte[] k = cachedKey;
-        if (k != null) {
-            return k;
+        if (storage == null) {
+            throw new IllegalArgumentException("storage is required for name mask key");
         }
-        synchronized (lock) {
-            k = cachedKey;
+        boolean cacheable = shouldCacheKey(storage);
+        if (cacheable) {
+            byte[] k = cachedKey;
             if (k != null) {
                 return k;
+            }
+        }
+        synchronized (lock) {
+            if (cacheable && cachedKey != null) {
+                return cachedKey;
             }
             try {
                 byte[] existing = storage.get(STORAGE_KEY);
                 if (existing != null && existing.length == KEY_LEN) {
-                    cachedKey = existing;
-                    return existing;
+                    if (cacheable) {
+                        cachedKey = existing.clone();
+                    }
+                    return existing.clone();
                 }
                 byte[] generated = new byte[KEY_LEN];
                 new SecureRandom().nextBytes(generated);
                 storage.put(STORAGE_KEY, generated);
-                cachedKey = generated;
-                return generated;
+                if (cacheable) {
+                    cachedKey = generated.clone();
+                }
+                return generated.clone();
             } catch (Exception e) {
                 throw new IllegalStateException("failed to get or generate name mask key", e);
             }
@@ -50,18 +64,24 @@ public final class SecureNameMask {
     }
 
     public static byte[] getOrGenerateKey(Context context) {
+        if (context == null) {
+            throw new IllegalArgumentException("context is required for name mask key");
+        }
         byte[] k = cachedKey;
         if (k != null) {
             return k;
         }
-        if (context != null) {
-            return getOrGenerateKey(new KeystoreEncryptedBlobStore(context.getApplicationContext()));
-        }
+        Context app = context.getApplicationContext();
+        return getOrGenerateKey(new KeystoreEncryptedBlobStore(app != null ? app : context));
+    }
+
+    static byte[] peekCachedKey() {
+        return cachedKey;
+    }
+
+    static void clearCachedKey() {
         synchronized (lock) {
-            if (cachedKey == null) {
-                cachedKey = new byte[KEY_LEN];
-            }
-            return cachedKey;
+            cachedKey = null;
         }
     }
 

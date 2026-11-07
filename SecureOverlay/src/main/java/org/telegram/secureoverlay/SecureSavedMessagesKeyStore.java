@@ -5,12 +5,17 @@ import android.content.Context;
 import java.nio.ByteBuffer;
 import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Account-scoped self-key storage for Saved Messages. Peer sessions never use this key. */
 public final class SecureSavedMessagesKeyStore {
     private static final String PREFIX = "saved-messages/v1/account/";
     private static final int KEY_BYTES = 32;
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final ConcurrentHashMap<Integer, KeyMaterial> CURRENT_KEY_CACHE =
+            new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, KeyMaterial> GENERATION_KEY_CACHE =
+            new ConcurrentHashMap<>();
 
     private final KeystoreEncryptedBlobStore blobs;
 
@@ -18,9 +23,34 @@ public final class SecureSavedMessagesKeyStore {
         blobs = new KeystoreEncryptedBlobStore(context.getApplicationContext());
     }
 
+    public static KeyMaterial peekCurrent(int account) {
+        if (account < 0) {
+            return null;
+        }
+        KeyMaterial cached = CURRENT_KEY_CACHE.get(account);
+        return cached != null ? new KeyMaterial(cached.account, cached.generation, cached.key) : null;
+    }
+
+    public static void clearMemoryCache() {
+        CURRENT_KEY_CACHE.clear();
+        GENERATION_KEY_CACHE.clear();
+    }
+
+    static void evictAccountFromCache(int account) {
+        CURRENT_KEY_CACHE.remove(account);
+        String prefix = account + ":";
+        GENERATION_KEY_CACHE.keySet().removeIf(k -> k.startsWith(prefix));
+    }
+
     public synchronized KeyMaterial getOrCreate(int account)
             throws KeystoreEncryptedBlobStore.StateStoreException {
         requireAccount(account);
+        if (blobs.isPersistent()) {
+            KeyMaterial cached = CURRENT_KEY_CACHE.get(account);
+            if (cached != null) {
+                return new KeyMaterial(cached.account, cached.generation, cached.key);
+            }
+        }
         String name = name(account);
         byte[] encoded = blobs.get(name);
         if (encoded == null) {
@@ -28,7 +58,12 @@ public final class SecureSavedMessagesKeyStore {
             blobs.put(name, encoded);
             blobs.put(generationName(account, 1), encoded);
         }
-        return decode(account, encoded);
+        KeyMaterial loaded = decode(account, encoded);
+        if (blobs.isPersistent()) {
+            CURRENT_KEY_CACHE.put(account, loaded);
+            GENERATION_KEY_CACHE.put(account + ":" + loaded.generation, loaded);
+        }
+        return new KeyMaterial(loaded.account, loaded.generation, loaded.key);
     }
 
     /** Rotates Saved Messages self-key, preserving past generations for backward decryption. */
@@ -40,19 +75,34 @@ public final class SecureSavedMessagesKeyStore {
         blobs.put(generationName(account, current.generation), encode(current.generation, current.key));
         blobs.put(name(account), encode(next.generation, next.key));
         blobs.put(generationName(account, next.generation), encode(next.generation, next.key));
-        return next;
+        if (blobs.isPersistent()) {
+            GENERATION_KEY_CACHE.put(account + ":" + current.generation, current);
+            CURRENT_KEY_CACHE.put(account, next);
+            GENERATION_KEY_CACHE.put(account + ":" + next.generation, next);
+        }
+        return new KeyMaterial(next.account, next.generation, next.key);
     }
 
     public synchronized KeyMaterial getKeyForGeneration(int account, int generation)
             throws KeystoreEncryptedBlobStore.StateStoreException {
         requireAccount(account);
+        if (blobs.isPersistent()) {
+            KeyMaterial cachedGen = GENERATION_KEY_CACHE.get(account + ":" + generation);
+            if (cachedGen != null) {
+                return new KeyMaterial(cachedGen.account, cachedGen.generation, cachedGen.key);
+            }
+        }
         KeyMaterial current = getOrCreate(account);
         if (current.generation == generation) {
             return current;
         }
         byte[] encoded = blobs.get(generationName(account, generation));
         if (encoded != null) {
-            return decode(account, encoded);
+            KeyMaterial loaded = decode(account, encoded);
+            if (blobs.isPersistent()) {
+                GENERATION_KEY_CACHE.put(account + ":" + generation, loaded);
+            }
+            return new KeyMaterial(loaded.account, loaded.generation, loaded.key);
         }
         return null;
     }
@@ -70,11 +120,19 @@ public final class SecureSavedMessagesKeyStore {
         KeyMaterial key = decode(account, encoded);
         blobs.put(name(account), encode(key.generation, key.key));
         blobs.put(generationName(account, key.generation), encode(key.generation, key.key));
+        if (blobs.isPersistent()) {
+            evictAccountFromCache(account);
+            CURRENT_KEY_CACHE.put(account, key);
+            GENERATION_KEY_CACHE.put(account + ":" + key.generation, key);
+        }
     }
 
     void clearForTests(int account) throws KeystoreEncryptedBlobStore.StateStoreException {
+        evictAccountFromCache(account);
+        SecureSavedMessagesPinStore.evictAccountFromCache(account);
         blobs.delete(name(account));
         blobs.deletePrefixes(PREFIX + account + "/generation/");
+        blobs.deleteRoots(SecureSavedMessagesPinStore.accountRoot(account));
     }
 
     private static byte[] encode(int generation, byte[] key) {

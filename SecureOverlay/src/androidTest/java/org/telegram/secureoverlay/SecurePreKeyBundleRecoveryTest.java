@@ -2,8 +2,6 @@ package org.telegram.secureoverlay;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import java.util.UUID;
@@ -17,12 +15,18 @@ import org.signal.libsignal.protocol.kem.KEMKeyType;
 @RunWith(AndroidJUnit4.class)
 public final class SecurePreKeyBundleRecoveryTest {
     @Test
-    public void recoveryOfferRoundTripsAndRejectsLegacyV1Bundle() {
+    public void recoveryOfferRoundTripsAndRejectsLegacyV1AndV2Bundles() {
         Fixture fixture = fixture();
         SecureRecoveryGenerationStore.Record recovery =
                 new SecureRecoveryGenerationStore.Record(7, UUID.randomUUID());
         byte[] encoded = SecurePreKeyBundleCodec.encodeRecoveryOffer(
-                fixture.bundle, recovery, fixture.identity);
+                fixture.bundle,
+                recovery,
+                fixture.identity,
+                1001L,
+                2002L,
+                1700000000L,
+                99887766L);
 
         SecurePreKeyBundleCodec.DecodedOffer decoded =
                 SecurePreKeyBundleCodec.decodeOffer(encoded);
@@ -32,6 +36,9 @@ public final class SecurePreKeyBundleRecoveryTest {
                 decoded.preKeyBundle.getIdentityKey().serialize());
 
         assertMalformed(SecurePreKeyBundleCodec.encode(fixture.bundle));
+        byte[] downgradedV2 = encoded.clone();
+        downgradedV2[0] = 2;
+        assertMalformed(downgradedV2);
     }
 
     @Test
@@ -66,7 +73,11 @@ public final class SecurePreKeyBundleRecoveryTest {
         byte[] encoded = SecurePreKeyBundleCodec.encodeRecoveryOffer(
                 fixture.bundle,
                 new SecureRecoveryGenerationStore.Record(9, UUID.randomUUID()),
-                fixture.identity);
+                fixture.identity,
+                1001L,
+                2002L,
+                1700000000L,
+                55443322L);
 
         assertTampered(encoded, encoded.length - 68);
         assertTampered(encoded, encoded.length - 60);
@@ -85,7 +96,11 @@ public final class SecurePreKeyBundleRecoveryTest {
             SecurePreKeyBundleCodec.encodeRecoveryOffer(
                     fixture.bundle,
                     new SecureRecoveryGenerationStore.Record(2, UUID.randomUUID()),
-                    IdentityKeyPair.generate());
+                    IdentityKeyPair.generate(),
+                    1001L,
+                    2002L,
+                    1700000000L,
+                    11223344L);
             throw new AssertionError("mismatched recovery signer was accepted");
         } catch (IllegalArgumentException expected) {
             // Expected fail-closed signer binding.

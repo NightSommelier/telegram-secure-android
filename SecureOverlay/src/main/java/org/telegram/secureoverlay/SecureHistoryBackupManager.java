@@ -172,13 +172,14 @@ public final class SecureHistoryBackupManager {
                         "recovery-generation-v1/local",
                         SecureRecoveryGenerationStore.encodeRecord(restoredRecovery));
             }
+            byte[] maskKey = SecureNameMask.getOrGenerateKey(blobs);
             for (SecureHistoryBackupCodec.CacheRecord record : payload.cacheRecords) {
                 if (record.kind != SecureHistoryBackupCodec.KIND_SAVED_MESSAGES_KEY) {
                     byte[] encoded = (record.kind == SecureHistoryBackupCodec.KIND_OUTGOING_CONTENT
                             || record.kind == SecureHistoryBackupCodec.KIND_INCOMING_CONTENT)
                             ? SecureLocalContentStore.encodeRecord(record.peerUserId, record.carrierDigest, record.value)
                             : SecureLocalTextStore.encodeRecord(record.peerUserId, record.carrierDigest, record.value);
-                    replacements.put(historyName(targetAccount, record), encoded);
+                    replacements.put(historyName(maskKey, targetAccount, record), encoded);
                 }
             }
             int restoredMessages = 0;
@@ -196,8 +197,8 @@ public final class SecureHistoryBackupManager {
                             payload.peers,
                             payload.serializedIdentity));
             String[] targetRoots = targetAccount == 0
-                    ? new String[] { "account/0", "identity", "registration", "counter", "current", "prekey", "signed", "kyber", "index", "kyber-used", "session", "sender", "recovery-generation-v1/local", "recovery-generation-v1/account/0" }
-                    : new String[] { "account/" + targetAccount, "recovery-generation-v1/account/" + targetAccount };
+                    ? new String[] { "account/0", "identity", "registration", "counter", "current", "prekey", "signed", "kyber", "index", "kyber-used", "session", "sender", "recovery-generation-v1/local", "recovery-generation-v1/account/0", SecureSavedMessagesPinStore.accountRoot(0) }
+                    : new String[] { "account/" + targetAccount, "recovery-generation-v1/account/" + targetAccount, SecureSavedMessagesPinStore.accountRoot(targetAccount) };
             String[] scopedHistoryPrefixes = new String[HISTORY_PREFIXES.length];
             for (int i = 0; i < HISTORY_PREFIXES.length; i++) {
                 scopedHistoryPrefixes[i] = HISTORY_PREFIXES[i] + targetAccount + '.';
@@ -263,7 +264,10 @@ public final class SecureHistoryBackupManager {
                 scopedHistoryPrefixes[i] = HISTORY_PREFIXES[i] + marker.account + '.';
             }
             SecureLocalTextStore.evictDisplayPrefixes(scopedHistoryPrefixes);
+            SecureLocalContentStore.evictContentPrefixes(scopedHistoryPrefixes);
+            SecureSavedMessagesPinStore.evictAccountFromCache(marker.account);
             SecureChatEngine.clearFailedDecryptCache();
+            SecureSessionManager.getInstance(context, marker.account).clear();
             blobs.delete(MARKER);
             return new RestoreResult(
                     marker.generation,
@@ -375,8 +379,9 @@ public final class SecureHistoryBackupManager {
     }
 
     private static String historyName(
-            int account, SecureHistoryBackupCodec.CacheRecord record) {
+            byte[] maskKey, int account, SecureHistoryBackupCodec.CacheRecord record) {
         return SecureLocalTextStore.keyByDigest(
+                maskKey,
                 HISTORY_PREFIXES[record.kind - 1],
                 account,
                 record.peerUserId,

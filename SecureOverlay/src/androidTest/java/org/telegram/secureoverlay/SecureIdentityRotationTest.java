@@ -27,17 +27,27 @@ import org.signal.libsignal.protocol.util.KeyHelper;
 
 @RunWith(AndroidJUnit4.class)
 public final class SecureIdentityRotationTest {
+    private static final long LOCAL_USER_ID = 900_000_001L;
+
+    private static long randomPeerId() {
+        long peer;
+        do {
+            peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        } while (peer == LOCAL_USER_ID);
+        return peer;
+    }
+
     @Test
     public void changedIdentityBlocksUntilExplicitApprovalAndOldOffersStayStale() {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long peer = randomPeerId();
         SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
 
-        String firstOffer = pairingOffer(IdentityKeyPair.generate());
+        String firstOffer = pairingOffer(IdentityKeyPair.generate(), peer, LOCAL_USER_ID);
         assertEquals(
                 SecureChatEngine.PairingOfferResult.INITIAL_OFFER_PENDING,
-                engine.receivePairingOffer(firstOffer, 100));
+                engine.receivePairingOffer(firstOffer, 100, peer, LOCAL_USER_ID));
         assertEquals(SecureChatEngine.Mode.INITIAL_PAIRING_PENDING, engine.getMode());
         assertFalse(engine.isPaired());
         engine.acceptPendingIdentity();
@@ -46,22 +56,22 @@ public final class SecureIdentityRotationTest {
         String acknowledgement = engine.createPairingAcknowledgement();
         assertEquals(
                 SecureChatEngine.DialogPreview.Kind.PAIRING_ACK,
-                engine.resolveDialogPreview(acknowledgement, true).kind);
+                engine.resolveDialogPreview(acknowledgement, true, LOCAL_USER_ID).kind);
 
-        String changedOffer = pairingOffer(IdentityKeyPair.generate());
+        String changedOffer = pairingOffer(IdentityKeyPair.generate(), peer, LOCAL_USER_ID);
         assertEquals(
                 SecureChatEngine.PairingOfferResult.IDENTITY_CHANGE_PENDING,
-                engine.receivePairingOffer(changedOffer, 101));
+                engine.receivePairingOffer(changedOffer, 101, peer, LOCAL_USER_ID));
         assertEquals(SecureChatEngine.Mode.IDENTITY_CHANGED, engine.getMode());
         assertFalse(engine.isPaired());
         assertNotEquals(firstFingerprint, engine.getPendingFingerprint());
 
         assertEquals(
                 SecureChatEngine.PairingOfferResult.IDENTITY_CHANGE_PENDING,
-                engine.receivePairingOffer(changedOffer, 101));
+                engine.receivePairingOffer(changedOffer, 101, peer, LOCAL_USER_ID));
         assertEquals(
                 SecureChatEngine.PairingOfferResult.STALE,
-                engine.receivePairingOffer(firstOffer, 100));
+                engine.receivePairingOffer(firstOffer, 100, peer, LOCAL_USER_ID));
         assertEquals(SecureChatEngine.Mode.IDENTITY_CHANGED, engine.getMode());
 
         engine.acceptPendingIdentity();
@@ -71,7 +81,7 @@ public final class SecureIdentityRotationTest {
 
         assertEquals(
                 SecureChatEngine.PairingOfferResult.STALE,
-                engine.receivePairingOffer(firstOffer, 100));
+                engine.receivePairingOffer(firstOffer, 100, peer, LOCAL_USER_ID));
         assertEquals(acceptedFingerprint, engine.getTrustedFingerprint());
         assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
     }
@@ -83,10 +93,14 @@ public final class SecureIdentityRotationTest {
         SecureRecoveryGenerationStore recovery =
                 new SecureRecoveryGenerationStore(context);
         SecureRecoveryGenerationStore.Record oldRecovery = recovery.getLocalIdentity();
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long peer = randomPeerId();
         SecureChatEngine oldEngine = new SecureChatEngine(context, 0, peer);
         String oldFingerprint = oldEngine.getOwnFingerprint();
-        oldEngine.receivePairingOffer(pairingOffer(IdentityKeyPair.generate()), 200);
+        oldEngine.receivePairingOffer(
+                pairingOffer(IdentityKeyPair.generate(), peer, LOCAL_USER_ID),
+                200,
+                peer,
+                LOCAL_USER_ID);
         oldEngine.acceptPendingIdentity();
         assertTrue(oldEngine.isPaired());
 
@@ -107,7 +121,7 @@ public final class SecureIdentityRotationTest {
     public void authenticatedRecoveryRequiresVerificationAndRejectsUnsafeOffers() {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long peer = randomPeerId();
         SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
         IdentityKeyPair remoteIdentity = IdentityKeyPair.generate();
         SecureRecoveryGenerationStore.Record generationFive =
@@ -116,7 +130,10 @@ public final class SecureIdentityRotationTest {
         assertEquals(
                 SecureChatEngine.PairingOfferResult.INITIAL_OFFER_PENDING,
                 engine.receivePairingOffer(
-                        pairingOffer(remoteIdentity, generationFive), 400));
+                        pairingOffer(remoteIdentity, generationFive, peer, LOCAL_USER_ID),
+                        400,
+                        peer,
+                        LOCAL_USER_ID));
         assertEquals(SecureChatEngine.Mode.INITIAL_PAIRING_PENDING, engine.getMode());
         engine.acceptPendingIdentity();
         assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
@@ -126,7 +143,11 @@ public final class SecureIdentityRotationTest {
                 new SecureRecoveryGenerationStore.Record(4, java.util.UUID.randomUUID());
         assertEquals(
                 SecureChatEngine.PairingOfferResult.RECOVERY_REJECTED,
-                engine.receivePairingOffer(pairingOffer(remoteIdentity, rollback), 401));
+                engine.receivePairingOffer(
+                        pairingOffer(remoteIdentity, rollback, peer, LOCAL_USER_ID),
+                        401,
+                        peer,
+                        LOCAL_USER_ID));
         assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
         assertEquals(5, engine.getTrustedRecoveryGeneration());
 
@@ -134,12 +155,17 @@ public final class SecureIdentityRotationTest {
                 new SecureRecoveryGenerationStore.Record(5, java.util.UUID.randomUUID());
         assertEquals(
                 SecureChatEngine.PairingOfferResult.RECOVERY_REJECTED,
-                engine.receivePairingOffer(pairingOffer(remoteIdentity, clone), 402));
+                engine.receivePairingOffer(
+                        pairingOffer(remoteIdentity, clone, peer, LOCAL_USER_ID),
+                        402,
+                        peer,
+                        LOCAL_USER_ID));
         assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
         assertEquals(5, engine.getTrustedRecoveryGeneration());
 
         try {
-            engine.receivePairingOffer(legacyPairingOffer(remoteIdentity), 403);
+            engine.receivePairingOffer(
+                    legacyPairingOffer(remoteIdentity), 403, peer, LOCAL_USER_ID);
             fail("legacy v1 offer must be rejected");
         } catch (IllegalArgumentException expected) {
             // Expected fail-closed rejection of unsigned legacy v1 format.
@@ -149,17 +175,17 @@ public final class SecureIdentityRotationTest {
 
         SecureRecoveryGenerationStore.Record generationSix =
                 new SecureRecoveryGenerationStore.Record(6, java.util.UUID.randomUUID());
-        String recoveredOffer = pairingOffer(remoteIdentity, generationSix);
+        String recoveredOffer = pairingOffer(remoteIdentity, generationSix, peer, LOCAL_USER_ID);
         assertEquals(
                 SecureChatEngine.PairingOfferResult.RECOVERY_CHANGE_PENDING,
-                engine.receivePairingOffer(recoveredOffer, 404));
+                engine.receivePairingOffer(recoveredOffer, 404, peer, LOCAL_USER_ID));
         assertEquals(SecureChatEngine.Mode.RECOVERY_CHANGED, engine.getMode());
         assertEquals(5, engine.getTrustedRecoveryGeneration());
         assertEquals(6, engine.getPendingRecoveryGeneration());
         assertEquals(generationSix.recoveryId.toString(), engine.getPendingRecoveryId());
         assertEquals(
                 SecureChatEngine.PairingOfferResult.RECOVERY_CHANGE_PENDING,
-                engine.receivePairingOffer(recoveredOffer, 404));
+                engine.receivePairingOffer(recoveredOffer, 404, peer, LOCAL_USER_ID));
 
         engine.acceptPendingIdentity();
         assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
@@ -171,9 +197,9 @@ public final class SecureIdentityRotationTest {
             throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long peer = randomPeerId();
         SecureChatEngine waitingEngine = new SecureChatEngine(context, 0, peer);
-        String offer = waitingEngine.createPairingOffer();
+        String offer = waitingEngine.createPairingOffer(LOCAL_USER_ID);
         assertEquals(SecureChatEngine.Mode.WAITING, waitingEngine.getMode());
 
         SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(offer);
@@ -188,20 +214,19 @@ public final class SecureIdentityRotationTest {
         remote.establish(localAddress, localBundle);
         LibsignalSessionAdapter.EncryptedMessage encryptedAck = remote.encrypt(
                 localAddress,
-                "\u0000fork-secure-control:pairing-ack:v1"
-                        .getBytes(StandardCharsets.UTF_8));
+                SecureContentCodec.encodePairingAckControl());
         int carrierType = encryptedAck.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
                 ? SecureCarrierCodec.TYPE_PREKEY : SecureCarrierCodec.TYPE_WHISPER;
         String ackCarrier = SecureCarrierCodec.encode(carrierType, encryptedAck.serialized);
 
         assertEquals(
                 SecureChatEngine.DialogPreview.Kind.PAIRING_ACK,
-                waitingEngine.resolveDialogPreview(ackCarrier, false).kind);
+                waitingEngine.resolveDialogPreview(ackCarrier, false, peer).kind);
         assertEquals(SecureChatEngine.Mode.PROTECTED, waitingEngine.getMode());
         // A second list rebuild must use the cache rather than consuming ratchet state again.
         assertEquals(
                 SecureChatEngine.DialogPreview.Kind.PAIRING_ACK,
-                waitingEngine.resolveDialogPreview(ackCarrier, false).kind);
+                waitingEngine.resolveDialogPreview(ackCarrier, false, peer).kind);
         assertEquals(SecureChatEngine.Mode.PROTECTED, waitingEngine.getMode());
     }
 
@@ -209,25 +234,25 @@ public final class SecureIdentityRotationTest {
     public void matchingTrustedOfferCompletesWaitingAndRepairsAlreadyRecordedOffer() {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long peer = randomPeerId();
         IdentityKeyPair remoteIdentity = IdentityKeyPair.generate();
-        String trustedOffer = pairingOffer(remoteIdentity);
+        String trustedOffer = pairingOffer(remoteIdentity, peer, LOCAL_USER_ID);
         SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
 
         assertEquals(
                 SecureChatEngine.PairingOfferResult.INITIAL_OFFER_PENDING,
-                engine.receivePairingOffer(trustedOffer, 250));
+                engine.receivePairingOffer(trustedOffer, 250, peer, LOCAL_USER_ID));
         engine.acceptPendingIdentity();
         assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
 
-        engine.createPairingOffer();
+        engine.createPairingOffer(LOCAL_USER_ID);
         assertEquals(SecureChatEngine.Mode.WAITING, engine.getMode());
 
         // Reproduce the old client: it recorded the matching offer but forgot to leave WAITING.
         new SecureChatState(context).recordPairingMessage(0, peer, 251);
         assertEquals(
                 SecureChatEngine.PairingOfferResult.SAME_IDENTITY,
-                engine.receivePairingOffer(trustedOffer, 251));
+                engine.receivePairingOffer(trustedOffer, 251, peer, LOCAL_USER_ID));
         assertEquals(SecureChatEngine.Mode.PROTECTED, engine.getMode());
         assertTrue(engine.isPaired());
         engine.createPairingAcknowledgement();
@@ -238,16 +263,20 @@ public final class SecureIdentityRotationTest {
             throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long peer = randomPeerId();
         SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
-        engine.receivePairingOffer(pairingOffer(IdentityKeyPair.generate()), 300);
+        engine.receivePairingOffer(
+                pairingOffer(IdentityKeyPair.generate(), peer, LOCAL_USER_ID),
+                300,
+                peer,
+                LOCAL_USER_ID);
         engine.acceptPendingIdentity();
         String oldFingerprint = engine.getTrustedFingerprint();
 
-        RemotePeer changedPeer = remotePeer();
+        RemotePeer changedPeer = remotePeer(peer, LOCAL_USER_ID);
         assertEquals(
                 SecureChatEngine.PairingOfferResult.IDENTITY_CHANGE_PENDING,
-                engine.receivePairingOffer(changedPeer.offer, 301));
+                engine.receivePairingOffer(changedPeer.offer, 301, peer, LOCAL_USER_ID));
         String rejection = engine.createPairingRejection();
 
         // Creating the reply alone neither accepts the changed key nor alters the old trust record.
@@ -260,9 +289,9 @@ public final class SecureIdentityRotationTest {
         byte[] plaintext = changedPeer.sessions.decrypt(
                 new SignalProtocolAddress("local-account-0", 1),
                 new LibsignalSessionAdapter.EncryptedMessage(messageType, decoded.payload));
-        assertEquals(
-                "\u0000fork-secure-control:pairing-rejected:v1",
-                new String(plaintext, StandardCharsets.UTF_8));
+        SecureContentCodec.Decoded control = SecureContentCodec.decode(plaintext);
+        assertEquals(SecureContentCodec.TYPE_CONTROL, control.type);
+        assertEquals(SecureContentCodec.CONTROL_ACTION_PAIRING_REJECT, control.control.action);
 
         engine.rejectPendingIdentity();
         assertEquals(SecureChatEngine.Mode.PAUSED, engine.getMode());
@@ -277,9 +306,9 @@ public final class SecureIdentityRotationTest {
             throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        long peer = randomPeerId();
         SecureChatEngine waitingEngine = new SecureChatEngine(context, 0, peer);
-        String offer = waitingEngine.createPairingOffer();
+        String offer = waitingEngine.createPairingOffer(LOCAL_USER_ID);
 
         SecureCarrierCodec.Decoded decoded = SecureCarrierCodec.decode(offer);
         PreKeyBundle localBundle = SecurePreKeyBundleCodec.decode(decoded.payload);
@@ -293,8 +322,7 @@ public final class SecureIdentityRotationTest {
         remote.establish(localAddress, localBundle);
         LibsignalSessionAdapter.EncryptedMessage encryptedRejection = remote.encrypt(
                 localAddress,
-                "\u0000fork-secure-control:pairing-rejected:v1"
-                        .getBytes(StandardCharsets.UTF_8));
+                SecureContentCodec.encodePairingRejectControl());
         int carrierType =
                 encryptedRejection.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
                         ? SecureCarrierCodec.TYPE_PREKEY
@@ -304,13 +332,13 @@ public final class SecureIdentityRotationTest {
 
         assertEquals(
                 SecureChatEngine.DialogPreview.Kind.PAIRING_REJECTED,
-                waitingEngine.resolveDialogPreview(rejectionCarrier, false).kind);
+                waitingEngine.resolveDialogPreview(rejectionCarrier, false, peer).kind);
         assertEquals(SecureChatEngine.Mode.PAUSED, waitingEngine.getMode());
         assertFalse(waitingEngine.resumeIfPaused());
         // A list rebuild uses the cache and must not accidentally promote the chat to protected.
         assertEquals(
                 SecureChatEngine.DialogPreview.Kind.PAIRING_REJECTED,
-                waitingEngine.resolveDialogPreview(rejectionCarrier, false).kind);
+                waitingEngine.resolveDialogPreview(rejectionCarrier, false, peer).kind);
         assertEquals(SecureChatEngine.Mode.PAUSED, waitingEngine.getMode());
 
         // A later successful pairing must not be undone by rebuilding the preview for the old
@@ -318,7 +346,7 @@ public final class SecureIdentityRotationTest {
         new SecureChatState(context).markPaired(0, peer);
         assertEquals(
                 SecureChatEngine.DialogPreview.Kind.PAIRING_REJECTED,
-                waitingEngine.resolveDialogPreview(rejectionCarrier, false).kind);
+                waitingEngine.resolveDialogPreview(rejectionCarrier, false, peer).kind);
         assertEquals(SecureChatEngine.Mode.PROTECTED, waitingEngine.getMode());
     }
 
@@ -327,10 +355,10 @@ public final class SecureIdentityRotationTest {
             throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
-        RemotePeer remotePeer = remotePeer();
+        long peer = randomPeerId();
+        RemotePeer remotePeer = remotePeer(peer, LOCAL_USER_ID);
         SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
-        engine.receivePairingOffer(remotePeer.offer, 400);
+        engine.receivePairingOffer(remotePeer.offer, 400, peer, LOCAL_USER_ID);
         engine.acceptPendingIdentity();
         SecureContentCodec.Attachment attachment =
                 new SecureContentCodec.Attachment(
@@ -351,7 +379,7 @@ public final class SecureIdentityRotationTest {
 
         assertEquals(
                 SecureChatEngine.DialogPreview.Kind.PHOTO,
-                engine.resolveDialogPreview(carrier, true).kind);
+                engine.resolveDialogPreview(carrier, true, LOCAL_USER_ID).kind);
         assertEquals(
                 "private.jpg",
                 engine.getOutgoingAttachment(carrier).fileName);
@@ -373,10 +401,10 @@ public final class SecureIdentityRotationTest {
             throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
-        RemotePeer remotePeer = remotePeer();
+        long peer = randomPeerId();
+        RemotePeer remotePeer = remotePeer(peer, LOCAL_USER_ID);
         SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
-        engine.receivePairingOffer(remotePeer.offer, 401);
+        engine.receivePairingOffer(remotePeer.offer, 401, peer, LOCAL_USER_ID);
         engine.acceptPendingIdentity();
         SecureContentCodec.Attachment attachment =
                 new SecureContentCodec.Attachment(
@@ -401,14 +429,14 @@ public final class SecureIdentityRotationTest {
         }
 
         String firstConfirmation = engine.createPairingAcknowledgement();
-        assertEquals(
-                "\u0000fork-secure-control:pairing-ack:v1",
-                new String(decryptFromEngine(remotePeer, firstConfirmation),
-                        StandardCharsets.UTF_8));
+        SecureContentCodec.Decoded ackDecoded =
+                SecureContentCodec.decode(decryptFromEngine(remotePeer, firstConfirmation));
+        assertEquals(SecureContentCodec.TYPE_CONTROL, ackDecoded.type);
+        assertEquals(SecureContentCodec.CONTROL_ACTION_PAIRING_ACK, ackDecoded.control.action);
         String ready = encryptFromRemote(
-                remotePeer, "\u0000fork-secure-control:pairing-ready:v1");
+                remotePeer, SecureContentCodec.encodePairingReadyControl());
         assertTrue(SecureChatEngine.isPairingReadyDisplay(
-                engine.decryptText(ready)));
+                engine.decryptText(ready, peer)));
 
         SecureChatEngine.AttachmentTransport transport =
                 engine.encryptAttachmentForTransport(attachment, 1024, 4096);
@@ -432,11 +460,11 @@ public final class SecureIdentityRotationTest {
     }
 
     private static String encryptFromRemote(
-            RemotePeer remotePeer, String plaintext) throws Exception {
+            RemotePeer remotePeer, byte[] plaintext) throws Exception {
         LibsignalSessionAdapter.EncryptedMessage encrypted =
                 remotePeer.sessions.encrypt(
                         new SignalProtocolAddress("local-account-0", 1),
-                        plaintext.getBytes(StandardCharsets.UTF_8));
+                        plaintext);
         int carrierType =
                 encrypted.type == LibsignalSessionAdapter.MESSAGE_TYPE_PRE_KEY
                         ? SecureCarrierCodec.TYPE_PREKEY
@@ -445,7 +473,7 @@ public final class SecureIdentityRotationTest {
                 carrierType, encrypted.serialized);
     }
 
-    private static RemotePeer remotePeer() {
+    private static RemotePeer remotePeer(long ownerUserId, long recipientUserId) {
         int registrationId = KeyHelper.generateRegistrationId(false);
         IdentityKeyPair identity = IdentityKeyPair.generate();
         InMemorySignalProtocolStore store =
@@ -481,7 +509,11 @@ public final class SecureIdentityRotationTest {
                                 kyberPreKey.getPublicKey().serialize(),
                                 kyberSignature),
                         new SecureRecoveryGenerationStore.Record(1, java.util.UUID.randomUUID()),
-                        identity));
+                        identity,
+                        ownerUserId,
+                        recipientUserId,
+                        1700000000L,
+                        ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE)));
         return new RemotePeer(
                 offer,
                 new LibsignalSessionAdapter(
@@ -498,10 +530,13 @@ public final class SecureIdentityRotationTest {
         }
     }
 
-    private static String pairingOffer(IdentityKeyPair identity) {
+    private static String pairingOffer(
+            IdentityKeyPair identity, long ownerUserId, long recipientUserId) {
         return pairingOffer(
                 identity,
-                new SecureRecoveryGenerationStore.Record(1, java.util.UUID.randomUUID()));
+                new SecureRecoveryGenerationStore.Record(1, java.util.UUID.randomUUID()),
+                ownerUserId,
+                recipientUserId);
     }
 
     private static String legacyPairingOffer(IdentityKeyPair identity) {
@@ -533,16 +568,16 @@ public final class SecureIdentityRotationTest {
     public void textEditAdvancesRatchetAndCanRollBack() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         SecureChatEngine.resetOwnIdentity(context);
-        long peer = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
-        RemotePeer remotePeer = remotePeer();
+        long peer = randomPeerId();
+        RemotePeer remotePeer = remotePeer(peer, LOCAL_USER_ID);
         SecureChatEngine engine = new SecureChatEngine(context, 0, peer);
-        engine.receivePairingOffer(remotePeer.offer, 401);
+        engine.receivePairingOffer(remotePeer.offer, 401, peer, LOCAL_USER_ID);
         engine.acceptPendingIdentity();
         String confirmation = engine.createPairingAcknowledgement();
         decryptFromEngine(remotePeer, confirmation);
         String ready = encryptFromRemote(
-                remotePeer, "\u0000fork-secure-control:pairing-ready:v1");
-        engine.decryptText(ready);
+                remotePeer, SecureContentCodec.encodePairingReadyControl());
+        engine.decryptText(ready, peer);
 
         SecureChatEngine.TextEditTransport transport =
                 engine.encryptTextForEdit("edited message text", 4096);
@@ -568,7 +603,9 @@ public final class SecureIdentityRotationTest {
 
     private static String pairingOffer(
             IdentityKeyPair identity,
-            SecureRecoveryGenerationStore.Record recovery) {
+            SecureRecoveryGenerationStore.Record recovery,
+            long ownerUserId,
+            long recipientUserId) {
         ECKeyPair preKey = ECKeyPair.generate();
         ECKeyPair signedPreKey = ECKeyPair.generate();
         byte[] signedSignature = identity.getPrivateKey()
@@ -591,6 +628,12 @@ public final class SecureIdentityRotationTest {
         return SecureCarrierCodec.encode(
                 SecureCarrierCodec.TYPE_PREKEY_BUNDLE,
                 SecurePreKeyBundleCodec.encodeRecoveryOffer(
-                        bundle, recovery, identity));
+                        bundle,
+                        recovery,
+                        identity,
+                        ownerUserId,
+                        recipientUserId,
+                        1700000000L,
+                        ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE)));
     }
 }

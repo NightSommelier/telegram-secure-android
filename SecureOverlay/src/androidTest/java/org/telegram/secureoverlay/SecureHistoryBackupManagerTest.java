@@ -202,7 +202,7 @@ public final class SecureHistoryBackupManagerTest {
             SecureChatEngine.resetOwnIdentity(context);
             new SecureLocalMessageCache(context, ACCOUNT, peer).forgetPeer();
             SecureChatEngine engineBeforeRestore = new SecureChatEngine(context, ACCOUNT, peer);
-            expectFailure(() -> engineBeforeRestore.decryptText(carrier));
+            expectFailure(() -> engineBeforeRestore.decryptText(carrier, peer));
 
             SecureLocalTextStore tempText =
                     new SecureLocalTextStore(context, ACCOUNT, temporaryPeer);
@@ -219,7 +219,7 @@ public final class SecureHistoryBackupManagerTest {
             assertTrue(state.isPaused(ACCOUNT, peer));
 
             SecureChatEngine engineAfterRestore = new SecureChatEngine(context, ACCOUNT, peer);
-            assertEquals("restored after failed decrypt", engineAfterRestore.decryptText(carrier));
+            assertEquals("restored after failed decrypt", engineAfterRestore.decryptText(carrier, peer));
         } finally {
             Arrays.fill(password, '\0');
             if (archive != null) {
