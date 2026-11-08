@@ -106,7 +106,6 @@ public final class SecureIdentityBackupManager {
         Context appContext = context.getApplicationContext();
         synchronized (LOCK) {
             resumeInterruptedImport(appContext);
-            ensureNoPreparedImport(appContext);
             SecureChatState chatState = new SecureChatState(appContext);
             SecureRecoveryGenerationStore recovery =
                     new SecureRecoveryGenerationStore(appContext, account);
@@ -131,6 +130,15 @@ public final class SecureIdentityBackupManager {
             long expectedOwnerUserId,
             byte[] archive,
             char[] password) {
+        return prepareImport(context, 0, expectedOwnerUserId, archive, password);
+    }
+
+    public static PreparedImport prepareImport(
+            Context context,
+            int account,
+            long expectedOwnerUserId,
+            byte[] archive,
+            char[] password) {
         if (context == null || expectedOwnerUserId <= 0) {
             throw new IllegalArgumentException("backup import requires a Telegram owner");
         }
@@ -140,7 +148,7 @@ public final class SecureIdentityBackupManager {
             ensureNoPreparedImport(appContext);
             SecureChatState chatState = new SecureChatState(appContext);
             boolean replacesExistingState =
-                    hasExistingSecureState(appContext, chatState);
+                    hasExistingSecureState(appContext, chatState, account);
             SecureIdentityBackupCodec.Payload payload =
                     SecureIdentityBackupCodec.decrypt(archive, password);
             if (payload.ownerUserId != expectedOwnerUserId) {
@@ -148,7 +156,7 @@ public final class SecureIdentityBackupManager {
                         "identity backup belongs to a different Telegram account");
             }
             SecureRecoveryGenerationStore recoveryStore =
-                    new SecureRecoveryGenerationStore(appContext);
+                    new SecureRecoveryGenerationStore(appContext, account);
             SecureRecoveryGenerationStore.Record current =
                     recoveryStore.getLocalIdentity();
             long restoredGeneration = increment(payload.generation);

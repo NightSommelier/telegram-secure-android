@@ -220,6 +220,18 @@ final class SecureLocalContentStore {
         return record;
     }
 
+    static SecureLocalTextStore.RecordHeader decodeHeader(byte[] record) {
+        if (!isEncodedRecord(record)) {
+            throw new IllegalArgumentException("not an encoded secure content record");
+        }
+        long peerUserId = ByteBuffer.wrap(record, 3, 8).getLong();
+        byte[] digest = new byte[32];
+        System.arraycopy(record, 11, digest, 0, 32);
+        byte[] payload = new byte[record.length - HEADER_LENGTH];
+        System.arraycopy(record, HEADER_LENGTH, payload, 0, payload.length);
+        return new SecureLocalTextStore.RecordHeader(peerUserId, digest, payload);
+    }
+
     private static void requireEncryptedCarrier(String carrier) {
         if (!isEncryptedCarrier(carrier)) {
             throw new IllegalArgumentException("local content requires encrypted carrier");

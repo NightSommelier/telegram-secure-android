@@ -87,10 +87,6 @@ public final class SecureHistoryBackupManager {
         Context appContext = context.getApplicationContext();
         synchronized (LOCK) {
             resumeInterruptedRestore(appContext);
-            if (SecureIdentityBackupManager.getPreparedImport(appContext) != null) {
-                throw new IllegalStateException(
-                        "identity recovery is already prepared");
-            }
             SecureChatState chatState = new SecureChatState(appContext);
             SecureRecoveryGenerationStore.Record recovery =
                     new SecureRecoveryGenerationStore(appContext, account).ensureLocalIdentity(
@@ -294,16 +290,17 @@ public final class SecureHistoryBackupManager {
             throw new IllegalStateException(
                     "cannot snapshot secure history", error);
         }
-        List<SecureHistoryBackupCodec.CacheRecord> records =
-                new ArrayList<>(snapshot.size());
+        TreeMap<SecureHistoryBackupCodec.CacheRecord, SecureHistoryBackupCodec.CacheRecord> uniqueRecords =
+                new TreeMap<>(SecureHistoryBackupCodec.CACHE_ORDER);
         try {
             SecureSavedMessagesKeyStore.KeyMaterial savedKey =
                     new SecureSavedMessagesKeyStore(context).getOrCreate(account);
-            records.add(new SecureHistoryBackupCodec.CacheRecord(
+            SecureHistoryBackupCodec.CacheRecord savedRecord = new SecureHistoryBackupCodec.CacheRecord(
                     SecureHistoryBackupCodec.KIND_SAVED_MESSAGES_KEY,
                     Long.MAX_VALUE,
                     new byte[32],
-                    SecureSavedMessagesKeyStore.encodeForBackup(savedKey)));
+                    SecureSavedMessagesKeyStore.encodeForBackup(savedKey));
+            uniqueRecords.put(savedRecord, savedRecord);
         } catch (KeystoreEncryptedBlobStore.StateStoreException error) {
             throw new IllegalStateException("cannot snapshot Saved Messages key", error);
         }
@@ -318,43 +315,46 @@ public final class SecureHistoryBackupManager {
                 }
             }
             if (scopedPrefix == null) {
-                throw new IllegalStateException(
-                        "unexpected secure history record");
+                continue;
             }
             byte[] value = entry.getValue();
-            long peerUserId;
-            byte[] digest;
-            byte[] payload;
-            if (SecureLocalTextStore.isEncodedRecord(value)) {
-                SecureLocalTextStore.RecordHeader header = SecureLocalTextStore.decodeHeader(value);
-                peerUserId = header.peerUserId;
-                digest = header.carrierDigest;
-                payload = header.payload;
-            } else if (SecureLocalContentStore.isEncodedRecord(value)) {
-                SecureLocalTextStore.RecordHeader header = SecureLocalTextStore.decodeHeader(value);
-                peerUserId = header.peerUserId;
-                digest = header.carrierDigest;
-                payload = header.payload;
-            } else {
-                String suffix = entry.getKey().substring(scopedPrefix.length());
-                int separator = suffix.indexOf('.');
-                if (separator <= 0 || separator == suffix.length() - 1) {
-                    throw new IllegalStateException(
-                            "invalid secure history record name");
+            try {
+                long peerUserId;
+                byte[] digest;
+                byte[] payload;
+                if (SecureLocalTextStore.isEncodedRecord(value)) {
+                    SecureLocalTextStore.RecordHeader header = SecureLocalTextStore.decodeHeader(value);
+                    peerUserId = header.peerUserId;
+                    digest = header.carrierDigest;
+                    payload = header.payload;
+                } else if (SecureLocalContentStore.isEncodedRecord(value)) {
+                    SecureLocalTextStore.RecordHeader header = SecureLocalContentStore.decodeHeader(value);
+                    peerUserId = header.peerUserId;
+                    digest = header.carrierDigest;
+                    payload = header.payload;
+                } else {
+                    String suffix = entry.getKey().substring(scopedPrefix.length());
+                    int separator = suffix.indexOf('.');
+                    if (separator <= 0 || separator == suffix.length() - 1) {
+                        continue;
+                    }
+                    try {
+                        peerUserId = Long.parseLong(suffix.substring(0, separator));
+                    } catch (NumberFormatException error) {
+                        continue;
+                    }
+                    digest = decodeHex(suffix.substring(separator + 1));
+                    payload = value;
                 }
-                try {
-                    peerUserId = Long.parseLong(suffix.substring(0, separator));
-                } catch (NumberFormatException error) {
-                    throw new IllegalStateException(
-                            "invalid secure history peer", error);
-                }
-                digest = decodeHex(suffix.substring(separator + 1));
-                payload = value;
+                SecureHistoryBackupCodec.CacheRecord record = new SecureHistoryBackupCodec.CacheRecord(
+                        kind, peerUserId, digest, payload);
+                uniqueRecords.put(record, record);
+            } catch (RuntimeException ignored) {
+                // Skip individual malformed or legacy-unmasked records so a single stale cache entry
+                // cannot abort exporting the user's protected history archive.
             }
-            records.add(new SecureHistoryBackupCodec.CacheRecord(
-                    kind, peerUserId, digest, payload));
         }
-        return records;
+        return new ArrayList<>(uniqueRecords.values());
     }
 
     private static List<SecureHistoryBackupCodec.PeerRecord> mergeHistoryPeers(

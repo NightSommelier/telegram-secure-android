@@ -573,8 +573,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                 showBackupError(R.string.ForkSecureBackupStateFailed);
                 return;
             }
-            showInfo(R.string.ForkSecurePreparingBackup);
-            Utilities.globalQueue.postRunnable(() -> {
+            AlertDialog progressDialog = new AlertDialog(context, AlertDialog.ALERT_TYPE_SPINNER);
+            progressDialog.setCanCancel(false);
+            progressDialog.show();
+            new Thread(() -> {
                 byte[] archive = null;
                 RuntimeException failure = null;
                 try {
@@ -588,6 +590,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                 byte[] result = archive;
                 RuntimeException error = failure;
                 AndroidUtilities.runOnUIThread(() -> {
+                    try {
+                        progressDialog.dismiss();
+                    } catch (Exception ignored) {
+                    }
                     if (error != null) {
                         FileLog.e(error);
                         showBackupError(R.string.ForkSecureBackupExportFailed);
@@ -599,9 +605,15 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                     intent.addCategory(Intent.CATEGORY_OPENABLE);
                     intent.setType("application/octet-stream");
                     intent.putExtra(Intent.EXTRA_TITLE, "fork-secure-identity.fsbk");
-                    startActivityForResult(intent, BACKUP_EXPORT_REQUEST);
+                    try {
+                        startActivityForResult(intent, BACKUP_EXPORT_REQUEST);
+                    } catch (Exception activityError) {
+                        FileLog.e(activityError);
+                        clearPendingBackupArchive();
+                        showBackupError(R.string.ForkSecureBackupExportFailed);
+                    }
                 });
-            });
+            }, "fork-secure-identity-export").start();
         }, null);
     }
 
@@ -617,8 +629,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                         showBackupError(R.string.ForkSecureBackupStateFailed);
                         return;
                     }
-                    showInfo(R.string.ForkSecurePreparingHistoryBackup);
-                    Utilities.globalQueue.postRunnable(() -> {
+                    AlertDialog progressDialog = new AlertDialog(context, AlertDialog.ALERT_TYPE_SPINNER);
+                    progressDialog.setCanCancel(false);
+                    progressDialog.show();
+                    new Thread(() -> {
                         byte[] archive = null;
                         RuntimeException failure = null;
                         try {
@@ -635,6 +649,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                         byte[] result = archive;
                         RuntimeException error = failure;
                         AndroidUtilities.runOnUIThread(() -> {
+                            try {
+                                progressDialog.dismiss();
+                            } catch (Exception ignored) {
+                            }
                             if (error != null) {
                                 FileLog.e(error);
                                 showBackupError(
@@ -650,10 +668,17 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                             intent.putExtra(
                                     Intent.EXTRA_TITLE,
                                     "fork-secure-history.fsrk");
-                            startActivityForResult(
-                                    intent, HISTORY_BACKUP_EXPORT_REQUEST);
+                            try {
+                                startActivityForResult(
+                                        intent, HISTORY_BACKUP_EXPORT_REQUEST);
+                            } catch (Exception activityError) {
+                                FileLog.e(activityError);
+                                clearPendingBackupArchive();
+                                showBackupError(
+                                        R.string.ForkSecureHistoryBackupExportFailed);
+                            }
                         });
-                    });
+                    }, "fork-secure-history-export").start();
                 },
                 null);
     }
@@ -708,26 +733,25 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                 LayoutHelper.MATCH_PARENT, 48));
         EditText second = null;
         PasswordField secondField = null;
+        TextView matchStatus = new TextView(context);
+        matchStatus.setTextSize(14);
+        matchStatus.setGravity(Gravity.START);
+        matchStatus.setVisibility(View.GONE);
         if (confirmPassword) {
             secondField = createPasswordField(
                     getString(R.string.ForkSecureBackupPasswordAgain));
             second = secondField.input;
             content.addView(secondField.row, LayoutHelper.createLinear(
                     LayoutHelper.MATCH_PARENT, 48, 0, 8, 0, 0));
-
-            TextView matchStatus = new TextView(context);
-            matchStatus.setTextSize(14);
-            matchStatus.setGravity(Gravity.START);
-            matchStatus.setVisibility(View.GONE);
-            content.addView(matchStatus, LayoutHelper.createLinear(
-                    LayoutHelper.MATCH_PARENT,
-                    LayoutHelper.WRAP_CONTENT,
-                    0,
-                    4,
-                    0,
-                    0));
             addPasswordMatchWatcher(first, second, matchStatus);
         }
+        content.addView(matchStatus, LayoutHelper.createLinear(
+                LayoutHelper.MATCH_PARENT,
+                LayoutHelper.WRAP_CONTENT,
+                0,
+                4,
+                0,
+                0));
         activePasswordFields = secondField == null
                 ? new PasswordField[] {firstField}
                 : new PasswordField[] {firstField, secondField};
@@ -757,19 +781,30 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             char[] repeated = confirmation == null
                     ? null
                     : extractPasswordChars(confirmation.getText());
-            boolean valid = org.telegram.secureoverlay.SecureIdentityBackupCodec.isStrongPassword(password)
-                    && (repeated == null || Arrays.equals(password, repeated));
+            boolean strong = !confirmPassword
+                    ? password.length > 0
+                    : org.telegram.secureoverlay.SecureIdentityBackupCodec.isStrongPassword(password);
+            boolean matches = repeated == null || Arrays.equals(password, repeated);
+            boolean valid = strong && matches;
             if (repeated != null) {
                 Arrays.fill(repeated, '\0');
+            }
+            if (!valid) {
+                Arrays.fill(password, '\0');
+                matchStatus.setText(getString(
+                        !strong
+                                ? R.string.ForkSecureBackupPasswordInvalid
+                                : R.string.ForkSecureBackupPasswordsDoNotMatch));
+                matchStatus.setTextColor(Theme.getColor(
+                        Theme.key_text_RedRegular,
+                        getResourceProvider()));
+                matchStatus.setVisibility(View.VISIBLE);
+                AndroidUtilities.shakeView(content);
+                return;
             }
             first.getText().clear();
             if (confirmation != null) {
                 confirmation.getText().clear();
-            }
-            if (!valid) {
-                Arrays.fill(password, '\0');
-                showBackupError(R.string.ForkSecureBackupPasswordInvalid);
-                return;
             }
             cancelled[0] = true;
             dialog.dismiss();
@@ -866,6 +901,21 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
 
     private void updatePasswordMatchStatus(
             EditText first, EditText second, TextView matchStatus) {
+        if (first.length() == 0 && second.length() == 0) {
+            matchStatus.setVisibility(View.GONE);
+            return;
+        }
+        char[] password = extractPasswordChars(first.getText());
+        boolean strong = org.telegram.secureoverlay.SecureIdentityBackupCodec.isStrongPassword(password);
+        Arrays.fill(password, '\0');
+        if (!strong) {
+            matchStatus.setText(getString(R.string.ForkSecureBackupPasswordInvalid));
+            matchStatus.setTextColor(Theme.getColor(
+                    Theme.key_text_RedRegular,
+                    getResourceProvider()));
+            matchStatus.setVisibility(View.VISIBLE);
+            return;
+        }
         if (second.length() == 0) {
             matchStatus.setVisibility(View.GONE);
             return;
@@ -1064,8 +1114,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             showBackupError(R.string.ForkSecureHistoryBackupImportFailed);
             return;
         }
-        showInfo(R.string.ForkSecureCheckingHistoryBackup);
-        Utilities.globalQueue.postRunnable(() -> {
+        AlertDialog progressDialog = new AlertDialog(context, AlertDialog.ALERT_TYPE_SPINNER);
+        progressDialog.setCanCancel(false);
+        progressDialog.show();
+        new Thread(() -> {
             SecureHistoryBackupManager.RestoreResult restored = null;
             RuntimeException failure = null;
             try {
@@ -1084,6 +1136,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             SecureHistoryBackupManager.RestoreResult result = restored;
             RuntimeException error = failure;
             AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    progressDialog.dismiss();
+                } catch (Exception ignored) {
+                }
                 if (error != null) {
                     FileLog.e(error);
                     showBackupError(
@@ -1108,7 +1164,7 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                         .setPositiveButton(getString(R.string.OK), null)
                         .create());
             });
-        });
+        }, "fork-secure-history-restore").start();
     }
 
     private void prepareImport(byte[] archive, char[] password) {
@@ -1120,13 +1176,15 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             showBackupError(R.string.ForkSecureBackupImportFailed);
             return;
         }
-        showInfo(R.string.ForkSecureCheckingBackup);
-        Utilities.globalQueue.postRunnable(() -> {
+        AlertDialog progressDialog = new AlertDialog(context, AlertDialog.ALERT_TYPE_SPINNER);
+        progressDialog.setCanCancel(false);
+        progressDialog.show();
+        new Thread(() -> {
             SecureIdentityBackupManager.PreparedImport prepared = null;
             RuntimeException failure = null;
             try {
                 prepared = SecureIdentityBackupManager.prepareImport(
-                        context, ownerUserId, archive, password);
+                        context, currentAccount, ownerUserId, archive, password);
             } catch (RuntimeException error) {
                 failure = error;
             } finally {
@@ -1136,6 +1194,10 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
             SecureIdentityBackupManager.PreparedImport result = prepared;
             RuntimeException error = failure;
             AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    progressDialog.dismiss();
+                } catch (Exception ignored) {
+                }
                 if (error != null) {
                     FileLog.e(error);
                     showBackupError(R.string.ForkSecureBackupImportFailed);
@@ -1144,7 +1206,7 @@ public final class ForkSecureSettingsActivity extends BaseFragment {
                     showPreparedImportDialog(result);
                 }
             });
-        });
+        }, "fork-secure-identity-import").start();
     }
 
     private void showPreparedImportDialog(

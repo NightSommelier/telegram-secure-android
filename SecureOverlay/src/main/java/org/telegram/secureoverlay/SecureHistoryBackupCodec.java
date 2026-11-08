@@ -367,7 +367,7 @@ public final class SecureHistoryBackupCodec {
         }
     }
 
-    private static final Comparator<CacheRecord> CACHE_ORDER = (left, right) -> {
+    static final Comparator<CacheRecord> CACHE_ORDER = (left, right) -> {
         int result = Integer.compare(left.kind, right.kind);
         if (result != 0) {
             return result;
@@ -610,9 +610,8 @@ public final class SecureHistoryBackupCodec {
             u = mac.doFinal(block);
             result = u.clone();
             for (int i = 1; i < PBKDF2_ITERATIONS; i++) {
-                byte[] next = mac.doFinal(u);
-                Arrays.fill(u, (byte) 0);
-                u = next;
+                mac.update(u, 0, u.length);
+                mac.doFinal(u, 0);
                 for (int j = 0; j < result.length; j++) {
                     result[j] ^= u[j];
                 }

@@ -282,9 +282,8 @@ public final class SecureIdentityBackupCodec {
             u = mac.doFinal(block);
             result = u.clone();
             for (int i = 1; i < iterations; i++) {
-                byte[] next = mac.doFinal(u);
-                Arrays.fill(u, (byte) 0);
-                u = next;
+                mac.update(u, 0, u.length);
+                mac.doFinal(u, 0);
                 for (int j = 0; j < result.length; j++) {
                     result[j] ^= u[j];
                 }

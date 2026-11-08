@@ -108,4 +108,21 @@ public final class SecureBackupSecretJvmTest {
             assertTrue(expected.getMessage().contains("modified"));
         }
     }
+
+    @Test
+    public void localContentStoreHeaderDecodesCorrectlyForHistoryBackup() {
+        long peerUserId = -5442088927L;
+        byte[] digest = new byte[32];
+        for (int i = 0; i < digest.length; i++) {
+            digest[i] = (byte) (i + 1);
+        }
+        byte[] typedPayload = SecureContentCodec.encodeText("encrypted media caption");
+        byte[] encodedContent = SecureLocalContentStore.encodeRecord(peerUserId, digest, typedPayload);
+
+        assertTrue(SecureLocalContentStore.isEncodedRecord(encodedContent));
+        SecureLocalTextStore.RecordHeader header = SecureLocalContentStore.decodeHeader(encodedContent);
+        assertEquals(peerUserId, header.peerUserId);
+        assertArrayEquals(digest, header.carrierDigest);
+        assertArrayEquals(typedPayload, header.payload);
+    }
 }
